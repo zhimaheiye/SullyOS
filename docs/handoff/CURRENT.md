@@ -2,7 +2,7 @@
 
 本仓库是基于上游 [SullyOS](https://github.com/qegj567-cloud/SullyOS) 的个人二改。许可文本仍是根目录 [LICENSE](../../LICENSE)，这里不改写，也不扩大许可范围。上游社区负责人已同意维护者分享这个个人二改仓库的链接，并自行管理自己的社区。这不表示可以使用上游的在线服务。
 
-工作分支是 `public-cleanup`。提交留在本地。不要推送到 `upstream`，也不要部署现役 Worker。技术整理不是对外发布许可。
+公开审核分支为 `public-audit-2026-10-20`，已推送至 `zhimaheiye/SullyOS`；本地整理分支为 `public-cleanup`。不要推送到 `upstream`，也不要部署现役 Worker。
 
 ## 这份公开版实际保留的行为
 

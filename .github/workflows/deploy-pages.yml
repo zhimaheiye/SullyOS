@@ -1,7 +1,7 @@
 name: Deploy to GitHub Pages
 
 on:
-  # 私有二改仓库不自动发布静态站；需要时仍可在 Actions 页面手动运行。
+  # 公开二改仓库不自动发布静态站；需要时仍可在 Actions 页面手动运行。
   workflow_dispatch:
 
 permissions:
