@@ -1,0 +1,55 @@
+name: Deploy static site to Cloudflare
+
+on:
+  # 私有二改仓库不自动发布静态站；需要时仍可在 Actions 页面手动运行。
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-worker-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CI: 'true'
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      VITE_UMAMI_SCRIPT_URL: ${{ vars.UMAMI_SCRIPT_URL }}
+      VITE_UMAMI_WEBSITE_ID: ${{ vars.UMAMI_WEBSITE_ID }}
+
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify assets-first configuration
+        run: >-
+          node -e "const fs=require('fs');const c=JSON.parse(fs.readFileSync('wrangler.jsonc','utf8'));
+          if(c.main!=='worker/static-site-not-found.ts'||c.assets?.binding||c.assets?.run_worker_first||fs.existsSync('worker/site/index.ts'))
+          throw new Error('Real files must be served directly; only missing paths may invoke the 404 worker');
+          if(c.assets?.not_found_handling!=='none')
+          throw new Error('Missing scripts must return 404, never an immutable HTML fallback')"
+
+      - name: Build site
+        run: pnpm run build
+
+      - name: Deploy static assets
+        run: npx --yes wrangler@4.122.0 deploy
