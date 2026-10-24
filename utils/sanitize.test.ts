@@ -37,6 +37,15 @@ function originalSanitize(text: string, options?: { keepCitations?: boolean }): 
 // ─── sanitizeForNotification: 底层 helper 等价类 ───────────────────────────
 
 describe('sanitizeForNotification', () => {
+    it('withdrawal blocks never expose their original content in notifications', () => {
+      const text = sanitizeForNotification('A\n[[WITHDRAW_TEXT]]绝密原文[[/WITHDRAW_TEXT]]\nB');
+      const emoji = sanitizeForNotification('[[WITHDRAW_EMOJI: 抱抱]]');
+      expect(text).toContain('对方撤回了一条消息');
+      expect(text).not.toContain('绝密原文');
+      expect(emoji).toBe('对方撤回了一个表情包');
+      expect(emoji).not.toContain('抱抱');
+    });
+
   it('A1 字面 \\n 还原', () => {
     expect(sanitizeForNotification('a\\nb')).toBe('a\nb');
   });

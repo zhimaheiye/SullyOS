@@ -4,6 +4,7 @@ import {
     CHAT_GEN_EVENTS,
     setChatViewSnapshot,
     getChatViewSnapshot,
+    isPrivateChatActivelyVisible,
     registerEmbeddedChatView,
     isEmbeddedChatVisible,
 } from './chatGenEvents';
@@ -35,6 +36,18 @@ describe('chatGenEvents', () => {
         expect(getChatViewSnapshot()).toEqual({ chatOpen: true, charId: 'c1' });
         setChatViewSnapshot(false, null);
         expect(getChatViewSnapshot()).toEqual({ chatOpen: false, charId: null });
+    });
+
+    it('只有真正显示的私聊角色才算正在阅读', () => {
+        setChatViewSnapshot(true, 'c1');
+        expect(isPrivateChatActivelyVisible('c1')).toBe(true);
+        expect(isPrivateChatActivelyVisible('c2')).toBe(false);
+
+        setChatViewSnapshot(true, null);
+        expect(isPrivateChatActivelyVisible('c1')).toBe(false);
+
+        setChatViewSnapshot(false, null);
+        expect(isPrivateChatActivelyVisible('c1')).toBe(false);
     });
 
     it('事件名稳定（ChatBroadcast / OSContext / useChatAI 三方约定）', () => {

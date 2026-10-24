@@ -298,7 +298,8 @@ describe('Chat 界面的「正在输入…」', () => {
   });
 
   it('三个点的显示条件带上它（isTyping 在 POST 完就灭了）', () => {
-    expect(chatSrc).toMatch(/\(isTyping \|\| instantChatPending \|\|/);
+    expect(chatSrc).toMatch(/const replyUiTyping = isTyping \|\| instantChatPending/);
+    expect(chatSrc).toMatch(/\{\(replyUiTyping \|\| recallStatus \|\| searchStatus \|\| diaryStatus \|\| isProactiveComposing\)/);
   });
 });
 

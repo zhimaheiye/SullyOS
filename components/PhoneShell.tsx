@@ -43,12 +43,13 @@ const SocialApp = lazyApp(() => import('../apps/SocialApp'));
 const StudyApp = lazyApp(() => import('../apps/StudyApp'));
 const FAQApp = lazyApp(() => import('../apps/FAQApp'));
 const GameApp = lazyApp(() => import('../apps/GameApp'));
+const BoardGameApp = lazyApp(() => import('../apps/BoardGameApp'));
+const MurderMysteryApp = lazyApp(() => import('../apps/MurderMysteryApp'));
 const WorldbookApp = lazyApp(() => import('../apps/WorldbookApp'));
 const NovelApp = lazyApp(() => import('../apps/NovelApp'));
 const BankApp = lazyApp(() => import('../apps/BankApp'));
 const XhsStockApp = lazyApp(() => import('../apps/XhsStockApp'));
 const XhsFreeRoamApp = lazyApp(() => import('../apps/XhsFreeRoamApp'));
-const BrowserApp = lazyApp(() => import('../apps/BrowserApp'));
 const SongwritingApp = lazyApp(() => import('../apps/SongwritingApp'));
 const MusicApp = lazyApp(() => import('../apps/MusicApp'));
 const CallApp = lazyApp(() => import('../apps/CallApp'));
@@ -56,23 +57,30 @@ const VoiceDesignerApp = lazyApp(() => import('../apps/VoiceDesignerApp'));
 const GuidebookApp = lazyApp(() => import('../apps/GuidebookApp'));
 const LifeSimApp = lazyApp(() => import('../apps/LifeSimApp'));
 const MemoryPalaceApp = lazyApp(() => import('../apps/MemoryPalaceApp'));
-const HandbookApp = lazyApp(() => import('../apps/HandbookApp'));
-const QQBridge = lazyApp(() => import('../apps/QQBridge'));
 const HotNewsApp = lazyApp(() => import('../apps/HotNewsApp'));
 const VRWorldApp = lazyApp(() => import('../apps/VRWorldApp'));
 const WorldHomeApp = lazyApp(() => import('../apps/WorldHomeApp'));
 const CharCreatorDevApp = lazyApp(() => import('../apps/CharCreatorDevApp'));
 const SpecialMomentsApp = lazyApp(() => import('./ValentineEvent').then(m => ({ default: m.SpecialMomentsApp })));
+const HeartSyncApp = lazyApp(() => import('../apps/HeartSyncApp'));
+const DebateApp = lazyApp(() => import('../apps/DebateApp'));
+const LifeReplayApp = lazyApp(() => import('../apps/LifeReplayApp'));
+const HealingApp = lazyApp(() => import('../apps/HealingApp'));
+const TaskWorkshopApp = lazyApp(() => import('../apps/TaskWorkshopApp'));
+const TimeCapsuleApp = lazyApp(() => import('../apps/TimeCapsuleApp'));
+const MyScheduleApp = lazyApp(() => import('../apps/MyScheduleApp'));
+const OneChangeApp = lazyApp(() => import('../apps/OneChangeApp'));
 
 // 仅供「桌面稳定后的空闲串行预热」。严格 await 前一个再取下一个，且任何用户操作都会停止队列。
 // 高频 App 在前；低端设备/省流量/2G 由 shouldUseIdleAppPreload 整体跳过。
+// 桌面入口被注释隐藏的 App 不进入队列，避免为空闲用户预取打不开的代码。
 const APP_IDLE_PRELOAD_ORDER: PreloadableLazy[] = [
   Chat, Character, Settings, Appearance, GroupChat, RoomApp, CheckPhone,
   JournalApp, ScheduleApp, SocialApp, MusicApp, CallApp, Gallery, DateApp, UserApp,
-  StudyApp, GameApp, NovelApp, BankApp, WorldbookApp, MemoryPalaceApp, HandbookApp,
+  StudyApp, GameApp, BoardGameApp, MurderMysteryApp, NovelApp, BankApp, WorldbookApp, MemoryPalaceApp,
   VRWorldApp, WorldHomeApp, LifeSimApp, SongwritingApp, GuidebookApp, FAQApp, HotNewsApp,
-  XhsStockApp, XhsFreeRoamApp, BrowserApp, VoiceDesignerApp, ThemeMaker, QQBridge,
-  SpecialMomentsApp, CharCreatorDevApp,
+  XhsStockApp, XhsFreeRoamApp, VoiceDesignerApp, ThemeMaker,
+  SpecialMomentsApp, HeartSyncApp, DebateApp, LifeReplayApp, HealingApp, OneChangeApp, TaskWorkshopApp, TimeCapsuleApp, MyScheduleApp,
 ];
 
 const IDLE_PRELOAD_START_MS = 600;
@@ -87,14 +95,23 @@ const APP_BY_ID: Partial<Record<AppID, PreloadableLazy>> = {
   [AppID.Gallery]: Gallery, [AppID.Date]: DateApp, [AppID.User]: UserApp,
   [AppID.Journal]: JournalApp, [AppID.Schedule]: ScheduleApp, [AppID.Room]: RoomApp,
   [AppID.CheckPhone]: CheckPhone, [AppID.Social]: SocialApp, [AppID.Study]: StudyApp,
-  [AppID.FAQ]: FAQApp, [AppID.Game]: GameApp, [AppID.Worldbook]: WorldbookApp,
+  [AppID.FAQ]: FAQApp, [AppID.Game]: GameApp, [AppID.BoardGame]: BoardGameApp, [AppID.Worldbook]: WorldbookApp,
+  [AppID.MurderMystery]: MurderMysteryApp,
   [AppID.Novel]: NovelApp, [AppID.Bank]: BankApp, [AppID.XhsStock]: XhsStockApp,
-  [AppID.XhsFreeRoam]: XhsFreeRoamApp, [AppID.Browser]: BrowserApp, [AppID.Songwriting]: SongwritingApp,
+  [AppID.XhsFreeRoam]: XhsFreeRoamApp, [AppID.Songwriting]: SongwritingApp,
   [AppID.Music]: MusicApp, [AppID.Call]: CallApp, [AppID.VoiceDesigner]: VoiceDesignerApp,
   [AppID.Guidebook]: GuidebookApp, [AppID.LifeSim]: LifeSimApp, [AppID.MemoryPalace]: MemoryPalaceApp,
-  [AppID.Handbook]: HandbookApp, [AppID.QQBridge]: QQBridge, [AppID.HotNews]: HotNewsApp,
+  [AppID.HotNews]: HotNewsApp,
   [AppID.VRWorld]: VRWorldApp, [AppID.CharCreatorDev]: CharCreatorDevApp, [AppID.SpecialMoments]: SpecialMomentsApp,
   [AppID.WorldHome]: WorldHomeApp,
+  [AppID.HeartSync]: HeartSyncApp,
+  [AppID.Debate]: DebateApp,
+  [AppID.LifeReplay]: LifeReplayApp,
+  [AppID.Healing]: HealingApp,
+  [AppID.TaskWorkshop]: TaskWorkshopApp,
+  [AppID.TimeCapsule]: TimeCapsuleApp,
+  [AppID.MySchedule]: MyScheduleApp,
+  [AppID.OneChange]: OneChangeApp,
 };
 // AppIcon 的 pointerdown 只预取用户正在点的 App；失败时由 preloadableLazy 清缓存，点击可正常重试。
 setAppPayloadWarmer((id: AppID) => APP_BY_ID[id]?.preload());
@@ -119,9 +136,12 @@ import GlobalMiniPlayer from './os/GlobalMiniPlayer';
 import NavigationBall from './os/NavigationBall';
 import PersonaSimIndicator from './os/PersonaSimIndicator';
 import DreamSimIndicator from './os/DreamSimIndicator';
+import ApiPresetFloatingSwitcher from './os/ApiPresetFloatingSwitcher';
 import ErrorDialog from './os/ErrorDialog';
 import BootSequence from './os/BootSequence';
 import { setAppPayloadWarmer, shouldUseIdleAppPreload } from './os/appPreload';
+import TaskWorkshopRuntime from './taskWorkshop/TaskWorkshopRuntime';
+import TimeCapsuleRuntime from './timeCapsule/TimeCapsuleRuntime';
 import { isBrowserBackGuardState, makeBrowserBackGuardState } from '../utils/browserBackGuard';
 
 /*
@@ -617,6 +637,10 @@ const PhoneShell: React.FC = () => {
   const [showAnniversaryGift, setShowAnniversaryGift] = useState(false);
   const anniversaryAsked = useRef(false);
   const firstUseGuideActive = useFirstUseGuideStep() !== null;
+  useEffect(() => {
+    if (!isDataLoaded) return;
+    try { if (localStorage.getItem(DISCLAIMER_KEY)) setShowDisclaimer(false); } catch { /* ignore */ }
+  }, [isDataLoaded]);
   const anniversaryBlocked = firstUseGuideActive || showDisclaimer || showImportRecoveryPrompt || showAuthorLetter;
   // 待展示也占住顺序，避免同一轮 effects 同时开启赠礼和更新公告。
   // Complete setup before promotional/release popups; disclaimer/recovery still have priority.
@@ -951,12 +975,13 @@ const PhoneShell: React.FC = () => {
       case AppID.Study: return <StudyApp />; 
       case AppID.FAQ: return <FAQApp />; 
       case AppID.Game: return <GameApp />; 
+      case AppID.BoardGame: return <BoardGameApp />;
+      case AppID.MurderMystery: return <MurderMysteryApp />;
       case AppID.Worldbook: return <WorldbookApp />;
       case AppID.Novel: return <NovelApp />; 
       case AppID.Bank: return <BankApp />;
       case AppID.XhsStock: return <XhsStockApp />;
       case AppID.XhsFreeRoam: return <XhsFreeRoamApp />;
-      case AppID.Browser: return <BrowserApp />;
       case AppID.Songwriting: return <SongwritingApp />;
       case AppID.Music: return <MusicApp />;
       case AppID.Call: return <CallApp />;
@@ -964,10 +989,16 @@ const PhoneShell: React.FC = () => {
       case AppID.Guidebook: return <GuidebookApp />;
       case AppID.LifeSim: return <LifeSimApp />;
       case AppID.MemoryPalace: return <MemoryPalaceApp />;
-      case AppID.Handbook: return <HandbookApp />;
-      case AppID.QQBridge: return <QQBridge />;
       case AppID.HotNews: return <HotNewsApp />;
       case AppID.SpecialMoments: return <SpecialMomentsApp />;
+      case AppID.HeartSync: return <HeartSyncApp />;
+      case AppID.Debate: return <DebateApp />;
+      case AppID.LifeReplay: return <LifeReplayApp />;
+      case AppID.Healing: return <HealingApp />;
+      case AppID.TaskWorkshop: return <TaskWorkshopApp />;
+      case AppID.TimeCapsule: return <TimeCapsuleApp />;
+      case AppID.MySchedule: return <MyScheduleApp />;
+      case AppID.OneChange: return <OneChangeApp />;
       case AppID.VRWorld: return <VRWorldApp />;
       case AppID.WorldHome: return <WorldHomeApp />;
       case AppID.CharCreatorDev: return <CharCreatorDevApp />;
@@ -984,6 +1015,8 @@ const PhoneShell: React.FC = () => {
 
   return (
     <div className="sully-phone-shell relative w-full h-full overflow-hidden bg-gradient-to-br from-pink-200 via-purple-200 to-indigo-200 text-slate-900 font-sans select-none overscroll-none">
+       <TaskWorkshopRuntime />
+       <TimeCapsuleRuntime />
        {/* Optimized Background Layer */}
        {/* 壁纸底层：进 App 时只柔和虚化/压暗作背景，不再做缩放「过场」——
           进 App 的过渡感统一交给 App 容器的淡入（见下方 animate-fade-in 包裹层）。 */}
@@ -1058,6 +1091,9 @@ const PhoneShell: React.FC = () => {
 
           {/* Overlays: 梦境生成全局指示条 */}
           <DreamSimIndicator />
+
+          {/* Overlays: 解锁后全局 API 预设悬浮切换器 */}
+          <ApiPresetFloatingSwitcher />
 
           {/* Overlays: Toasts (Top) */}
           <div className="absolute top-12 left-0 w-full flex flex-col items-center gap-2 pointer-events-none z-[60]">

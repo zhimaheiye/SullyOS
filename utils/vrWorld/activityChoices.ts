@@ -7,7 +7,6 @@ export const ORDINARY_ACTIVITIES: { id: VRRoomId; name: string; description: str
     { id:'music', name:'听歌房', description:'点歌、听歌与锐评' },
     { id:'guestbook', name:'留言簿', description:'发帖、回复和版聊' },
     { id:'gym', name:'娱乐室', description:'游戏、学习或随意玩耍' },
-    { id:'postoffice', name:'邮局', description:'写信、读信与回信' },
 ];
 export const SAR_ACTIVITIES: { id: VRSARActivity; name: string; description: string }[] = [
     { id:'cabinet', name:'抽芯片演绎', description:'抽临时芯片，推演故事并写随笔' },

@@ -18,7 +18,7 @@ SullyOS 的核心前端可以静态部署（通常是 GitHub Pages），没有�
 
 | 约束 | 说明 |
 |------|------|
-| 传输协议 | 支持 handshake era 的 **Streamable HTTP**（MCP 2025-03-26 / 2025-06-18 / 2025-11-25，单端点 POST，含 SSE 响应体）。**不支持** stdio、旧版 HTTP+SSE 双端点，也暂不支持 2026-07-28 modern-only 生命周期 |
+| 传输协议 | 支持 handshake era 的 **Streamable HTTP**（MCP 2025-03-26 / 2025-06-18 / 2025-11-25，单端点 POST，含 SSE 响应体）和**本机 stdio**（额外兼容 stdio 的 2024-11-05 握手）。不支持旧版 HTTP+SSE 双端点，也暂不支持 2026-07-28 modern-only 生命周期 |
 | 鉴权 | 支持**静态 Bearer Token**，也支持 Key-Value 自定义请求头（如 `X-API-Key`、`XBY-APIKEY`）。**没有实现 OAuth 登录流程**——OAuth-only 服务仍需手动申请长期 token/key，或关闭 OAuth |
 | CORS | 浏览器直连要求服务器返回正确 CORS 头，最容易漏的是 `Access-Control-Expose-Headers: Mcp-Session-Id`（漏了会静默握手失败）。服务器改不了就走代理（见第四节） |
 | 混合内容 | SullyOS 部署在 HTTPS 时，服务器 URL 必须是 `https://`；**唯一例外是 `http://localhost`**（浏览器豁免） |
@@ -40,14 +40,15 @@ SullyOS 的核心前端可以静态部署（通常是 GitHub Pages），没有�
 2. 挑选服务时的筛选条件：标注 **remote / Streamable HTTP**、鉴权是**无鉴权或 API key**（OAuth 的接不了）。
 3. 去哪找：官方注册中心 `registry.modelcontextprotocol.io`、官方列表 `github.com/modelcontextprotocol/servers`、社区目录 mcp.so / Smithery / Glama / PulseMCP。**注意**：目录里大部分是 stdio 本地服务器（`npx`/`uvx` 启动那种），SullyOS 接不了，认准 remote。
 
-### 路线 2：部署在用户自己的电脑上
+### 路线 2：在用户自己的电脑上运行
 
 适合开源 MCP 项目（如记忆库类）。数据在自己硬盘上，不花钱。
 
-1. 按该项目的文档在本机跑起来，**确认它监听的是 Streamable HTTP**（很多项目默认 stdio，需要配置切换，常见开关如 `transport: streamable-http` 或环境变量）。
-2. 该项目若默认开 OAuth，找它的关闭开关（通常是 `xxx_REQUIRE_AUTH=false` 之类），本机使用风险可控。
-3. 服务器 URL 填 `http://localhost:端口/mcp`——**只在这台电脑的浏览器里有效**。
-4. 想在手机上也能用 → 加内网穿透（推荐 Cloudflare Tunnel：免费、自带 HTTPS 域名）。穿透后 URL 变成 `https://你的域名/mcp`，全设备可用；但此时端点暴露公网，见第六节安全注意。
+1. 如果项目给的是 `command + args`（例如 `npx -y ...` / `uvx ...`），选择 **本机 stdio**。SullyOS 必须通过仓库里的 `run.bat` 或 `pnpm dev` 打开；Vite 会在当前电脑代为启动进程，不需要再套 HTTP 代理。
+2. 可直接照抄 Claude Desktop / Claude Code 已验证配置：`command` 填启动命令，`args` 按原数组顺序每行填一个，`env` 逐项填入环境变量。Windows 的 `npx` / `.cmd` 已由本机桥兼容。
+   SullyOS 不负责替你安装运行环境或 MCP 包；先确保 Node.js / Python / `npx` / `uvx` 等命令在本机已经可用。最省事的验收方式就是先在终端、Claude Code、Claude Desktop 或 Cursor 里把同一套配置跑通，再复制过来。
+3. 如果项目本身监听 Streamable HTTP，仍可选择 HTTP，URL 填 `http://localhost:端口/mcp`；被 CORS 拦时使用第四节的本地代理。
+4. stdio 只允许当前电脑访问，手机、局域网设备和静态部署不能使用。想跨设备使用，必须让服务提供 HTTP 后再用 HTTPS 隧道/云部署。
 5. Windows 用户常见坑：PowerShell 5.1 不认 `&&`（分开执行或用 `;`）；Python 项目读中文文件报 GBK 错，设环境变量 `PYTHONUTF8=1`。
 
 ### 路线 3：自己部署到云上
@@ -69,10 +70,12 @@ Access-Control-Expose-Headers: Mcp-Session-Id
 1. 打开 SullyOS → **设置** → 找到「**MCP**」→ 点「**管理**」
 2. 「添加服务器」→ 填：
    - **名称**：随意，如 `Ombre Brain`
-   - **服务器 URL**：如 `https://mcp.example.com/mcp` 或 `http://localhost:18001/mcp`
+   - **传输方式**：远程/本机 HTTP 选 `Streamable HTTP`；`npx` / `uvx` / 本地可执行文件选 `本机 stdio`
+   - **HTTP**：服务器 URL 如 `https://mcp.example.com/mcp` 或 `http://localhost:18001/mcp`
    - **Bearer Token**：服务器要求 `Authorization: Bearer ...` 时填写，否则留空
    - **自定义请求头**：服务商要求 `X-API-Key`、`XBY-APIKEY` 等非 Bearer 鉴权时，点「添加请求头」填写名称和值
    - **代理 URL**：留空 = 直连；被 CORS 拦了才填（见第四节）
+   - **stdio**：启动命令、每行一个参数，以及可选环境变量。命令会以当前 Windows 用户权限真实执行，只添加你信任的配置
 3. 点「**测试并读取工具**」→ 成功会显示服务端名称、协商版本与工具数量
 4. **打开该服务器的开关**（不开开关角色用不了）
 5. 可选：「**适用聊天**」默认全部聊天；可绑定指定角色或群聊
@@ -88,7 +91,7 @@ Access-Control-Expose-Headers: Mcp-Session-Id
 
 | 方式 | 适合 | 步骤 |
 |------|------|------|
-| **本地代理** | 本地 MCP、或临时试用 | 在 SullyOS 仓库目录跑 `node scripts/mcp-proxy.mjs`，「代理 URL」填 `http://localhost:18061` |
+| **本地代理** | 本地 MCP、或临时试用 | 在 SullyOS 仓库目录跑 `node scripts/mcp-proxy.mjs`，「代理 URL」填 `http://localhost:18061`；只供本机浏览器用时可加 `--host 127.0.0.1` |
 | **自部署 Cloudflare Worker** | 云端 MCP + 手机使用 | 把仓库 `worker/mcp-proxy/worker.js` 粘到自己 CF 账号（Dashboard → Workers → Create → 粘贴 → Deploy），「代理 URL」填 Worker 地址；**建议设 `PROXY_KEY`** 环境变量防白嫖，同时在 SullyOS「代理密钥」里填同一个值 |
 
 代理只做透明转发 + 补 CORS 头，约定为 `<代理URL>?target=<服务器URL>`。刻意不提供公共代理：MCP 流量含你的 Token，不应经过项目方服务器。
@@ -104,25 +107,29 @@ Access-Control-Expose-Headers: Mcp-Session-Id
 | 角色把 `工具名(参数)` 打在聊天里 | 正常兜底行为，系统会代为执行再让角色重说；频繁出现说明模型较弱，换模型更稳 |
 | 服务器加了新工具但角色不知道 | 回设置重新点「测试连接」刷新工具清单 |
 | 服务器重启后第一次调用失败 | session 失效，客户端会自动重连一次，一般无感；连续失败就重新测试连接 |
+| stdio 提示 bridge 404/不可用 | 当前不是仓库的本机 Vite 开发服务；改用 `run.bat` / `pnpm dev` 打开 |
+| stdio 提示只允许当前电脑 | 你正在从手机或局域网地址访问；本机用 `http://127.0.0.1:5173/` 打开 |
+| stdio 进程立即退出 | 先在终端直接运行同一条 `command + args`；核对命令是否安装、参数顺序和环境变量 |
 | 提示协议版本不兼容 | 确认服务提供的是 Streamable HTTP 2025-03-26～2025-11-25；旧双端点和 2026-07-28 modern-only 不能混用 |
 
 ## 六、安全注意
 
-- **Token 与自定义请求头只存你本机**，但走代理时流量会经过你自己配的代理——所以代理必须是你自己部署的。
+- **Token 与自定义请求头只存你本机**。请求若经过网络代理，本版本的公共代理只转发、不保存这些凭据。不想经过公共代理时，可以在「设置 → 网络代理」换成你自己的地址。
+- **stdio 命令具有本机程序权限**：只粘贴你已审查或已在 Claude Code 等客户端验证过的配置；环境变量会随本机备份导出，请妥善保管备份文件。
 - **无鉴权端点别裸奔公网**：穿透/上云后若服务器关了鉴权，任何拿到 URL 的人都能调你的工具（读写你的记忆）。至少用不易猜的域名并别外传；讲究的在前面挡一层反代校验 `Authorization` 头（SullyOS 填的 Bearer Token 会原样透传，正好用上）。
 - **有真实副作用的工具**（发布/下单/删除）：服务端正确提供 `destructiveHint` 时，SullyOS 会自动弹出确认窗；普通工具不额外询问。提示词不是权限系统，高危工具仍需谨慎接入。
 - 通用服务器会被所有私聊和群聊共用；需要隔离时，把服务器绑定给指定角色或群聊（配置里的「适用聊天」）。
 
 ## 七、主动消息里也能用
 
-配好的 MCP 工具在定时主动消息（主动消息 2.0）里同样可用：角色到点想用工具时，
+配好的公网 HTTP MCP 工具在定时主动消息（主动消息 2.0）里同样可用：角色到点想用工具时，
 由你部署的 amsg worker 直接连你的 MCP 服务器，不需要浏览器开着。
 
 需要满足的条件：
 
 - amsg worker 是较新的部署（设置页会在版本过旧时提示重新部署）；
 - 服务器地址是公网可访问的（`localhost` 或局域网地址只有你的浏览器够得着，
-  worker 连不上，这类服务器不会带进主动消息）；
+  worker 连不上，这类服务器不会带进主动消息；stdio 同样只在前台本机可用）；
 - 服务器在设置里处于启用状态、且已「发现工具」。
 
 服务端明确标为 destructive 的工具不会进入后台工具清单，因为无人值守环境无法确认。
@@ -142,5 +149,3 @@ Token 会随配置同步到你自己的 amsg worker（走端到端加密通道�
 ---
 
 *开发者视角的实现细节（两层容错、工具循环、代码地图）见 [`docs/mcp-client.md`](./mcp-client.md)。*
-
-MCP 管理列表会在本机记住展开与收起状态，关闭后重新打开仍保持原样。删除展开项不会自动展开其他服务器；新增服务器仍直接展开便于填写。收起不改变服务器启用和绑定状态。

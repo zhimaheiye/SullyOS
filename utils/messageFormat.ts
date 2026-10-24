@@ -16,8 +16,12 @@ import { formatLifeSimResetCardForContext } from './lifeSimChatCard';
 import { formatQixiEventCardForContext, tryParseQixiEventChatCard } from './qixiChatCard';
 import { formatTransferRecord } from './transferFormat';
 import { formatStatCount } from './videoParser';
-import {secretNoteContext} from './secretNote';
+import { formatWithdrawalForCharacterContext, isWithdrawnMessage } from './messageWithdrawal';
+import { serializeUserDiaryForExchange } from './journal';
+import { secretNoteContext } from './secretNote';
 import { formatSARModuleEventsForContext } from './vrWorld/sarModuleRuntime';
+import { formatOperatorAccountActivity, isOperatorAuthoredCharacterMessage } from './operatorMessageProvenance';
+import { formatRepairSegments, type HtmlRepairSegment } from './htmlFormatRepair';
 
 /**
  * 总结器只在输入确实含 SAR 双轨记录时收到这段硬边界；普通聊天/总结提示词保持原样。
@@ -113,6 +117,10 @@ export function normalizeMessageContent(
     charName: string,
     userName: string,
 ): string {
+    if (isOperatorAuthoredCharacterMessage(msg)) return formatOperatorAccountActivity(msg);
+    const withdrawalContext = formatWithdrawalForCharacterContext(msg);
+    if (withdrawalContext) return withdrawalContext;
+
     const type = msg.type as string;
     if (type === 'secret_note') return secretNoteContext(msg.content);
 
@@ -165,7 +173,11 @@ export function normalizeMessageContent(
                 const uName = card.userName || userName;
                 const userTextPart = (card.userText || '').trim();
                 const charTextPart = (card.charText || '').trim();
-                const userBlock = userTextPart ? `${uName}写道：「${userTextPart}」` : `${uName}那页是空的`;
+                const userDiary = serializeUserDiaryForExchange({
+                    text: userTextPart,
+                    observations: card.userObservations,
+                });
+                const userBlock = userDiary ? `${uName}写道：「${userDiary}」` : `${uName}那页是空的`;
                 const charBlock = charTextPart ? `${charName}回道：「${charTextPart}」` : `${charName}那页是空的`;
                 return `[交换日记 ${card.date || ''}] ${uName}和${charName}今天通过【交换日记】交换了一篇日记。${userBlock} ${charBlock}`;
             }
@@ -177,6 +189,46 @@ export function normalizeMessageContent(
                 const descPart = card.description ? `${card.description} ` : '';
                 const letterPart = letter ? ` ${charName}写给${userName}的信原文：${letter}` : '';
                 return `[520 特别活动] ${charName}和${userName}一起度过了"小小的下午"——${charName}"变小了"的版本被${userName}照顾着，最后${charName}对${userName}说了真心话，并写了一封信。${titlePart}${descPart}${letterPart}`;
+            }
+            if (card?.type === 'companion_test_card' || card?.type === 'xiaohongshu_discussion_card') {
+                return '[系统卡片]';
+            }
+            if (card?.type === 'heart_sync_event_card') {
+                return typeof card.contextText === 'string' && card.contextText.trim()
+                    ? card.contextText.trim()
+                    : `[心心相印·${card.mode === 'questionnaire' ? '问卷填写' : '心理测试'}] ${card.title || '已完成'}`;
+            }
+            if (card?.type === 'debate_card') {
+                const winner = card.winner === 'draw' ? '平局' : card.winner === 'pro' ? '正方获胜' : '反方获胜';
+                const role = card.participantSide ? `${charName}担任${card.participantSide === 'pro' ? '正方' : '反方'}${card.participantRole ? `${card.participantRole}辩` : '辩手'}，个人发言累计${card.participantScore ?? 0}分。${card.participantJudgeSummary ? `裁判对其表现的记录：${card.participantJudgeSummary}。` : ''}` : '';
+                if (card.mode === 'team') {
+                    const list = (rows: unknown) => Array.isArray(rows) ? rows.map((row: any, index: number) => `${index + 1}辩${row.name || '已删除角色'}`).join('、') : '名单未记录';
+                    return `[辩论赛·八人正式辩论] 辩题：「${card.topic || '未记录'}」。本场仅有八位指定角色参赛；${userName}是观众和组织者，没有发言，也不属于正方或反方。正方四名：${list(card.proTeam)}；反方四名：${list(card.conTeam)}。${role}结果：${winner}，正方${card.proScore ?? 0}分，反方${card.conScore ?? 0}分。主持人总结：${card.summary || '无'}（这是八位辩手的公开共同经历；不得把用户说成参赛者或获胜辩手，也不得捏造私密赛前想法。）`;
+                }
+                return `[辩论赛·赛后报告] ${charName}和${userName}${card.mode === 'team' ? '参与了一场八人正式辩论' : '完成了一场一对一辩论'}。辩题：「${card.topic || '未记录'}」；正方「${card.proPosition || '未记录'}」${card.proScore ?? 0}分，反方「${card.conPosition || '未记录'}」${card.conScore ?? 0}分，结果：${winner}。${role}主持人总结：${card.summary || '无'}（这是双方公开发言形成的共同经历，可以自然提及；不得捏造未写入的私密赛前想法。）`;
+            }
+            if (card?.type === 'board_game_liars_bar_card') {
+                const stats = card.participantStats || {};
+                return `[桌游·骗子酒馆] ${charName}和${(card.participants || []).filter((name: string) => name !== charName).join('、') || userName}玩过一局骗子酒馆，最终由${card.winnerName || '未知玩家'}获胜。${charName}出牌 ${stats.plays ?? 0} 次、质疑 ${stats.challenges ?? 0} 次（成功 ${stats.successfulChallenges ?? 0} 次）、扣扳机 ${stats.shots ?? 0} 次。角色可记得公开翻牌、公开发言、自己的行动与最终结果；不得声称看见任何未翻开的他人暗牌或真实子弹位置。${card.summary || ''}`;
+            }
+            if (card?.type === 'community_committee_card') {
+                const participants = Array.isArray(card.participantNames) ? card.participantNames.join('、') : charName;
+                return `[居委会·议事总结] ${userName}和${participants || charName}一起梳理了现实困境「${card.topic || '未记录'}」。${userName}理解的一边是：${card.sideA || '未记录'}；另一边是：${card.sideB || '未记录'}。本次确认写回的落点：${card.report || '无'}（这是参与者共同经历的现实讨论，可以在之后自然关心和接着聊；完整逐字倾诉仍只在居委会本机记录中，不得假装看见。）`;
+            }
+            if (card?.type === 'task_workshop_card') {
+                const steps = Array.isArray(card.suggestedSteps) && card.suggestedSteps.length
+                    ? `建议步骤：${card.suggestedSteps.join('；')}。`
+                    : '';
+                const intro = card.origin === 'task'
+                    ? `${userName}主动把任务「${card.title || '未命名任务'}」从任务工坊带给了${charName}`
+                    : `${charName}查看了${userName}的任务「${card.title || '未命名任务'}」，留下建议`;
+                return `[任务工坊·${card.origin === 'task' ? '任务快照' : '来访便签'}] ${intro}：${card.summary || '无'}。${steps}${card.nextAction ? `最小下一步：${card.nextAction}。` : ''}这张卡片可作为后续讨论或工具执行的依据；不得声称尚未实际执行的操作已经完成。`;
+            }
+            if (card?.type === 'my_schedule_card') {
+                const start = new Date(card.startAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+                const end = card.endAt ? new Date(card.endAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }) : '尚未填写结束时间';
+                const tag = ({ study: '学习', entertainment: '娱乐', rest: '休息', sleep: '睡眠' } as Record<string, string>)[card.tag];
+                return `[我的日程] ${userName}把自己的现实日程同步给了${charName}：${start}—${end}${tag ? `【${tag}】` : ''}「${card.title || '未命名事项'}」。${card.note ? `随笔原文：${card.note}` : '没有附加随笔。'}这是用户主动同步的时间线信息，可以在后续聊天中自然关心或提及；不得擅自改写用户随笔，也不得声称已经替用户完成现实事项。`;
             }
             // 其它结算卡类型（songwriting/study/lifesim 日常 等）：如果有 summary/content 字段优先用
             if (typeof card?.summary === 'string' && card.summary.trim()) return `[系统卡片] ${card.summary.trim()}`;
@@ -195,6 +247,7 @@ export function normalizeMessageContent(
     // 避免 270px 的视觉 div 把上下文 token 全占了 + LLM 误把 HTML 当正经分析对象。
     if (type === 'html_card') {
         const meta: any = msg.metadata || {};
+        if (Array.isArray(meta.htmlRepairSegments)) return formatRepairSegments(meta.htmlRepairSegments as HtmlRepairSegment[]);
         const preview = (typeof meta.htmlTextPreview === 'string' && meta.htmlTextPreview)
             ? meta.htmlTextPreview
             : (typeof msg.content === 'string' ? msg.content.replace(/^\[HTML卡片\]\s*/, '') : '');
@@ -383,7 +436,6 @@ export function normalizeMessageContent(
         ].filter(Boolean).join('\n');
     }
 
-    // 默认：text / 未知类型 → 用 content
     return msg.content || '';
 }
 
@@ -393,7 +445,8 @@ export function formatMessageForPrompt(
     charName: string,
     userName: string,
 ): string {
-    const sender = msg.role === 'user' ? userName
+    const sender = isOperatorAuthoredCharacterMessage(msg) ? '系统'
+        : msg.role === 'user' ? userName
         : msg.role === 'system' ? '[系统]'
         : charName;
     return `[${sender}]: ${normalizeMessageContent(msg, charName, userName)}`;
@@ -406,7 +459,8 @@ export function formatMessageWithTime(
     userName: string,
     timeFormatter: (ts: number) => string,
 ): string {
-    const sender = msg.role === 'user' ? userName
+    const sender = isOperatorAuthoredCharacterMessage(msg) ? '系统'
+        : msg.role === 'user' ? userName
         : msg.role === 'system' ? '[系统]'
         : charName;
     const time = msg.timestamp > 0 ? timeFormatter(msg.timestamp) : '';
@@ -422,6 +476,9 @@ export function formatMessageWithTime(
  * voice 只要带转写文字就属于语义上下文，应该与文字和卡片一起参与统计与总结。
  */
 export function isMessageSemanticallyRelevant(msg: Message): boolean {
+    // QQ 自动回复是系统代发；既不证明角色读过用户消息，也不是角色亲口讨论。
+    if (msg.metadata?.lifeAutoReply) return false;
+    if (isWithdrawnMessage(msg)) return true;
     const type = msg.type as string;
     if (type === 'image' || type === 'emoji') return false;
     if (type === 'voice') return !!getVoiceTranscript(msg);
@@ -430,7 +487,6 @@ export function isMessageSemanticallyRelevant(msg: Message): boolean {
     if (type?.endsWith('_card')) {
         return !!normalizeMessageContent(msg, '角色', '用户').trim();
     }
-    // 有内容或有结构化 metadata 才算
     return !!(msg.content?.trim() || msg.metadata?.scoreCard || msg.metadata?.amount || msg.metadata?.song || msg.metadata?.trpg || msg.metadata?.webpage);
 }
 

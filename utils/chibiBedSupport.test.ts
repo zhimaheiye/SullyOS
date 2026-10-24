@@ -3,7 +3,9 @@ import * as T from 'three';
 import {readFileSync} from 'node:fs';
 import {GLTFLoader} from 'three/examples/jsm/loaders/GLTFLoader.js';
 import catalog from '../public/room3d/catalog.json';
+// @ts-expect-error Room helper is a JavaScript module without TypeScript declarations.
 import {seatTransform} from '../apps/room3d/seating.js';
+// @ts-expect-error Room helper is a JavaScript module without TypeScript declarations.
 import {body2BedTransform,bedFootSurface} from '../apps/room3d/bedMotion.js';
 import {createBlankBody,BLANK_SCALE} from '../apps/room3d/chibi/blankBody';
 import {bindBlankBody} from '../apps/room3d/chibi/blankRig';

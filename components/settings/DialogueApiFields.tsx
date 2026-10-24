@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import type { DialogueApiConfig } from '../../types';
 
-export default function DialogueApiFields({ value, onChange, fetchModels, isLoadingModels, openModelPicker }: {
+export default function DialogueApiFields({ value, onChange, fetchModels, isLoadingModels, openModelPicker, showAdvancedOptions = true }: {
  value: DialogueApiConfig; onChange: (patch: Partial<DialogueApiConfig>) => void;
  fetchModels: () => void; isLoadingModels: boolean; openModelPicker: () => void;
+ showAdvancedOptions?: boolean;
 }) {
  const { baseUrl: localUrl, apiKey: localKey, model: localModel, stream: localStream = false, temperature: localTemperature = 0.85 } = value;
  const [showApiAdvanced, setShowApiAdvanced] = useState(false);
@@ -22,7 +23,7 @@ export default function DialogueApiFields({ value, onChange, fetchModels, isLoad
                 </div>
 
                 {/* 高级（流式 / 温度）— 默认折叠，灰色低调，明确写"不建议修改" */}
-                <div className="pt-1">
+                {showAdvancedOptions && <div className="pt-1">
                     <button
                         type="button"
                         onClick={() => setShowApiAdvanced(v => !v)}
@@ -69,7 +70,7 @@ export default function DialogueApiFields({ value, onChange, fetchModels, isLoad
                             </div>
                         </div>
                     )}
-                </div>
+                </div>}
 
                 <div className="pt-2">
                      <div className="flex justify-between items-center mb-1.5 pl-1">

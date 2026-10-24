@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
     CaretDown,
     CheckCircle,
@@ -18,6 +18,7 @@ import {
     resetMcpSession,
     saveMcpServers,
     setMcpUseNativeTools,
+    stopLocalStdioMcpServer,
     testMcpConnection,
     type McpConnectionStage,
     type McpServerConfig,
@@ -57,7 +58,7 @@ const stageCopy = (stage: McpConnectionStage): string => (
 );
 
 const endpointChanged = (patch: Partial<McpServerConfig>): boolean => (
-    ['url', 'token', 'customHeaders', 'proxyUrl', 'proxyKey'] as const
+    ['transport', 'url', 'token', 'customHeaders', 'proxyUrl', 'proxyKey', 'command', 'args', 'env'] as const
 ).some(key => Object.prototype.hasOwnProperty.call(patch, key));
 
 const formatTestTime = (timestamp?: number): string => {
@@ -72,8 +73,8 @@ const formatTestTime = (timestamp?: number): string => {
 /**
  * SullyOS 的通用 MCP 入口。
  *
- * 不做服务商模板或关系预设；配置顺序固定为
- * 端点 → 凭据 → 代理 → 适用聊天 → 实际连接测试。
+ * 不做服务商模板或关系预设；先选择 HTTP / stdio，
+ * 再填写对应连接参数、适用聊天并执行实际连接测试。
  */
 const McpConnectionConsole: React.FC<{
     addToast: (message: string, type?: any) => void;
@@ -81,16 +82,7 @@ const McpConnectionConsole: React.FC<{
 }> = ({ addToast, onMcpConfigChanged }) => {
     const { characters, groups } = useOS();
     const [servers, setServers] = useState<McpServerConfig[]>(() => loadMcpServers());
-    const [expandedId, setExpandedId] = useState<string | null>(() => {
-        try {
-            const saved = localStorage.getItem('sully-mcp-expanded-server');
-            if (saved !== null) return servers.some(server => server.id === saved) ? saved : null;
-        } catch { /* Keep the current session usable when storage is unavailable. */ }
-        return servers[0]?.id || null;
-    });
-    useEffect(() => {
-        try { localStorage.setItem('sully-mcp-expanded-server', expandedId || ''); } catch {}
-    }, [expandedId]);
+    const [expandedId, setExpandedId] = useState<string | null>(() => loadMcpServers()[0]?.id || null);
     const [testingId, setTestingId] = useState<string | null>(null);
     const [testStates, setTestStates] = useState<Record<string, TestState>>({});
     const [useNativeTools, setUseNativeToolsState] = useState(() => getMcpUseNativeTools());
@@ -111,6 +103,7 @@ const McpConnectionConsole: React.FC<{
 
     const update = (id: string, patch: Partial<McpServerConfig>) => {
         const mustRetest = endpointChanged(patch);
+        const currentServer = servers.find(server => server.id === id);
         const safePatch: Partial<McpServerConfig> = mustRetest
             ? { ...patch, enabled: false, tools: undefined, lastConnection: undefined }
             : patch;
@@ -118,6 +111,11 @@ const McpConnectionConsole: React.FC<{
             ? { ...server, ...safePatch, updatedAt: Date.now() }
             : server));
         if (mustRetest) {
+            // command/args/env 编辑时不逐键发送 DELETE，避免与紧接着的“测试连接”竞态。
+            // 新配置提交时 bridge 会自行替换旧进程；只有切回 HTTP 才立即关闭 stdio。
+            if (currentServer?.transport === 'stdio' && patch.transport === 'http') {
+                void stopLocalStdioMcpServer(currentServer);
+            }
             resetMcpSession(id);
             setTestStates(current => ({
                 ...current,
@@ -134,16 +132,18 @@ const McpConnectionConsole: React.FC<{
     };
 
     const removeServer = (server: McpServerConfig) => {
-        if (!window.confirm(`删除「${server.name || '未命名服务器'}」？\n\n本机保存的 URL、凭据和工具清单会一并删除。`)) return;
+        if (!window.confirm(`删除「${server.name || '未命名服务器'}」？\n\n本机保存的连接配置、凭据和工具清单会一并删除。`)) return;
         resetMcpSession(server.id);
+        void stopLocalStdioMcpServer(server);
         persist(servers.filter(item => item.id !== server.id));
         setExpandedId(current => current === server.id ? null : current);
         trackEvent('删除 MCP 服务器');
     };
 
     const discover = async (server: McpServerConfig) => {
-        if (!server.url.trim()) {
-            addToast('先填写 MCP 端点 URL', 'error');
+        const stdio = server.transport === 'stdio';
+        if (stdio ? !server.command?.trim() : !server.url.trim()) {
+            addToast(stdio ? '先填写 stdio 启动命令' : '先填写 MCP 端点 URL', 'error');
             return;
         }
         setTestingId(server.id);
@@ -198,7 +198,7 @@ const McpConnectionConsole: React.FC<{
                         <h3 className="text-sm font-bold text-slate-800">MCP 工具服务器</h3>
                         <p className="mt-1 max-w-[250px] text-[10px] leading-relaxed text-slate-500">
                             连接 MCP，让角色在聊天时使用你接入的工具。
-                            <span className="mt-1 block text-slate-400">支持 Streamable HTTP</span>
+                            <span className="mt-1 block text-slate-400">支持 Streamable HTTP 与本机 stdio</span>
                         </p>
                     </div>
                     <button
@@ -245,12 +245,13 @@ const McpConnectionConsole: React.FC<{
                             <Plus size={20} />
                         </div>
                         <p className="text-xs font-bold text-slate-700">还没有 MCP 服务器</p>
-                        <p className="mt-1 text-[10px] leading-relaxed text-slate-400">添加一个 Streamable HTTP 地址即可开始配置。</p>
+                        <p className="mt-1 text-[10px] leading-relaxed text-slate-400">添加 Streamable HTTP 地址或本机 stdio 命令即可开始配置。</p>
                     </div>
                 )}
 
                 {servers.map(server => {
                     const expanded = expandedId === server.id;
+                    const stdio = server.transport === 'stdio';
                     const ready = (server.tools?.length || 0) > 0;
                     const live = server.enabled && ready;
                     const state = testStates[server.id];
@@ -260,7 +261,6 @@ const McpConnectionConsole: React.FC<{
                                 <button
                                     type="button"
                                     onClick={() => setExpandedId(expanded ? null : server.id)}
-                                    aria-expanded={expanded}
                                     className="flex min-w-0 flex-1 items-center gap-3 text-left"
                                 >
                                     <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${live ? 'bg-emerald-500' : ready ? 'bg-slate-300' : 'border border-slate-300'}`}>
@@ -269,6 +269,7 @@ const McpConnectionConsole: React.FC<{
                                         <span className="block truncate text-xs font-bold text-slate-700">{server.name || '未命名服务器'}</span>
                                         <span className="mt-0.5 block truncate text-[9px] text-slate-400">
                                             {live ? '已启用' : ready ? '已连接，未启用' : '尚未测试'}
+                                            {` · ${stdio ? 'stdio' : 'HTTP'}`}
                                             {ready ? ` · ${server.tools?.length} 个工具` : ''}
                                             {server.lastConnection?.protocolVersion ? ` · ${server.lastConnection.protocolVersion}` : ''}
                                         </span>
@@ -298,19 +299,47 @@ const McpConnectionConsole: React.FC<{
                                                 <input className={inputClass} value={server.name} onChange={event => update(server.id, { name: event.target.value })} placeholder="例如：我的资料库" />
                                             </div>
                                             <div>
-                                                <FieldLabel>Streamable HTTP 端点</FieldLabel>
-                                                <input className={`${inputClass} font-mono`} value={server.url} onChange={event => update(server.id, { url: event.target.value.trim() })} placeholder="https://example.com/mcp" />
+                                                <FieldLabel>传输方式</FieldLabel>
+                                                <div className="grid grid-cols-2 gap-2">
+                                                    <button type="button" onClick={() => update(server.id, { transport: 'http' })} className={`rounded-xl border px-3 py-2 text-[10px] font-bold ${!stdio ? 'border-violet-500 bg-violet-500 text-white' : 'border-slate-200 bg-white text-slate-500'}`}>Streamable HTTP</button>
+                                                    <button type="button" onClick={() => update(server.id, { transport: 'stdio' })} className={`rounded-xl border px-3 py-2 text-[10px] font-bold ${stdio ? 'border-violet-500 bg-violet-500 text-white' : 'border-slate-200 bg-white text-slate-500'}`}>本机 stdio</button>
+                                                </div>
                                             </div>
+                                            {stdio ? (
+                                                <>
+                                                    <div>
+                                                        <FieldLabel>启动命令</FieldLabel>
+                                                        <input className={`${inputClass} font-mono`} value={server.command || ''} onChange={event => update(server.id, { command: event.target.value })} placeholder="例如：npx 或 uvx" />
+                                                    </div>
+                                                    <div>
+                                                        <FieldLabel>参数 · 每行一个</FieldLabel>
+                                                        <textarea className={`${inputClass} min-h-24 resize-y font-mono`} value={(server.args || []).join('\n')} onChange={event => update(server.id, { args: event.target.value.split(/\r?\n/) })} placeholder={'-y\n@modelcontextprotocol/server-filesystem\nD:/workspace'} />
+                                                    </div>
+                                                    <p className="rounded-lg bg-amber-50 px-3 py-2 text-[9px] leading-relaxed text-amber-700">只在当前电脑通过 run.bat / pnpm dev 打开的页面可用；手机和静态部署不能启动本机进程。</p>
+                                                </>
+                                            ) : (
+                                                <div>
+                                                    <FieldLabel>Streamable HTTP 端点</FieldLabel>
+                                                    <input className={`${inputClass} font-mono`} value={server.url} onChange={event => update(server.id, { url: event.target.value.trim() })} placeholder="https://example.com/mcp" />
+                                                </div>
+                                            )}
                                         </div>
 
                                         <span className="pt-6 text-[9px] font-bold text-violet-400">02</span>
                                         <div className="space-y-3 border-t border-slate-200 pt-4">
-                                            <div className="flex items-center gap-2 text-[11px] font-bold"><LockKey size={14} /> 鉴权</div>
-                                            <div>
-                                                <FieldLabel>Bearer Token · 可选</FieldLabel>
-                                                <input type="password" className={`${inputClass} font-mono`} value={server.token || ''} onChange={event => update(server.id, { token: event.target.value.trim() })} placeholder="只保存在本机" />
-                                            </div>
-                                            {(server.customHeaders || []).map((header, index) => (
+                                            <div className="flex items-center gap-2 text-[11px] font-bold"><LockKey size={14} /> {stdio ? '环境变量' : '鉴权'}</div>
+                                            {stdio ? (server.env || []).map((item, index) => (
+                                                <div key={index} className="grid grid-cols-[0.8fr_1fr_34px] gap-1.5">
+                                                    <input className={`${inputClass} min-w-0 px-2 font-mono text-[10px]`} value={item.name} onChange={event => update(server.id, { env: (server.env || []).map((value, itemIndex) => itemIndex === index ? { ...value, name: event.target.value } : value) })} placeholder="API_KEY" aria-label={`环境变量 ${index + 1} 名称`} />
+                                                    <input type="password" className={`${inputClass} min-w-0 px-2 font-mono text-[10px]`} value={item.value} onChange={event => update(server.id, { env: (server.env || []).map((value, itemIndex) => itemIndex === index ? { ...value, value: event.target.value } : value) })} placeholder="只保存在本机" aria-label={`环境变量 ${index + 1} 值`} />
+                                                    <button type="button" onClick={() => update(server.id, { env: (server.env || []).filter((_, itemIndex) => itemIndex !== index) })} className="rounded-xl border border-slate-200 text-slate-400" aria-label={`删除环境变量 ${index + 1}`}>×</button>
+                                                </div>
+                                            )) : <>
+                                                <div>
+                                                    <FieldLabel>Bearer Token · 可选</FieldLabel>
+                                                    <input type="password" className={`${inputClass} font-mono`} value={server.token || ''} onChange={event => update(server.id, { token: event.target.value.trim() })} placeholder="只保存在本机" />
+                                                </div>
+                                                {(server.customHeaders || []).map((header, index) => (
                                                 <div key={index} className="grid grid-cols-[0.8fr_1fr_34px] gap-1.5">
                                                     <input
                                                         className={`${inputClass} min-w-0 px-2 font-mono text-[10px]`}
@@ -329,9 +358,13 @@ const McpConnectionConsole: React.FC<{
                                                     />
                                                     <button type="button" onClick={() => update(server.id, { customHeaders: (server.customHeaders || []).filter((_, itemIndex) => itemIndex !== index) })} className="rounded-xl border border-slate-200 text-slate-400" aria-label={`删除请求头 ${index + 1}`}>×</button>
                                                 </div>
-                                            ))}
-                                            <button type="button" onClick={() => update(server.id, { customHeaders: [...(server.customHeaders || []), { name: '', value: '' }] })} className="text-[10px] font-bold text-violet-600">+ 添加自定义请求头</button>
-                                            <details className="group border-t border-dashed border-slate-200 pt-3">
+                                                ))}
+                                            </>}
+                                            <button type="button" onClick={() => stdio
+                                                ? update(server.id, { env: [...(server.env || []), { name: '', value: '' }] })
+                                                : update(server.id, { customHeaders: [...(server.customHeaders || []), { name: '', value: '' }] })
+                                            } className="text-[10px] font-bold text-violet-600">+ 添加{stdio ? '环境变量' : '自定义请求头'}</button>
+                                            {!stdio && <details className="group border-t border-dashed border-slate-200 pt-3">
                                                 <summary className="flex cursor-pointer list-none items-center gap-2 text-[10px] font-bold text-slate-500">
                                                     <GlobeHemisphereWest size={14} /> 跨域代理（可选）
                                                     <CaretDown size={12} className="ml-auto transition-transform group-open:rotate-180" />
@@ -349,7 +382,7 @@ const McpConnectionConsole: React.FC<{
                                                     )}
                                                     <p className="text-[9px] leading-relaxed text-slate-400">用于解决浏览器 CORS 限制。代理由你自行部署，SullyOS·糯米机 不强制经过中央服务器。</p>
                                                 </div>
-                                            </details>
+                                            </details>}
                                         </div>
 
                                         <span className="pt-6 text-[9px] font-bold text-violet-400">03</span>
@@ -421,7 +454,7 @@ const McpConnectionConsole: React.FC<{
             </div>
 
             <footer className="border-t border-slate-100 bg-slate-50/60 px-4 py-3 text-[9px] leading-relaxed text-slate-400">
-                URL、Token 与自定义请求头保存在本机。使用自己的代理时，请求只经过你指定的转接点。
+                HTTP 凭据与 stdio 命令、参数、环境变量都保存在本机；本机进程只允许当前电脑访问。
             </footer>
         </div>
     );

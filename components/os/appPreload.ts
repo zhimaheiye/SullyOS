@@ -27,6 +27,7 @@ export const shouldUseIdleAppPreload = (
 // 与 PhoneShell 的 lazy 定义指向同一批模块；Vite 按模块 URL 去重，
 // 「按下即预取」与「空闲预取/懒加载」共用同一份 chunk，绝不重复下载。
 // 新增 App 时若忘记在此登记，仅会少一次按下预取优化，不影响功能（打开时照常懒加载）。
+// 桌面入口被注释隐藏的 App（浏览器、手账、QQ 桥、居委会）不登记，避免预取用户打不开的代码。
 const importers: Partial<Record<AppID, () => Promise<unknown>>> = {
   [AppID.Settings]: () => import('../../apps/Settings'),
   [AppID.Character]: () => import('../../apps/Character'),
@@ -50,7 +51,6 @@ const importers: Partial<Record<AppID, () => Promise<unknown>>> = {
   [AppID.Bank]: () => import('../../apps/BankApp'),
   [AppID.XhsStock]: () => import('../../apps/XhsStockApp'),
   [AppID.XhsFreeRoam]: () => import('../../apps/XhsFreeRoamApp'),
-  [AppID.Browser]: () => import('../../apps/BrowserApp'),
   [AppID.Songwriting]: () => import('../../apps/SongwritingApp'),
   [AppID.Music]: () => import('../../apps/MusicApp'),
   [AppID.Call]: () => import('../../apps/CallApp'),
@@ -58,12 +58,16 @@ const importers: Partial<Record<AppID, () => Promise<unknown>>> = {
   [AppID.Guidebook]: () => import('../../apps/GuidebookApp'),
   [AppID.LifeSim]: () => import('../../apps/LifeSimApp'),
   [AppID.MemoryPalace]: () => import('../../apps/MemoryPalaceApp'),
-  [AppID.Handbook]: () => import('../../apps/HandbookApp'),
-  [AppID.QQBridge]: () => import('../../apps/QQBridge'),
   [AppID.HotNews]: () => import('../../apps/HotNewsApp'),
   [AppID.SpecialMoments]: () => import('../ValentineEvent'),
   [AppID.VRWorld]: () => import('../../apps/VRWorldApp'),
   [AppID.CharCreatorDev]: () => import('../../apps/CharCreatorDevApp'),
+  [AppID.HeartSync]: () => import('../../apps/HeartSyncApp'),
+  [AppID.Debate]: () => import('../../apps/DebateApp'),
+  [AppID.LifeReplay]: () => import('../../apps/LifeReplayApp'),
+  [AppID.TaskWorkshop]: () => import('../../apps/TaskWorkshopApp'),
+  [AppID.TimeCapsule]: () => import('../../apps/TimeCapsuleApp'),
+  [AppID.MySchedule]: () => import('../../apps/MyScheduleApp'),
 };
 
 // 已发起预取的 App（去重，避免同一图标多次 pointerdown 重复触发）。

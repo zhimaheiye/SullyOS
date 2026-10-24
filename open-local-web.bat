@@ -2,19 +2,36 @@
 setlocal
 cd /d "%~dp0"
 
-set "NODE_EXE=C:\Program Files\nodejs\node.exe"
-if not exist "%NODE_EXE%" (
-  echo Node.js not found: %NODE_EXE%
+where node >nul 2>nul
+if errorlevel 1 (
+  echo Node.js is required to start this workspace.
   pause
   exit /b 1
 )
 
-set "APP_URL=http://127.0.0.1:4173"
-
-powershell -NoProfile -Command "try { Invoke-WebRequest -Uri '%APP_URL%' -UseBasicParsing -TimeoutSec 2 ^| Out-Null; exit 0 } catch { exit 1 }"
-if errorlevel 1 (
-  start "" "%NODE_EXE%" "scripts\local-static-server.cjs" "dist"
-  timeout /t 2 /nobreak >nul
+if not exist "node_modules\.bin\vite.cmd" (
+  echo Installing dependencies in %CD% ...
+  call pnpm install --frozen-lockfile --ignore-scripts
+  if errorlevel 1 (
+    echo Dependency installation failed.
+    pause
+    exit /b 1
+  )
 )
 
-start "" "%APP_URL%"
+node scripts\build-chat-preview-css.mjs
+if errorlevel 1 (
+  echo Chat styles could not be prepared.
+  pause
+  exit /b 1
+)
+
+echo Starting this workspace from %CD%
+echo Address: http://127.0.0.1:5183/
+echo This address has its own browser data, separate from ports 5173 and 4173.
+call "node_modules\.bin\vite.cmd" --host 127.0.0.1 --port 5183 --strictPort --open
+if errorlevel 1 (
+  echo Startup failed. If port 5183 is occupied, close its window and try again.
+  pause
+  exit /b 1
+)

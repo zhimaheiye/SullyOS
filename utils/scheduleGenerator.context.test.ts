@@ -39,6 +39,10 @@ describe('日程历史与私聊消息格式对齐', () => {
             date: '2026-07-30',
             userName: user.name,
             userText: '今天路过旧书店，买到了找很久的画册。',
+            userObservations: {
+                physical: { sleep: '睡得安稳' },
+                events: [{ id: 'event-1', title: '旧书店', body: '在角落找到了那本画册' }],
+            },
             charText: '下次记得把那本画册拍给我看，我想看看封面。',
         };
         const block = formatChatHistoryForSchedule([
@@ -53,8 +57,11 @@ describe('日程历史与私聊消息格式对齐', () => {
 
         expect(block).toContain('交换日记');
         expect(block).toContain(card.userText);
+        expect(block).toContain('睡眠：睡得安稳');
+        expect(block).toContain('记录一件事情 · 旧书店');
         expect(block).toContain(card.charText);
         expect(block).not.toContain('"userText"');
+        expect(block).not.toContain('"userObservations"');
         expect(block).not.toContain('"charText"');
     });
 

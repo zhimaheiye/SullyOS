@@ -30,7 +30,7 @@ et jamais chargés par l'application : ils viennent eux aussi d'Overte, sous la 
 licence, et sont détaillés en fin de section. Overte fournit donc **126 des 166**
 fichiers `.vrma` redistribués.
 
-Le fichier [`transitions.json`](transitions.json) livré à côté des clips dérive de
+Le fichier `transitions.json` de cette passe dérive de
 la **même source** sous la **même licence** : c'est la lecture exploitable de
 `interface/resources/avatar/avatar-animation.json` — 34 machines à états, 165
 états, 392 transitions, 116 variables. Il n'y a pas de restriction supplémentaire :
@@ -547,13 +547,13 @@ every case, so no seam to the idle moved.*
 
 ### Sous-dossier `extra/` — quinze clips convertis, non retenus
 
-Le sous-dossier [`extra/`](extra) porte **15 clips** (3,92 Mo) issus de la même
+Le sous-dossier `extra/` porte **15 clips** (3,92 Mo) issus de la même
 passe et de la **même source** : tous dérivent d'Overte, sous la même licence
 Apache-2.0, avec les mêmes modifications que celles décrites ci-dessus. Ils ne sont
 jamais chargés par l'application — `/api/vrm-animations` ne liste que la racine de
 `vrma/` — mais ils sont **redistribués avec elle**, et la mention Apache-2.0 de ce
 paragraphe les couvre exactement comme les autres. Le pourquoi de leur mise à
-l'écart, clip par clip, est dans [`README.md`](README.md#extra--les-clips-convertis-et-non-retenus).
+l'écart, clip par clip, est dans `README.md` (document d'origine, non redistribué).
 
 *The `extra/` subfolder holds 15 clips (3.92 MB) from the same pass and the **same
 source**: all derive from Overte under the same Apache-2.0 licence, with the same
@@ -766,7 +766,7 @@ propres gestes — et un rôle qu'Overte n'a pas du tout, le socle d'**écoute**
 Elle ne remplace rien : les deux familles cohabitent dans le dossier, et chaque
 personnage choisit la sienne (réglage `animations` de son `character.json`).
 **Elles ne se mélangent jamais** — voir la règle des familles dans
-[`README.md`](README.md#deux-familles-de-face-à-face).
+`README.md` (document d'origine, non redistribué).
 
 *Thirty-eight files — all prefixed `rb-` — derive from the **Microsoft
 Rocketbox** avatar animations, released under the **MIT License** in 2020. They
@@ -818,8 +818,8 @@ copyright notice and permission text reproduced above.*
 
 ### Comment ils ont été produits / how they were made
 
-Le convertisseur est livré : [`scripts/convert-rocketbox.mjs`](../scripts/convert-rocketbox.mjs),
-et le plan qui le pilote [`scripts/rocketbox-plan.json`](../scripts/rocketbox-plan.json)
+Le convertisseur utilisé pour cette passe : `scripts/convert-rocketbox.mjs`,
+et le plan qui le pilote `scripts/rocketbox-plan.json`
 — source, famille, fenêtre, boucle, rôle et mesures de chacun des 38 clips. Les
 FBX d'origine (243 Mo, 77 fichiers) ne sont pas versionnés ; script + plan les
 refabriquent à l'octet près depuis le commit épinglé. Les deux fichiers portent
@@ -853,7 +853,7 @@ seams fall into place on their own. Only the window was chosen, clip by clip.*
 ### Les mesures qui ont décidé / the measurements that decided
 
 Mêmes critères que la règle d'acceptation du face à face (voir
-[`README.md`](README.md#la-règle-dacceptation-chiffrée)), appliqués **contre le
+`README.md`, document d'origine non redistribué), appliqués **contre le
 socle de la famille Rocketbox** :
 
 - raccord au socle `rb-idle` : **0,2 à 5,7 cm**, médiane **0,4** (seuil 10) ;

@@ -1,6 +1,7 @@
 import { APIConfig, CharacterProfile, UserProfile } from '../types';
 import { ContextBuilder } from './context';
 import { QixiMemoryBundle, QixiSceneId } from './qixiMemoryBundle';
+import { inspectQixiResponse, warnQixiResponseRejected } from './qixiResponse';
 import { safeFetchJson } from './safeApi';
 import { parseQixiJsonObject } from './qixiJson';
 
@@ -622,8 +623,8 @@ export async function prepareQixiReunion(
                     ])),
                     temperature: 0.72,
                     max_tokens: 24000,
-                    // 最终见面与约定一次生成，必须尽早收到流式数据以绕开代理 524 超时。
-                    stream: true,
+                    // 与主聊天及 Part 1 一致，兼容非流式正常但 SSE 形状不完整的中转。
+                    stream: !!apiConfig.stream,
                 }),
             },
             0,
@@ -631,15 +632,17 @@ export async function prepareQixiReunion(
             { appId: 'special-moments', charId: char.id, purpose: 'qixi-reunion-and-promise-v5' },
             {}, // Do not wait for a Claude proxy to close the socket after [DONE].
         );
-        const content = data?.choices?.[0]?.message?.content;
-        const parsedReunion = typeof content === 'string'
-            ? parseQixiReunion(content, fallback, portraitPlan, knowsTechnicalIdentity)
-            : null;
-        const parsed = parsedReunion && typeof content === 'string'
-            ? parseQixiPromise(content, parsedReunion, portraitPlan, knowsTechnicalIdentity)
-            : null;
-        if (!parsed) throw new Error('最终见面与约定内容格式无效。');
-        return parsed;
+        const inspection = inspectQixiResponse(data);
+        for (const candidate of inspection.candidates) {
+            const parsedReunion = parseQixiReunion(candidate.text, fallback, portraitPlan, knowsTechnicalIdentity);
+            const parsed = parsedReunion
+                ? parseQixiPromise(candidate.text, parsedReunion, portraitPlan, knowsTechnicalIdentity)
+                : null;
+            if (parsed) return parsed;
+        }
+        warnQixiResponseRejected('finale', data, inspection);
+        const outputChars = inspection.candidates.map(candidate => candidate.text.length).join('+') || '0';
+        throw new Error(`最终见面与约定内容格式无效（finish_reason=${inspection.finishReason}, output_chars=${outputChars}）。`);
     } catch (error: any) {
         console.warn('[Qixi] finale generation failed:', error?.message || error);
         throw new Error(error?.message || 'Part 3 最终见面与约定生成失败，请手动重新生成。');

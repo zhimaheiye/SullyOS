@@ -137,13 +137,75 @@ try {
     await open(); const original = await download('导出原格式', `${out}/original.json`);
     assert.equal(original.suggestedFilename(), '月光.json');
     assert.equal(JSON.parse(readFileSync(`${out}/original.json`, 'utf8')).type, 'sully_character_card');
-    // Native/Web Share cancellation leaves the editor ready for retry; no fallback download.
-    await page.evaluate(() => { navigator.canShare = () => true; navigator.share = async () => { throw new DOMException('cancel', 'AbortError'); }; });
-    await open(); const before = downloads; await page.getByRole('button', { name: '导出 PNG 分享图' }).click();
-    await page.waitForFunction(() => document.querySelector('.sully-share-primary')?.textContent === '导出 PNG 分享图');
-    assert.equal(downloads, before); assert.equal(await page.getByRole('dialog').count(), 1);
-    await page.getByRole('button', { name: '关闭分享编辑器' }).click();
+    // Desktop web must download directly even with Web Share available: on Windows the
+    // navigator.share promise resolves the moment the panel opens, so a failed OS share
+    // pane ("无法显示所有共享方法") looks like success. Desktop callers skip Web Share.
+    await page.evaluate(() => {
+        window.__shareCalls = [];
+        navigator.canShare = () => true;
+        navigator.share = async data => { window.__shareCalls.push(data); };
+    });
+    await open(); const direct = await download('导出 PNG 分享图', `${out}/desktop-direct.png`);
+    assert.equal(await page.evaluate(() => window.__shareCalls.length), 0);
+    assert.equal(direct.suggestedFilename(), '月光来信.sully.png');
+    assert.equal(await getOutput(), 'downloaded');
     await page.evaluate(() => { navigator.share = undefined; navigator.canShare = undefined; });
+
+    // Mobile browsers keep the system share sheet: cancel/failure there is honest
+    // (rejects instead of resolving), so Web Share stays the default on touch devices.
+    const mobile = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true,
+        userAgent: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36', acceptDownloads: true });
+    mobile.setDefaultTimeout(15000);
+    const mobileErrors = [];
+    mobile.on('pageerror', error => mobileErrors.push(error.message));
+    await mobile.addInitScript(() => {
+        Object.defineProperty(navigator, 'share', { configurable: true, writable: true, value: undefined });
+        Object.defineProperty(navigator, 'canShare', { configurable: true, writable: true, value: undefined });
+    });
+    await mobile.route('**/*', route => {
+        const url = new URL(route.request().url());
+        return ['127.0.0.1', 'localhost'].includes(url.hostname) ? route.continue() : route.fulfill({ status: 200, body: '', headers: { 'access-control-allow-origin': '*' } });
+    });
+    let mobileDownloads = 0;
+    mobile.on('download', () => mobileDownloads++);
+    const getMobileOutput = () => mobile.getByLabel('导出结果').textContent();
+    const openMobile = async () => { await mobile.getByRole('button', { name: '制作分享卡', exact: true }).click(); await mobile.getByRole('dialog', { name: '制作分享图片' }).waitFor(); };
+    const clickAndWaitDownload = async name => { const promise = mobile.waitForEvent('download'); await mobile.getByRole('button', { name, exact: true }).click(); return promise; };
+    await mobile.goto(`${base}/test/fixtures/png-share.html`);
+
+    await mobile.evaluate(() => { window.__shareCalls = []; navigator.canShare = () => true; navigator.share = async data => { window.__shareCalls.push(data); }; });
+    await openMobile();
+    await mobile.getByRole('button', { name: '导出 PNG 分享图', exact: true }).click();
+    await mobile.waitForFunction(() => document.querySelector('output[aria-label="导出结果"]')?.textContent === 'shared');
+    await mobile.getByRole('dialog').waitFor({ state: 'hidden' });
+    assert.equal(await mobile.evaluate(() => window.__shareCalls.length), 1);
+    assert.equal(mobileDownloads, 0);
+
+    // Native/Web Share cancellation leaves the editor ready for retry; no fallback download.
+    await mobile.evaluate(() => { navigator.share = async () => { throw new DOMException('share canceled', 'AbortError'); }; });
+    await openMobile();
+    await mobile.getByRole('button', { name: '导出 PNG 分享图', exact: true }).click();
+    await mobile.waitForFunction(() => document.querySelector('.sully-share-primary')?.textContent === '导出 PNG 分享图');
+    assert.equal(mobileDownloads, 0);
+    assert.equal(await mobile.getByRole('dialog').count(), 1);
+    await mobile.getByRole('button', { name: '关闭分享编辑器' }).click();
+    await mobile.getByRole('dialog').waitFor({ state: 'hidden' });
+
+    // A genuine share failure still delivers the file through the browser download fallback.
+    await mobile.evaluate(() => { navigator.share = async () => { throw new Error('share target crashed'); }; });
+    await openMobile(); const failed = await clickAndWaitDownload('导出 PNG 分享图');
+    await failed.saveAs(`${out}/mobile-failure.png`);
+    await mobile.waitForFunction(() => document.querySelector('output[aria-label="导出结果"]')?.textContent === 'downloaded');
+
+    // A final blob over the 50 MiB Chromium share limit skips the doomed sheet and downloads directly.
+    await mobile.getByRole('button', { name: '分享大文件', exact: true }).click();
+    await mobile.getByRole('dialog', { name: '制作分享图片' }).waitFor();
+    const oversize = await clickAndWaitDownload('导出原格式');
+    await oversize.saveAs(`${out}/mobile-oversize.zip`);
+    await mobile.waitForFunction(() => document.querySelector('output[aria-label="导出结果"]')?.textContent === 'downloaded');
+    assert.equal(await mobile.evaluate(() => window.__shareCalls.length), 1);
+    assert.deepEqual(mobileErrors, []);
+    await mobile.close();
     // Real CSS editor export/import, including a wrong-kind rejection before onChange.
     const cssSection = page.getByRole('region', { name: '真实白框编辑器' });
     await cssSection.getByRole('button', { name: '导出分享', exact: true }).click();
@@ -163,7 +225,7 @@ try {
         const chars = await DB.getAllCharacters(); return chars.some(c => c.name === '月光来信' && c.systemPrompt === '你是月光来信。中文 🌙');
     });
     assert.deepEqual(errors, []);
-    writeFileSync(`${out}/result.json`, JSON.stringify({ passed: true, errors, checks: ['three layouts', 'image upload', 'pixel decoding', 'metadata and payload', '320px and 390px simultaneous preview/settings', 'independent settings scroll', 'visual viewport keyboard', 'collapse/expand preserves edits', 'Escape collapses settings first', 'long text', 'cancel and retry', 'original JSON', 'CSS round-trip and wrong kind', 'real character import'] }, null, 2));
+    writeFileSync(`${out}/result.json`, JSON.stringify({ passed: true, errors, checks: ['three layouts', 'image upload', 'pixel decoding', 'metadata and payload', '320px and 390px simultaneous preview/settings', 'independent settings scroll', 'visual viewport keyboard', 'collapse/expand preserves edits', 'Escape collapses settings first', 'long text', 'cancel and retry', 'original JSON', 'desktop downloads directly with share available', 'mobile share success', 'mobile share cancel keeps editor', 'mobile share failure downloads', 'oversized blob downloads directly', 'CSS round-trip and wrong kind', 'real character import'] }, null, 2));
     console.log('PNG sharing UI: all checks passed.');
 } catch (error) {
     await page.screenshot({ animations: 'disabled', path: `${out}/failure.png` });

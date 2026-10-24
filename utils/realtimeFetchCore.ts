@@ -11,7 +11,7 @@
  * 构建期直接暴露。
  */
 
-import { getProxyWorkerUrl } from './proxyWorker';
+import { requireProxyWorkerUrl } from './proxyWorker';
 
 export interface SearchResult {
     title: string;
@@ -47,21 +47,20 @@ export interface FeishuDiaryPreview {
  */
 export const performSearch = async (query: string, apiKey: string, signal?: AbortSignal): Promise<{ success: boolean; results: SearchResult[]; message: string; reached: boolean }> => {
     signal?.throwIfAborted();
-    if (!query || !apiKey) {
-        return { success: false, results: [], message: '缺少搜索关键词或API Key', reached: false };
+    if (!query) {
+        return { success: false, results: [], message: '缺少搜索关键词', reached: false };
     }
 
     try {
-        // 使用自建的 Cloudflare Worker 代理
-        const workerUrl = `${getProxyWorkerUrl()}/search?q=${encodeURIComponent(query)}&count=5`;
+        // 没带个人 Key 时不传这个头，公共代理才会用发行方放在服务器上的共享额度。
+        const headers: Record<string, string> = { 'Accept': 'application/json' };
+        if (apiKey) headers['X-Brave-API-Key'] = apiKey;
+        const workerUrl = `${requireProxyWorkerUrl()}/search?q=${encodeURIComponent(query)}&count=5`;
 
         const response = await fetch(workerUrl, {
             signal,
             method: 'GET',
-            headers: {
-                'Accept': 'application/json',
-                'X-Brave-API-Key': apiKey
-            }
+            headers,
         });
 
         // 先读取 text，避免非 JSON 响应直接 crash
@@ -127,7 +126,7 @@ export const notionGetDiaryByDate = async (
 ): Promise<{ success: boolean; entries: DiaryPreview[]; message: string }> => {
     signal?.throwIfAborted();
     try {
-        const response = await fetch(`${getProxyWorkerUrl()}/notion/query`, {
+        const response = await fetch(`${requireProxyWorkerUrl()}/notion/query`, {
             signal,
             method: 'POST',
             headers: {
@@ -198,7 +197,7 @@ export const notionReadDiaryContent = async (
 ): Promise<{ success: boolean; content: string; message: string }> => {
     signal?.throwIfAborted();
     try {
-        const response = await fetch(`${getProxyWorkerUrl()}/notion/blocks/${pageId}`, {
+        const response = await fetch(`${requireProxyWorkerUrl()}/notion/blocks/${pageId}`, {
             signal,
             method: 'GET',
             headers: {
@@ -248,7 +247,7 @@ export const notionSearchUserNotes = async (
 ): Promise<{ success: boolean; entries: DiaryPreview[]; message: string }> => {
     signal?.throwIfAborted();
     try {
-        const response = await fetch(`${getProxyWorkerUrl()}/notion/query`, {
+        const response = await fetch(`${requireProxyWorkerUrl()}/notion/query`, {
             signal,
             method: 'POST',
             headers: {
@@ -379,7 +378,7 @@ export const feishuGetToken = async (appId: string, appSecret: string, signal?: 
     }
 
     try {
-        const response = await fetch(`${getProxyWorkerUrl()}/feishu/token`, {
+        const response = await fetch(`${requireProxyWorkerUrl()}/feishu/token`, {
             signal,
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -437,7 +436,7 @@ export const feishuGetDiaryByDate = async (
         const dateTimestamp = new Date(date).getTime();
         const nextDayTimestamp = dateTimestamp + 24 * 60 * 60 * 1000;
 
-        const response = await fetch(`${getProxyWorkerUrl()}/feishu/bitable/${baseId}/${tableId}/records/search`, {
+        const response = await fetch(`${requireProxyWorkerUrl()}/feishu/bitable/${baseId}/${tableId}/records/search`, {
             signal,
             method: 'POST',
             headers: {

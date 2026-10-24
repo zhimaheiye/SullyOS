@@ -1,11 +1,36 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DB } from './db';
 import { toMountedWorldbook, isWorldbookEntryActive } from './worldbook';
-import type { CharacterProfile, Worldbook } from '../types';
+import type { CharacterProfile, FullBackupData, Worldbook } from '../types';
 const book = (id: string, category = '同组'): Worldbook => ({ id, title: id, content: '内容', category, createdAt: 1, updatedAt: 1, key: ['月亮'], keysecondary: ['海边'], constant: false, selective: true, selectiveLogic: 3 });
 const char = (id: string, books: Worldbook[]): CharacterProfile => ({ id, name: id, avatar: '', systemPrompt: '保持人设', mountedWorldbooks: books.map(toMountedWorldbook) } as CharacterProfile);
 afterEach(() => vi.restoreAllMocks());
 describe('世界书库与角色缓存事务', () => {
+  it('角色暂停标志随库编辑和整组改名按 ID 留存，删除、补挂与完整备份不复活旧挂载', async () => {
+    const a=book('pause-a'), b=book('pause-b'), c=book('pause-c'), other=book('pause-other','另一组');
+    for (const entry of [a,b,c,other]) await DB.saveWorldbook(entry);
+    const first=char('paused-owner',[a,b,other]);
+    first.mountedWorldbooks![0].mountPaused=true;
+    first.mountedWorldbooks![1].mountPaused=true;
+    await DB.saveCharacter(first);
+    await DB.saveCharacter(char('active-owner',[a]));
+    await DB.mutateWorldbooks([a.id,b.id],{category:'改名组',content:'更新正文'});
+    let mounted=(await DB.getCharacter(first.id))!.mountedWorldbooks!;
+    expect(mounted.map(entry=>[entry.id,entry.category,entry.mountPaused])).toEqual([
+      [a.id,'改名组',true],[b.id,'改名组',true],[other.id,'另一组',undefined],
+    ]);
+    expect((await DB.getAllWorldbooks()).find(entry=>entry.id===a.id)).not.toHaveProperty('mountPaused');
+    expect((await DB.getCharacter('active-owner'))!.mountedWorldbooks![0].mountPaused).toBeUndefined();
+    await DB.mutateWorldbooks([b.id],null);
+    mounted=(await DB.getCharacter(first.id))!.mountedWorldbooks!;
+    expect(mounted.map(entry=>entry.id)).toEqual([a.id,other.id]);
+    await DB.saveCharacter({ ...(await DB.getCharacter(first.id))!, mountedWorldbooks:[...mounted,toMountedWorldbook(c)] });
+    const backup=await DB.exportFullData();
+    await DB.importFullData(backup as FullBackupData);
+    mounted=(await DB.getCharacter(first.id))!.mountedWorldbooks!;
+    expect(mounted.map(entry=>[entry.id,entry.mountPaused])).toEqual([[a.id,true],[other.id,undefined],[c.id,undefined]]);
+    expect(mounted.some(entry=>entry.id===b.id)).toBe(false);
+  });
   it('整组改名/切换保留 ID、两层关键词和部分挂载，不给未挂载角色加条目', async () => {
     const a=book('batch-a'), b=book('batch-b'), local=book('card-only');
     await DB.saveWorldbook(a); await DB.saveWorldbook(b);

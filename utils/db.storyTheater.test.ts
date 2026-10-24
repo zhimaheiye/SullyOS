@@ -24,12 +24,21 @@ describe('剧情剧场数据与糯米机原生预设备份', () => {
                 fromMessageId: 1,
                 toMessageId: 2,
                 messageCount: 2,
+                messageIds: [1, 2],
+                branchId: 'story-root:story-backup-entry',
                 summary: 'Archived scene summary',
                 createdAt: 15,
                 memoryConversions: {'char-a': {date:'2026-09-01',convertedAt:16,destination:'palace',memoryIds:['converted-memory'],skipped:0}},
             }],
             selectedWorldbookIds: ['book-a'],
             presetId: 'story-backup-preset',
+            timeline: {
+                version: 1,
+                rootBranchId: 'story-root:story-backup-entry',
+                activeBranchId: 'story-root:story-backup-entry',
+                activeCursorMessageId: 2,
+                branches: [{ id: 'story-root:story-backup-entry', name: '原始路线', forkMessageId: null, createdAt: 10, updatedAt: 20 }],
+            },
             createdAt: 10,
             updatedAt: 20,
         };
@@ -61,6 +70,8 @@ describe('剧情剧场数据与糯米机原生预设备份', () => {
             metadata: {
                 source: 'story_theater',
                 theaterId: entry.id,
+                storyParentMessageId: null,
+                storyBranchId: 'story-root:story-backup-entry',
                 theaterAffinityInputs: [{ charId: 'char-a', delta: 2, reason: 'noticed change', awareness: 'noticed' }],
             },
         });
@@ -82,5 +93,7 @@ describe('剧情剧场数据与糯米机原生预设备份', () => {
         const restoredMessages = await DB.getMessagesByCharId(`story-theater:${entry.id}`, true);
         const restoredFloor = restoredMessages.find(message => message.id === messageId);
         expect(restoredFloor?.metadata?.theaterAffinityInputs).toEqual([{ charId: 'char-a', delta: 2, reason: 'noticed change', awareness: 'noticed' }]);
+        expect(restoredFloor?.metadata?.storyParentMessageId).toBeNull();
+        expect(restoredFloor?.metadata?.storyBranchId).toBe('story-root:story-backup-entry');
     });
 });

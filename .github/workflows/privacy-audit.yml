@@ -9,10 +9,7 @@ name: 隐私审计 · 外部检查
 # push 触发用 paths 限定这个文件自己：改业务代码不该顺手对线上做一次探测。
 
 on:
-  schedule:
-    # 03:40 UTC。服务器侧 umami-backup.timer 是 03:20 UTC（pg_dump + 内部自检），
-    # 留 20 分钟余量，让外部审计跑在它后面。GitHub 的 schedule 常有延迟，无所谓。
-    - cron: '40 3 * * *'
+  # 公开版不每天探测上游统计站。需要审计自己的统计站时再手动运行。
   workflow_dispatch:
   push:
     branches: [master, main]
@@ -79,15 +76,14 @@ jobs:
                 | head -1 || true)
 
           if [[ -z "$BASE" || -z "$WID" ]]; then
-            echo "::error file=$DOC::没能解析出实例地址 / 站点 id。文档措辞是不是改了？"
             {
               echo "## 隐私审计 · 外部检查"
               echo
-              echo "❌ 无法从 \`$DOC\` 解析出实例地址或站点 id，审计没有事实来源，直接判失败。"
+              echo "本仓库的统计文档没有填写实例地址或站点 id，外部探测已跳过。"
               echo
               echo "匹配到的行：\`${line:-（没匹配到）}\`"
             } >> "$GITHUB_STEP_SUMMARY"
-            exit 1
+            exit 0
           fi
 
           HOST=${BASE#https://}

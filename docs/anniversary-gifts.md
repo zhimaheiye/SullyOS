@@ -22,8 +22,8 @@
 
 ## 验证
 
-```sh
-pnpm vitest run utils/anniversaryGifts.test.ts utils/anniversaryGiftDownload.test.ts utils/chatBackgroundBlobRef.test.ts utils/bubbleAppearance.test.ts utils/groupChat/theme.test.ts utils/wallpaperCompat.test.ts
+```powershell
+.\node_modules\.bin\vitest.cmd run utils/anniversaryGifts.test.ts utils/anniversaryGiftDownload.test.ts utils/chatBackgroundBlobRef.test.ts utils/bubbleAppearance.test.ts utils/groupChat/theme.test.ts utils/wallpaperCompat.test.ts
 ```
 
 手动检查：九月新浏览器打开、解锁后看到礼炮；下载 ZIP 内三张图片与原文件字节一致且附有署名；只下载时装扮不变；下载失败可重试；选择一个角色换装后刷新，装扮保留且弹窗不重弹。壁纸和头像框设置中不出现常驻周年素材。320px 窄屏下操作按钮应保持可达；系统减少动态效果时不播放礼炮。

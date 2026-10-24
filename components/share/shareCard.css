@@ -34,6 +34,7 @@
 .sully-share-note{font-size:11px;line-height:1.8;color:#77717d;margin:6px 0 0}
 .sully-share-error{color:#a43d43;font-size:12px;margin:3px 0}
 .sully-share-status{padding:8px 20px;margin:0;flex-shrink:0;max-height:80px;overflow:auto}
+.sully-share-dialog .sully-share-fallback-download{margin-left:10px;padding:4px 12px;font-size:12px;border-color:#a43d43;color:#a43d43;white-space:nowrap}
 .sully-share-footer{position:sticky;bottom:0;display:flex;justify-content:flex-end;gap:10px;padding:16px 28px;background:#fcfbf9;border-top:1px solid #ebe7ed}
 .sully-share-dialog .sully-share-primary{background:#70558c;border-color:#70558c;color:#fff;font-weight:600}
 .sully-share-dialog .sully-share-primary:hover{background:#604778}

@@ -176,24 +176,24 @@ const ReadingAvatar: React.FC<{ src?: string; name: string; light: boolean }> = 
     );
 };
 
-const DateSession: React.FC<DateSessionProps> = ({ 
+const DateSession: React.FC<DateSessionProps> = ({
     onLoadMoreHistory,
     historyLoading = false,
     historyError = '',
     historyReachedEnd = true,
-    char, 
+    char,
     userProfile,
     messages: historyMessages,
-    peekStatus, 
+    peekStatus,
     initialState,
     encounterId,
-    onSendMessage, 
-    onReroll, 
+    onSendMessage,
+    onReroll,
     onExit,
     onEditMessage,
     onDeleteMessage,
     onDeleteMessages,
-    onSettings
+    onSettings,
 }) => {
     const { addToast, registerBackHandler, apiConfig, updateCharacter } = useOS();
     
@@ -752,7 +752,8 @@ const DateSession: React.FC<DateSessionProps> = ({
     // 位置），isTyping 时也跳过（新回复交给 handleSend / handleRerollClick 处理，避免重复解析）。
     const lastAssistantContent = React.useMemo(() => {
         for (let i = messages.length - 1; i >= 0; i--) {
-            if (messages[i]?.role === 'assistant') return getSARSurface(messages[i]) || messages[i].content || '';
+            // 只认文本回复：场景图等图片消息也是 assistant 角色，content 是 blobref，绝不能进对话引擎
+            if (messages[i]?.role === 'assistant' && messages[i].type === 'text') return getSARSurface(messages[i]) || messages[i].content || '';
         }
         return '';
     }, [messages]);
@@ -1083,17 +1084,17 @@ const DateSession: React.FC<DateSessionProps> = ({
                         }}>{isBatchSelectMode ? '连续朗读所选内容' : '朗读最新一段'}</button>}
                         <div className="max-w-2xl mx-auto animate-fade-in space-y-6">
                             {isBatchSelectMode && (
-                                <div className="meeting-batch-toolbar sticky top-0 z-20 flex flex-col items-center gap-2 bg-white/90 border border-stone-200 rounded-xl px-3 py-2 text-xs text-stone-700">
+                                <div className="sticky top-0 z-20 flex items-center justify-between bg-white/90 border border-stone-200 rounded-xl px-3 py-2 text-xs text-stone-700">
                                     <span>已选 {selectedMsgIds.size} 条</span>
-                                    <div className="flex justify-center gap-3">
+                                    <div className="flex gap-2">
                                         <button
                                             onClick={(e) => { e.stopPropagation(); exitBatchMode(); }}
-                                            className="min-h-[44px] min-w-[64px] px-4 py-2 rounded-full bg-stone-200 text-stone-600"
+                                            className="px-3 py-1 rounded-full bg-stone-200 text-stone-600"
                                         >完成</button>
                                         <button
                                             onClick={(e) => { e.stopPropagation(); handleBatchDelete(); }}
                                             disabled={selectedMsgIds.size === 0}
-                                            className="min-h-[44px] min-w-[64px] px-4 py-2 rounded-full bg-red-500 text-white disabled:opacity-40"
+                                            className="px-3 py-1 rounded-full bg-red-500 text-white disabled:opacity-40"
                                         >删除</button>
                                     </div>
                                 </div>
@@ -1120,7 +1121,17 @@ const DateSession: React.FC<DateSessionProps> = ({
                                     </button>
                                 </div>
                             )}
-                            {visibleSessionMessages.map((msg) => (
+                            {visibleSessionMessages.map((msg) => {
+                            if (msg.type === 'image') {
+                                return (
+                                    <div key={msg.id} className="flex flex-col items-center py-1">
+                                        <div className={`w-full max-w-md overflow-hidden rounded-xl border shadow-sm ${char.dateLightReading ? 'border-stone-200 bg-white' : 'border-white/10 bg-white/5'}`}>
+                                            <TokenImg value={msg.content} alt="图片" className="max-h-96 w-full object-contain" loading="lazy" decoding="async" />
+                                        </div>
+                                    </div>
+                                );
+                            }
+                            return (
                                 <div
                                     key={msg.id}
                                     data-date-message-id={msg.id}
@@ -1255,7 +1266,8 @@ const DateSession: React.FC<DateSessionProps> = ({
                                         </div>
                                     )}
                                 </div>
-                            ))}
+                            );
+                            })}
                         </div>
                     </div>
                 </div>

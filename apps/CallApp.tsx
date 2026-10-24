@@ -1,4 +1,5 @@
 import { resolveDialogueApi } from '../utils/characterApi';
+import { resolveFeatureApi } from '../utils/featureApi';
 import { loadCharacterContextMessages } from '../utils/chatContextRange';
 import { canAnalyzeVoiceSource, isVoiceAudioPriming, primeVoiceAudio, voicePlaybackErrorMessage } from '../utils/voicePlayback';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
@@ -25,6 +26,7 @@ import { processNewMessagesWithAutoArchive } from '../utils/memoryPalace/autoArc
 import { incrementDigestRound, runCognitiveDigestion } from '../utils/memoryPalace';
 import { RealtimeContextManager } from '../utils/realtimeContext';
 import { DB } from '../utils/db';
+type LifeCallOutcome = 'answered' | 'declined' | 'missed';
 import { ChatPrompts } from '../utils/chatPrompts';
 import { Message, ChatTheme, AppID, type CharacterProfile } from '../types';
 import { PRESET_THEMES } from '../components/chat/ChatConstants';
@@ -125,7 +127,7 @@ import { useStreamingVoice } from '../hooks/useStreamingVoice';
 import { IncrementalCallSpeech } from '../utils/incrementalCallSpeech';
 import { streamElevenLabsSpeech, type StreamedVoice } from '../utils/elevenLabsStream';
 import { getVoiceFavorite, removeVoiceFavorite, saveVoiceFavorite } from '../utils/voiceFavorites';
-type CallState = 'idle' | 'connecting' | 'listening' | 'thinking' | 'speaking' | 'ended' | 'error';
+type CallState = 'idle' | 'ringing' | 'connecting' | 'listening' | 'thinking' | 'speaking' | 'ended' | 'error';
 type CallMode = 'voice' | 'video';
 type VideoCallLayout = 'stage' | 'story' | 'mini';
 type UserCameraPreviewSize = 'small' | 'medium' | 'large';
@@ -152,6 +154,7 @@ type CallRecord = {
   createdAt: string;
   durationSec: number;
   mode?: CallMode;
+  outcome?: 'answered' | 'declined' | 'missed' | 'cancelled';
   transcript: CallBubble[];
 };
 type PendingVRoidImport = {
@@ -519,13 +522,25 @@ const CallApp: React.FC = () => {
   const { closeApp, openApp, characters, activeCharacterId, addToast, apiConfig, userProfile, customThemes, suspendCall, suspendedCall, clearSuspendedCall, updateCharacter, characterGroups, groups, realtimeConfig, memoryPalaceConfig } = useOS();
 
   const [viewMode, setViewMode] = useState<ViewMode>('role-select');
+  const [chatOriginCharId] = useState(() => {
+    try {
+      const raw = sessionStorage.getItem('sully-call-chat-origin');
+      sessionStorage.removeItem('sully-call-chat-origin');
+      const value = raw ? JSON.parse(raw) : null;
+      return typeof value?.charId === 'string' && Date.now() - Number(value.at) < 10 * 60000
+        && characters.some(c => c.id === value.charId) ? value.charId as string : null;
+    } catch { return null; }
+  });
+  const [selectedCharId, setSelectedCharId] = useState<string>(chatOriginCharId || activeCharacterId || characters[0]?.id || '');
+  const dialAttemptRef = useRef(0);
+  const [callOutcome, setCallOutcome] = useState<LifeCallOutcome | 'cancelled' | null>(null);
+  useEffect(() => () => { dialAttemptRef.current++; }, []);
   useAppShortcut(ShortcutAppID.Call, intent => {
     if (callState !== 'idle') { addToast('请先结束当前通话，再切换快捷入口', 'info'); return; }
     const index = characters.findIndex(c => c.id === intent.characterId);
     if (index >= 0) { setSelectedCharId(characters[index].id); setRoleGroupId(GROUP_FILTER_ALL); setRolePage(Math.floor(index / ROLES_PER_PAGE)); }
     setViewMode(intent.entryId === 'history' ? 'history' : 'role-select');
   });
-  const [selectedCharId, setSelectedCharId] = useState<string>(activeCharacterId || characters[0]?.id || '');
   const ROLES_PER_PAGE = 6;
   const [roleGroupId, setRoleGroupId] = useState<string>(GROUP_FILTER_ALL); // 选人页的分组筛选
   const [rolePage, setRolePage] = useState<number>(() => {
@@ -1553,8 +1568,9 @@ const CallApp: React.FC = () => {
       arr.push(m);
       grouped.set(sid, arr);
     });
-    const records: CallRecord[] = Array.from(grouped.entries()).map(([sessionId, msgs]) => {
-      const start = msgs[0]?.timestamp || Date.now();
+    const records: CallRecord[] = Array.from(new Set([...grouped.keys(), ...callEnds.keys()])).map(sessionId => {
+      const msgs = grouped.get(sessionId) || [];
+      const start = msgs[0]?.timestamp || callEnds.get(sessionId)?.timestamp || Date.now();
       const end = msgs[msgs.length - 1]?.timestamp || start;
       const endMarker = callEnds.get(sessionId);
       const savedDuration = Number(endMarker?.metadata?.durationSec);
@@ -1566,10 +1582,11 @@ const CallApp: React.FC = () => {
         characterId: charId,
         characterName: selectedChar?.name || '未选择角色',
         createdAt: new Date(start).toLocaleString('zh-CN'),
-        durationSec: Number.isFinite(savedDuration)
+        durationSec: endMarker?.metadata?.callOutcome ? 0 : Number.isFinite(savedDuration)
           ? Math.max(1, Math.floor(savedDuration))
           : Math.max(1, Math.floor((end - start) / 1000)),
         mode: savedMode === 'voice' || savedMode === 'video' ? savedMode : undefined,
+        outcome: endMarker?.metadata?.callOutcome,
         transcript: msgs.map(m => ({
           id: `db-${m.id}`,
           dbId: m.id,
@@ -1587,7 +1604,8 @@ const CallApp: React.FC = () => {
           timestamp: m.timestamp,
         })),
       };
-    }).sort((a, b) => (b.transcript[b.transcript.length - 1]?.timestamp || 0) - (a.transcript[a.transcript.length - 1]?.timestamp || 0));
+    }).sort((a, b) => (grouped.get(b.sessionId)?.[0]?.timestamp || callEnds.get(b.sessionId)?.timestamp || 0)
+      - (grouped.get(a.sessionId)?.[0]?.timestamp || callEnds.get(a.sessionId)?.timestamp || 0));
     setCallRecords(records);
   };
   const pruneCallSnapshots = async (charId: string, sessionId: string) => {
@@ -1674,13 +1692,34 @@ const CallApp: React.FC = () => {
       primeVoiceAudio(element, SILENT_CALL_AUDIO_DATA_URL);
     }
   };
+  const returnFromChatCall = () => {
+    if (chatOriginCharId) openApp(AppID.Chat);
+    else setViewMode('history');
+  };
+  const saveUnconnectedCall = async (sessionId: string, outcome: LifeCallOutcome | 'cancelled') => {
+    if (!selectedChar) return;
+    const label = outcome === 'declined' ? '已拒接' : outcome === 'missed' ? '无人接听' : '拨号已取消';
+    await DB.saveMessage({ charId: selectedChar.id, role: 'system', type: 'system',
+      content: `通话未接通 · ${label}`, metadata: {
+        source: 'call-end-popup', callSessionId: sessionId, callOutcome: outcome,
+        characterId: selectedChar.id, callMode, endedAt: Date.now(), durationSec: 0,
+      } });
+    markCallTurnDirty();
+    await loadCallRecords(selectedChar.id);
+  };
   const beginSelectedCall = (cameraMode: UserCameraMode = 'off') => {
+    if (!selectedChar) return;
     closeCallSetupGuide();
     resetCurrentCall();
     primeCallAudioFromGesture();
+    const attempt = ++dialAttemptRef.current;
+    const sessionId = `call-${Date.now()}-${attempt}`;
+    const dialedChar = selectedChar;
+    setCurrentSessionId(sessionId);
     setViewMode('in-call');
-    setCallStartedAt(Date.now());
+    setCallOutcome(null);
     setCallState('listening');
+    setCallStartedAt(Date.now());
     trackEvent('发起通话');
     if (callMode !== 'video' || cameraMode === 'off') {
       stopUserCamera();
@@ -1709,6 +1748,13 @@ const CallApp: React.FC = () => {
     beginSelectedCall(setupCameraMode);
   };
   const finishCall = async () => {
+    if (callState === 'ringing' || callState === 'ended') {
+      dialAttemptRef.current++;
+      if (callState === 'ringing') void saveUnconnectedCall(currentSessionId, 'cancelled').catch(() => {});
+      resetCurrentCall();
+      returnFromChatCall();
+      return;
+    }
     if (selectedChar?.id) {
       const userTurns = bubbles.filter(b => b.role === 'user').length;
       const keepsakeLine = summarizeKeepsakeLine(bubbles, selectedChar.name);
@@ -1738,11 +1784,21 @@ const CallApp: React.FC = () => {
     }
     clearSuspendedCall();
     resetCurrentCall();
-    setViewMode('history');
+    returnFromChatCall();
     setShowHangupConfirm(false);
     addToast('通话记录已保存', 'success');
   };
   const handleHangup = () => {
+    if (callState === 'ringing') {
+      dialAttemptRef.current++;
+      const sessionId = currentSessionId;
+      setCallOutcome('cancelled');
+      setCallState('ended');
+      setErrorMessage('已取消拨号');
+      void saveUnconnectedCall(sessionId, 'cancelled');
+      return;
+    }
+    if (callState === 'ended') { void finishCall(); return; }
     setShowHangupConfirm(true);
   };
   // 与聊天 / 约会完全同一条历史管线（ChatPrompts.buildMessageHistory，约会的
@@ -1798,12 +1854,7 @@ const CallApp: React.FC = () => {
   );
 
   const resolvePerformanceDirectorApi = (character: CharacterProfile) => {
-    // 与情绪 Buff 完全复用同一套 API 选择规则：角色单独配了就用副 API，
-    // 没有单独配置则回退主 API。
-    const configuredEmotionApi = character.emotionConfig?.api;
-    return configuredEmotionApi?.baseUrl
-      ? configuredEmotionApi
-      : { baseUrl: apiConfig.baseUrl, apiKey: apiConfig.apiKey, model: apiConfig.model };
+    return resolveFeatureApi('emotion', { character, mainApi: apiConfig }).api;
   };
 
   const buildLocalPerformancePersona = (character: CharacterProfile): string => {
@@ -1837,8 +1888,8 @@ const CallApp: React.FC = () => {
 
       try {
         const directorApi = resolvePerformanceDirectorApi(character);
-        const baseUrl = directorApi.baseUrl?.replace(/\/+$/, '');
-        if (!baseUrl) return null;
+        if (!directorApi?.baseUrl) return null;
+        const baseUrl = directorApi.baseUrl.replace(/\/+$/, '');
         const characterContextInput = { char: character, user: userProfile, includeDetailedMemories: true };
 
         const prompt = buildAvatarPerformancePersonaPrompt({
@@ -1860,6 +1911,7 @@ const CallApp: React.FC = () => {
           charId: character.id,
           charName: character.name,
           purpose: '生成视频表演人格',
+          featureId: 'emotion',
         });
         const persona = parseAvatarPerformancePersona(extractContent(data));
         if (!persona) return null;
@@ -1899,8 +1951,8 @@ const CallApp: React.FC = () => {
   ): Promise<AvatarPerformanceCue[] | null> => {
     if (!selectedChar || callMode !== 'video') return null;
     const directorApi = resolvePerformanceDirectorApi(selectedChar);
-    const baseUrl = directorApi.baseUrl?.replace(/\/+$/, '');
-    if (!baseUrl) return null;
+    if (!directorApi?.baseUrl) return null;
+    const baseUrl = directorApi.baseUrl.replace(/\/+$/, '');
     const personality = await ensureVideoPerformancePersona(selectedChar)
       || buildLocalPerformancePersona(selectedChar);
     const normalizedReply = sanitizeAssistantOutput(replyText);
@@ -1939,6 +1991,7 @@ ${sentencePlan}`;
       charId: selectedChar.id,
       charName: selectedChar.name,
       purpose: '视频动作排练',
+      featureId: 'emotion',
     });
     const cues = parseAvatarPerformanceRehearsal(
       extractContent(data),
@@ -2430,7 +2483,7 @@ ${sentencePlan}`;
   // 默认开启；关闭后 CallApp 会等待用户先说，ChatApp 不受影响。
   const greetingFiredRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!callPreferences.characterInitiative || viewMode !== 'in-call' || bubbles.length > 0) return;
+    if (!callPreferences.characterInitiative || viewMode !== 'in-call' || callState !== 'listening' || bubbles.length > 0) return;
     if (!selectedChar?.id || greetingFiredRef.current === currentSessionId) return;
     greetingFiredRef.current = currentSessionId;
     void (async () => {
@@ -3203,13 +3256,14 @@ ${sentencePlan}`;
           <div className="shrink-0">
             <div className="text-[10px] tracking-[0.42em] text-white/35 font-semibold">CHAT WITH</div>
             <h1 className="mt-1 text-[2rem] font-bold leading-tight inline-flex items-start gap-1.5">
-              想找谁聊聊？
+              {chatOriginCharId ? `拨给 ${selectedChar?.name || '当前角色'}` : '想找谁聊聊？'}
               <span className="text-sm mt-1" style={{ color: accentColor, textShadow: `0 0 10px ${accentColor}` }}>✦</span>
             </h1>
-            <p className="text-sm text-white/45 mt-1">选一个人，拨过去吧。</p>
+            <p className="text-sm text-white/45 mt-1">{chatOriginCharId ? '确认语音或视频设置后再拨号。' : '选一个人，拨过去吧。'}</p>
           </div>
 
           {/* 分组筛选（没建分组时不渲染） */}
+          {!chatOriginCharId && <>
           <CharacterGroupFilterBar characters={characters} groups={characterGroups} dark={!lightTheme}
             value={roleGroupId} onChange={(id) => { setRoleGroupId(id); setRolePage(0); }} className="mt-4 shrink-0" />
 
@@ -3261,6 +3315,11 @@ ${sentencePlan}`;
               </button>
             </div>
           )}
+          </>}
+          {chatOriginCharId && selectedChar && <div className="mt-5 flex flex-1 items-start gap-3 rounded-2xl border border-white/15 bg-white/[0.05] p-4">
+            <TokenImg value={selectedChar.avatar} className="h-12 w-12 rounded-full object-cover" />
+            <div><div className="font-semibold">{selectedChar.name}</div><div className="mt-1 text-xs text-white/45">等待你点击拨号</div></div>
+          </div>}
 
           {/* actions */}
           <div className="shrink-0 pt-4 space-y-2.5" data-testid="call-role-actions">
@@ -3421,8 +3480,8 @@ ${sentencePlan}`;
                 className="w-9 h-9 rounded-full border border-white/15 bg-white/[0.04] flex items-center justify-center text-white/60 active:scale-90 transition">
                 <Gear size={16} weight="fill" />
               </button>
-              <button onClick={closeApp} className="flex items-center gap-2 text-sm text-white/45 active:scale-95 transition">
-                <span style={{ color: accentColor }}>✦</span> 关闭 <span style={{ color: accentColor }}>✦</span>
+              <button onClick={() => chatOriginCharId ? openApp(AppID.Chat) : closeApp()} className="flex items-center gap-2 text-sm text-white/45 active:scale-95 transition">
+                <span style={{ color: accentColor }}>✦</span> {chatOriginCharId ? '返回聊天' : '关闭'} <span style={{ color: accentColor }}>✦</span>
               </button>
               <button onClick={() => setCallTheme(lightTheme ? 'dark' : 'light')} title={lightTheme ? '切换到深色主题' : '切换到浅色主题'}
                 className="w-9 h-9 rounded-full border border-white/15 bg-white/[0.04] flex items-center justify-center text-white/60 active:scale-90 transition">
@@ -3476,7 +3535,7 @@ ${sentencePlan}`;
                 <div className="w-10 h-10 rounded-full border border-white/20 flex items-center justify-center text-sm" style={{ backgroundColor: `${accentColor}35` }}>{record.characterName[0] || '角'}</div>
                 <div className="min-w-0 flex-1">
                   <div className="font-medium text-sm">{record.characterName}</div>
-                  <div className="text-xs text-white/45 mt-0.5">{record.mode === 'video' ? '视频' : record.mode === 'voice' ? '语音' : '通话'} · {formatDuration(record.durationSec)} · {turnCount}轮对话</div>
+                  <div className="text-xs text-white/45 mt-0.5">{record.mode === 'video' ? '视频' : record.mode === 'voice' ? '语音' : '通话'} · {record.outcome ? ({ missed: '无人接听', declined: '已拒接', cancelled: '已取消', answered: '已接通' }[record.outcome]) : `${formatDuration(record.durationSec)} · ${turnCount}轮对话`}</div>
                 </div>
                 <button onClick={(e) => { e.stopPropagation(); handleDeleteRecord(record); }} className="text-xs px-2 py-1 rounded-lg text-white/35 transition hover:text-rose-300">删除</button>
               </div>
@@ -3598,11 +3657,15 @@ ${sentencePlan}`;
     );
   }
   const waveActive = displayCallState === 'speaking' || displayCallState === 'thinking';
-  const connSub = callState === 'connecting' ? '正在建立加密通讯…'
+  const connSub = callState === 'ringing' ? '正在响铃，等待对方…'
+    : callState === 'ended' ? '这通电话没有接通'
+    : callState === 'connecting' ? '正在建立加密通讯…'
     : callState === 'error' ? '通讯出现波动'
     : '通讯连接稳定';
   const analyzeLabel = displayCallState === 'speaking' ? { cn: '说话中', en: 'SPEAKING' }
     : displayCallState === 'thinking' ? { cn: '思考中', en: 'VOICE ANALYZING' }
+    : displayCallState === 'ringing' ? { cn: '响铃中', en: 'RINGING' }
+    : displayCallState === 'ended' ? { cn: '未接通', en: 'NO ANSWER' }
     : displayCallState === 'connecting' ? { cn: '接通中', en: 'CONNECTING' }
     : displayCallState === 'error' ? { cn: '连接异常', en: 'SIGNAL ERROR' }
     : { cn: '聆听中', en: 'LISTENING' };
@@ -3728,7 +3791,7 @@ ${sentencePlan}`;
             staticPortraitValue={staticVideoPortrait}
             staticExpressionKey={staticVideoExpressionKey}
             staticSpriteConfig={selectedChar?.spriteConfig}
-            motionState={displayCallState}
+            motionState={displayCallState === 'ringing' || displayCallState === 'ended' ? 'idle' : displayCallState}
             emotion={avatarEmotion}
             audioFeed={getAudioFeed()}
             performance={avatarPerformance}
@@ -3875,6 +3938,8 @@ ${sentencePlan}`;
                 ? latestCallBubble.role === 'assistant'
                   ? renderAssistantLine(extractVoiceTag(latestCallBubble.text).display, accentColor)
                   : latestCallBubble.text
+                : callState === 'ringing' ? '电话正在响铃…'
+                : callState === 'ended' ? (callOutcome === 'declined' ? '对方没有接听这通电话。' : '这通电话未接通。')
                 : callState === 'connecting'
                   ? '正在接通，请稍等……'
                   : `${selectedChar?.name || '对方'}在等你开口。`}
@@ -3891,13 +3956,17 @@ ${sentencePlan}`;
         )}
         {!bubbles.length && (
           <div className="flex flex-col items-center justify-center py-6 text-center">
-            <p className="text-base text-white/85">电话已接通</p>
+            <p className="text-base text-white/85">{callState === 'ringing' ? '正在响铃…' : callState === 'ended' ? '通话未接通' : '电话已接通'}</p>
             <p className="text-sm text-white/55 mt-2">
-              {callState === 'connecting'
+              {callState === 'ringing' ? `${selectedChar?.name || '对方'}可能稍后接听…`
+                : callState === 'ended' ? errorMessage
+                : callState === 'connecting'
                 ? `${selectedChar?.name || '对方'}正在接听……`
                 : selectedChar?.name ? `${selectedChar.name}在等你开口……` : '对方在等你开口……'}
             </p>
-            {callState === 'connecting'
+            {callState === 'ringing' ? <p className="text-xs text-white/35 mt-4 animate-pulse">等待对方接听</p>
+              : callState === 'ended' ? <p className="text-xs text-white/35 mt-4">点下方挂断返回</p>
+              : callState === 'connecting'
               ? <p className="text-xs text-white/35 mt-4 animate-pulse">请稍等</p>
               : <p className="text-xs text-white/35 mt-4">在下方输入你想说的话</p>}
           </div>
@@ -3984,7 +4053,7 @@ ${sentencePlan}`;
       </div>
       )}
       <StreamingVoiceBar state={streamingVoice.state} onStop={pauseAudio} />
-      {showInputPanel && (
+      {showInputPanel && callState !== 'ringing' && callState !== 'ended' && (
         <div className={`shrink-0 ${callMode === 'video' ? 'px-3 pb-1.5' : 'px-4 pb-2'}`}>
           <div className={`${callMode === 'video' ? 'rounded-[1.15rem] p-1.5' : 'rounded-2xl p-2'} border border-white/12 bg-black/30 backdrop-blur-md flex gap-2 items-center`} style={{ boxShadow: `inset 0 0 20px ${accentColor}1f` }}>
             {sttSupported && (

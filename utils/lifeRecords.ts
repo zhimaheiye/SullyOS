@@ -374,7 +374,7 @@ export const buildLifeRecordInjection = async (
     //  - 代记工具说明：后台没有用户新说的话，那时候输出的指令只会把旧事再记一遍；
     //  - 否决反馈：这段是注入即消费的（读完就把 pendingFeedback 清掉）。打包时读一次，
     //    用户下次真正聊天时就看不到了——那句「我理解错了」永远没人说出口。
-    opts: { forFirePack: boolean },
+    opts: { forFirePack: boolean; disableTools?: boolean },
 ): Promise<string> => {
     const forFirePack = opts.forFirePack;
     if (!isLifeRecordOn(char)) return '';
@@ -420,7 +420,7 @@ export const buildLifeRecordInjection = async (
     if (moduleActive('med')) tools.push(`- TA 明确说吃了什么药 → \`[[LIFE:MED|药名]]\``);
     if (moduleActive('expense')) tools.push(`- TA 明确说花了多少钱买什么 → \`[[LIFE:EXPENSE|金额|用途]]\`（金额是纯数字）`);
     if (moduleActive('exercise')) tools.push(`- TA 明确说做了什么运动 → \`[[LIFE:EXERCISE|运动|时长]]\`（时长可省略）`);
-    if (tools.length > 0 && !forFirePack) {
+    if (tools.length > 0 && !forFirePack && !opts.disableTools) {
         s += `**代记工具**：只有当 ${userName} 在对话中**明确说出**以下事实时，才单独起一行输出对应指令、帮 TA 顺手记一笔（一次一条）：\n${tools.join('\n')}\n`;
         s += `TA 只是暗示、开玩笑、或在说过去 / 别人的事时，一律不要记录。记录成功后系统会插入一张卡片，TA 可以确认或否决；被否决说明你理解错了。平时不要把这些指令挂在嘴边，也不要替 TA 补记你只是猜测的事。\n`;
         s += `**一件事只记一次**：上面摘要里已经出现的状态（如「生理期第 N 天」「今日已练」「✓已服」、已列出的支出）都说明这件事**已经记过了**——不要再输出指令重复记，也不要因为翻到 TA 之前提过这件事就补记。聊天记录里出现过的 [生活记录：…] 卡片就是你之前记的。只有 TA 明确说**又**发生了新的一次（比如「晚上又跑了一次」），才再记一条。\n`;

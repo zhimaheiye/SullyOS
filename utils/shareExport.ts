@@ -33,6 +33,25 @@ const NATIVE_WRITE_CHUNK_SIZE = 3 * 1024 * 1024;
 const isShareCancelled = (error: any): boolean => error?.name === 'AbortError'
     || /^share cancel(?:ed|led)$/i.test(String(error?.message || '').trim());
 
+/** Chromium Web Share 的单文件上限（50 MiB，crbug 408128761）。canShare 预检不查体积，超限文件拉起分享面板必然失败，调用方应据此直接走下载。 */
+export const BROWSER_SHARE_FILE_LIMIT = 50 * 1024 * 1024;
+
+/**
+ * 桌面网页端（非 Capacitor 原生壳、非移动浏览器）。
+ * Windows 的 Web Share 在分享面板拉起瞬间就 resolve promise，面板失败（「无法显示所有共享方法」）
+ * 应用层感知不到，还会误报成功；桌面浏览器的 a.download 反而可靠，文件导出应默认直接下载。
+ * 判据组合移动 UA 类别、触点与主指针类型，不硬编码某个浏览器；触屏笔记本（主指针是鼠标）仍算桌面。
+ */
+export const isDesktopWeb = (): boolean => {
+    if (Capacitor.isNativePlatform() || typeof navigator === 'undefined') return false;
+    const ua = navigator.userAgent || '';
+    const maxTouchPoints = navigator.maxTouchPoints || 0;
+    const mobileUA = /Android|iPhone|iPod|Mobile|Silk/i.test(ua);
+    const iPadOS = /Macintosh/.test(ua) && maxTouchPoints > 1;
+    const touchTablet = maxTouchPoints > 0 && typeof window !== 'undefined' && !!window.matchMedia?.('(pointer: coarse)')?.matches;
+    return !(mobileUA || iPadOS || touchTablet);
+};
+
 const blobToBase64 = (blob: Blob): Promise<string> => new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onloadend = () => {
@@ -140,6 +159,14 @@ export async function shareOrDownloadBlob(options: ShareOrDownloadBlobOptions): 
         throw nativeFailure instanceof Error ? nativeFailure : new Error('无法拉起系统文件分享');
     }
 
+    return downloadBlobLocally(blob, fileName);
+}
+
+/**
+ * 浏览器直接下载（a.download）。桌面网页的默认导出路径，也是分享失败后的手动兜底入口；
+ * 业务代码不要自行 anchor.download（导出审计强制统一从这里走）。
+ */
+export async function downloadBlobLocally(blob: Blob, fileName: string): Promise<'downloaded'> {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
@@ -221,14 +248,5 @@ export async function shareOrDownloadFile(options: ShareOrDownloadOptions): Prom
     }
 
     // 3) 浏览器下载兜底。
-    const blob = new Blob([content], { type: mimeType });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = fileName;
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    URL.revokeObjectURL(url);
-    return 'downloaded';
+    return downloadBlobLocally(new Blob([content], { type: mimeType }), fileName);
 }

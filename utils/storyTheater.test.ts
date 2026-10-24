@@ -401,6 +401,14 @@ describe('剧情沙盒辅助逻辑', () => {
         expect(chars[1].mountedWorldbooks).toHaveLength(2);
     });
 
+    it('只从未暂停的角色挂载挑选剧场书籍', () => {
+        const chars = [
+            { id: 'a', mountedWorldbooks: [{ id: 'same', title: '共享', content: '正文', mountPaused: true }, { id: 'paused', title: '暂停', content: '正文', mountPaused: true }] },
+            { id: 'b', mountedWorldbooks: [{ id: 'same', title: '共享', content: '正文' }, { id: 'active', title: '启用', content: '正文' }] },
+        ] as CharacterProfile[];
+        expect(dedupeTheaterWorldbooks(chars).map(entry => entry.id).sort()).toEqual(['active', 'same']);
+    });
+
     it('不会把不同世界书文件里 sourceUid 相同的条目误判成同一本', () => {
         const chars = [
             { id: 'c1', name: '一', mountedWorldbooks: [{ id: 'a', title: 'A', content: '一', category: '甲', sourceUid: 0 }] },

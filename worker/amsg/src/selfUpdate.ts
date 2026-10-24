@@ -24,25 +24,21 @@ import { constantTimeEqual } from './instantChat';
 
 const CF_API = 'https://api.cloudflare.com/client/v4';
 
-/** 官方成品代码。跟代配脚本、手册附录指的是同一份。 */
-const BUNDLE_URL =
-  'https://raw.githubusercontent.com/Tosd0/sullyos-workers/main/amsg/worker.bundle.js';
-
 /**
- * 成品包从哪儿取：默认官方那份；配了 AMSG_BUNDLE_URL 就取那儿（自己维护成品包的 fork、
- * 或者拿一台测试 Worker 试新代码时用）。只认 https，别的一律回落到默认。
+ * 成品包地址必须由使用者显式配置（AMSG_BUNDLE_URL）。公开版不会默认去任何第三方仓库
+ * 取代码：取到哪一份、审核没审核过，只有部署者自己说得清。只认 https。
  */
-export function resolveBundleUrl(env: Pick<SelfUpdateEnv, 'AMSG_BUNDLE_URL'>): string {
+export function resolveBundleUrl(env: Pick<SelfUpdateEnv, 'AMSG_BUNDLE_URL'>): string | null {
   const configured = env.AMSG_BUNDLE_URL?.trim();
-  if (!configured) return BUNDLE_URL;
+  if (!configured) return null;
   try {
     const url = new URL(configured);
     if (url.protocol === 'https:') return url.toString();
   } catch {
-    // 不是个能解析的地址，按默认走
+    // 不是个能解析的地址，按未配置处理
   }
-  console.warn('[amsg:self-update] AMSG_BUNDLE_URL 不是 https 地址，改用默认成品包');
-  return BUNDLE_URL;
+  console.warn('[amsg:self-update] AMSG_BUNDLE_URL 不是 https 地址，已忽略');
+  return null;
 }
 
 /** 上传时用的模块名，同时也是 metadata.main_module，两处必须一致。 */
@@ -67,7 +63,7 @@ export interface SelfUpdateEnv {
   CF_ACCOUNT_ID?: string;
   /** 可选：不配就从 workers.dev 域名反推。套了代理域名时必须配。 */
   CF_SCRIPT_NAME?: string;
-  /** 可选：成品包换个地方取（见 resolveBundleUrl）。不配就是官方那份。 */
+  /** 自己审核过的成品包 https 地址（见 resolveBundleUrl）。不配就不开放自更新。 */
   AMSG_BUNDLE_URL?: string;
 }
 
@@ -228,9 +224,8 @@ export interface FetchedBundle {
 /**
  * 取包的地址后面挂一个随时间变的参数。
  *
- * 注意它**绕不开 GitHub raw 自己那层 CDN**（真机看过：换个参数照样 x-cache: HIT，它的缓存键
- * 不带 query），只能挡住中间别的按完整 URL 存的缓存。新包推上去后几分钟内取回旧包这件事，
- * 靠 ./autoUpdate 两次检查至少隔半小时来兜（那时缓存早铺开了）。
+ * 注意它只能挡住按完整 URL 缓存的中间层；成品包所在主机自己的 CDN 仍可能按路径缓存。
+ * 新包发布后几分钟内取回旧包这件事，靠 ./autoUpdate 两次检查至少隔半小时来兜。
  */
 export function bundleFetchUrl(base: string, nowMs = Date.now()): string {
   const url = new URL(base);
@@ -241,17 +236,25 @@ export function bundleFetchUrl(base: string, nowMs = Date.now()): string {
 /**
  * 取回最新成品包，并确认它确实是 amsg 的 worker 而不是一张错误页。
  *
- * 能绕的缓存都绕（地址挂时间参数 + `cache: 'no-store'`），但 raw.githubusercontent 自己的
- * CDN（max-age=300）绕不开：新包推上去之后各节点几分钟内还会吐旧的。所以取回来的包
- * 不能当成「一定是最新」——自动更新那边两次检查至少隔半小时，到那时缓存早铺开了（见 ./autoUpdate）；
+ * 能绕的缓存都绕（地址挂时间参数 + `cache: 'no-store'`），但成品包主机自己的 CDN 仍可能
+ * 吐旧包。所以取回来的包不能当成「一定是最新」——自动更新那边两次检查至少隔半小时；
  * 手动点的那条路不受节流管，刚发布那几分钟内点到旧包就是旧包，下次自动检查会再换回来。
  */
 export async function fetchLatestBundle(
   env: Pick<SelfUpdateEnv, 'AMSG_BUNDLE_URL'> = {},
 ): Promise<{ ok: true; bundle: FetchedBundle } | { ok: false; message: string }> {
+  const bundleUrl = resolveBundleUrl(env);
+  if (!bundleUrl) {
+    return {
+      ok: false,
+      message:
+        '这台 Worker 没有配置 AMSG_BUNDLE_URL，不知道从哪里取更新代码。'
+        + '请填入你自己审核过的 worker.bundle.js https 地址后再试。',
+    };
+  }
   let res: Response;
   try {
-    res = await fetch(bundleFetchUrl(resolveBundleUrl(env)), {
+    res = await fetch(bundleFetchUrl(bundleUrl), {
       headers: { 'User-Agent': 'sullyos-amsg-self-update' },
       cache: 'no-store',
     });

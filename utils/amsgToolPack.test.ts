@@ -92,8 +92,7 @@ describe('buildToolConfig / parseToolConfig', () => {
     expect(parsed?.newsApiKey).toBe('brave-key');
     expect(parsed?.notionDatabaseId).toBe('db1');
     expect(parsed?.xhsMcpConfig).toEqual({ enabled: true, serverUrl: 'https://xhs.example.com/api', cookie: 'ck', platform: 'rednote' });
-    expect(typeof parsed?.proxyWorkerUrl).toBe('string');
-    expect(parsed?.proxyWorkerUrl).toMatch(/^https?:\/\//);
+    expect(parsed?.proxyWorkerUrl).toBe('https://zhima-public-proxy.sullyos-sxy10.workers.dev');
     // 到点组提示词要用的实时世界配置：天气开关 + 城市 + 热榜平台
     expect(parsed?.weatherEnabled).toBe(true);
     expect(parsed?.weatherCity).toBe('上海');

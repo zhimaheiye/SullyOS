@@ -19,7 +19,7 @@ export async function deleteStoryTheaterData(
     const [centralMessages, recipientMessages, vectorNodes] = await Promise.all([
         DB.getMessagesByCharId(threadId, true),
         Promise.all(recipientIds.map(id => DB.getMessagesByCharId(id, true))),
-        listStoryVectorMemories(entry.id),
+        listStoryVectorMemories(entry),
     ]);
 
     const messageIds = new Set<number>();

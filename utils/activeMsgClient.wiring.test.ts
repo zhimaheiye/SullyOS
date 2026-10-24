@@ -22,15 +22,15 @@ const sliceBetween = (src: string, start: string, end: string): string => {
 };
 
 describe('③ 凭据变更重传接线', () => {
-  it('Settings.commitApiConfig：换了聊天 API 就触发已排程任务的凭据重传', () => {
+  it('共享 commitApiConfig：换了聊天 API 就触发已排程任务的凭据重传', () => {
     const src = read('../apps/Settings.tsx');
-    // 保存按钮和点预设切换共用 commitApiConfig 这一个出口。
-    const fn = sliceBetween(src, 'const commitApiConfig', 'const applyPreset');
-    expect(fn).toContain('syncAmsgLlmCredentials(');
+    const helper = read('./apiConfigCommit.ts');
+    // Settings 和悬浮切换器共用 helper，保存按钮和点预设仍汇到本地 commitApiConfig 出口。
+    const localCommit = sliceBetween(src, 'const commitApiConfig', 'const applyPreset');
+    expect(localCommit).toContain('commitSharedApiConfig({');
+    expect(helper).toContain('ActiveMsgClient.refreshApiCredentialsForPendingTasks(nextConfig)');
     // 传的是「这次要换过去的配置」叠在 apiConfig 上，而不是渲染时的旧快照。
-    const call = fn.match(/syncAmsgLlmCredentials\(\{ \.\.\.apiConfig, \.\.\.(\w+) \}\)/);
-    expect(call, '凭据重传要把新配置叠在 apiConfig 上一起传').not.toBeNull();
-    expect(fn, '叠上去的得是这次切换现组的那份').toContain(`const commitApiConfig = (${call![1]}:`);
+    expect(helper).toContain('const nextConfig = { ...apiConfig, ...patch };');
     // 两个入口递进去的都是现组的配置对象，不是旧的 localXxx 草稿
     expect(sliceBetween(src, 'const handleSaveApi', 'const handleSaveVisionApi'))
       .toMatch(/const nextConfig = \{[\s\S]*commitApiConfig\(nextConfig\)/);

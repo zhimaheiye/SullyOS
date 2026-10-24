@@ -38,7 +38,7 @@ import { isPromptBuildSkipped, isSystemMessageMergeEnabled } from './devDebug';
 import { mergeSystemMessages } from './systemMessageMerge';
 import { normalizeTranslationLangLabel } from './translationLang';
 import { cleanApiMessages, flattenImageContentParts } from './promptMessageCleanup';
-import { materializeVisionDescriptions } from './visionApi';
+import { materializeStickerVisionDescriptions, materializeVisionDescriptions } from './visionApi';
 import type { RecallEntryPoint, RecallTrace } from './memoryPalace/trace';
 import { isChatConversationEntry } from './memoryPalace/trace';
 import { loadCollaborationFileCabinetBlock } from '../features/collaboration/chatLibrary';
@@ -62,6 +62,8 @@ export interface BuildChatPayloadInput {
     appPrompt?: { rules: string; scene: string };
     /** Present only while ChatApp is embedded in the home phone; never persisted. */
     homePhoneContext?: string;
+    /** This character's own persisted life state, only after actual attention returns. */
+    lifeContext?: string;
     char: CharacterProfile;
     userProfile: UserProfile;
     groups: GroupProfile[];
@@ -117,6 +119,13 @@ export interface BuildChatPayloadInput {
      * 只是把上下文撑爆的噪声（与群聊注入"不要把媒体当文本塞"同一约定）。
      */
     stripImages?: boolean;
+    /**
+     * 非聊天 App 的只读角色调用可显式关闭 MCP 工具块。角色身份、聊天历史和记忆召回仍保留，
+     * 但请求不会被标记为工具轮次，也不会看到工具清单或尾部工具提醒。
+     */
+    disableMcp?: boolean;
+    /** This foreground reply is text-only (manual relay); keep context and output formats, omit tool protocols. */
+    disableTools?: boolean;
     /**
      * 这一轮交给 amsg worker 在 fire 时刻生成（即时对话）。时钟 / 真实世界块 /
      * MCP 说明由 worker 那边独家供给，前端这份就不再烤进去，免得一份 prompt 里
@@ -274,10 +283,13 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
         const uniqueMessages = new Map<number, Message>();
         for (const message of rawRecentMsgsHint) uniqueMessages.set(message.id, message);
         for (const message of selectedHistory) uniqueMessages.set(message.id, message);
-        const prepared = await prepare('vision',()=>materializeVisionDescriptions(
+        const preparedImages = await prepare('vision', () => materializeVisionDescriptions(
             [...uniqueMessages.values()],
             input.visionApiConfig,
         ));
+        // eligible 表情包平行物化（sticker 专用 prompt、全程 fail-soft，见 utils/visionApi.ts）。
+        // 两个 materialize 各只处理自己的 type，链式调用互不干扰。
+        const prepared = await materializeStickerVisionDescriptions(preparedImages, input.visionApiConfig);
         const preparedById = new Map(prepared.map(message => [message.id, message]));
         historyMsgsForPrompt = selectedHistory.map(message => preparedById.get(message.id) || message);
         recentMsgsHint = rawRecentMsgsHint.map(message => preparedById.get(message.id) || message);
@@ -382,6 +394,7 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
             includeUserLocation: isChatConversationEntry(input.recallEntryPoint),
             returningFromMode: returningFromMode || undefined,
             appRules: input.appPrompt?.rules,
+            disableTools: input.disableTools,
         },
     ));
     input.signal?.throwIfAborted();
@@ -447,7 +460,7 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
     const messagesWithWorldbookDepth = parts.history;
 
     // ── 9. 麦当劳小程序上下文（购物车/菜单实时快照 → 易变尾段） ──
-    const mcdActive = !!mcdMiniSnap?.open;
+    const mcdActive = !input.disableTools && !!mcdMiniSnap?.open;
     if (mcdActive) {
         const block = buildMcdMiniAppContextBlock(mcdMiniSnap, userProfile?.name || '用户');
         if (block) {
@@ -456,7 +469,7 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
     }
 
     // ── 9b. 瑞幸小程序上下文（同上，易变尾段） ──
-    const luckinActive = !!luckinMiniSnap?.open;
+    const luckinActive = !input.disableTools && !!luckinMiniSnap?.open;
     if (luckinActive) {
         const block = buildLuckinMiniAppContextBlock(luckinMiniSnap, userProfile?.name || '用户');
         if (block) {
@@ -465,7 +478,7 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
     }
 
     // ── 9c. 瑞幸聊天点单模式 (角色直接调真实工具；含实时定位/会话状态 → 易变尾段) ──
-    const luckinChatActive = !!luckinChat?.active;
+    const luckinChatActive = !input.disableTools && !!luckinChat?.active;
     if (luckinChatActive) {
         const block = buildLuckinChatSystemBlock(luckinChat, recentMsgsHint, userProfile?.name || '用户');
         if (block) {
@@ -478,8 +491,9 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
     //
     // 即时对话路径：MCP 说明由 worker 的 buildMcpFireBlock 独家供给（与凭据同源同拍），
     // 前端这份不注入——两份工具说明两套工具名，模型会两种都写一遍。
-    // mcpChatActive 的取值不受影响：它还要告诉上层「这一轮算不算 MCP 模式」。
-    const mcpChatActive = !input.appPrompt && isMcpChatAvailable(char.id);
+    // 非聊天 App 可显式关闭：自动来访/私密分析只读取上下文，不得意外进入工具循环。
+    // 家园小手机这类带 appPrompt 的表面同理：它只替换 App 规则，不该顺带开启工具循环。
+    const mcpChatActive = !input.disableTools && !input.disableMcp && !input.appPrompt && isMcpChatAvailable(char.id);
     if (mcpChatActive && !input.timelyByWorker) {
         const block = buildMcpSystemBlock(userProfile?.name || '用户', char.id);
         if (block) {
@@ -523,6 +537,7 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
     // 注意：即时对话的 worker 端情绪评估把 messages[0] 当 system、messages[1..]
     // 展平为对话历史 —— 易变尾段会以「[系统]: …」行出现在历史末尾，信息不丢。
     if(input.homePhoneContext) volatileTail += `\n\n${input.homePhoneContext}`;
+    if (input.lifeContext) volatileTail += `\n\n${input.lifeContext}`;
     let fullMessages: Array<{ role: string; content: any }> = [
         { role: 'system', content: systemPrompt },
         ...messagesWithWorldbookDepth,
@@ -556,7 +571,7 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
     // so take the same task/receipt snapshot here, before the live-state tail.
     let amsg2ExpiredNoticeIds: string[] | undefined;
     let volatileTailIndex = 1 + messagesWithWorldbookDepth.length;
-    if (input.recallEntryPoint === 'home_3d' && char.activeMsg2Config?.enabled) {
+    if (!input.disableTools && input.recallEntryPoint === 'home_3d' && char.activeMsg2Config?.enabled) {
         await prepare('tasks',async()=>{
         const { isAmsg2GlobalReady } = await import('./amsg2ToolBridge');
         if (await isAmsg2GlobalReady()) {

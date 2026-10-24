@@ -523,7 +523,7 @@ export async function runLightRecallRouter(
             },
             0,
             timeoutMs,
-            { appName: 'ChatApp', purpose: '记忆召回路由' },
+            { appName: 'ChatApp', purpose: '记忆召回路由', featureId: 'memoryLight' },
         );
         const parsed = extractJson(extractContent(data));
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {

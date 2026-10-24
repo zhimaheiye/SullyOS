@@ -1,6 +1,8 @@
 # infra/ — 统计服务器的配置基线
 
-这里放的是自托管 umami 实例（`stats.friedsully.com`）上那几个**决定隐私承诺成不成立**的文件的副本。
+> 本公开版不连接上游统计站，页面构建也不注入统计地址。下面的文件是上游部署曾使用的配置副本，不是这个仓库的可用入口。
+
+这里放的是一份自托管 umami 配置副本，用来对照隐私承诺有没有被改掉。
 它们不参与前端构建，只有一个用途：给 [`.github/workflows/privacy-audit.yml`](../.github/workflows/privacy-audit.yml)
 当比对基线。
 

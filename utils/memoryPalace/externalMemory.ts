@@ -343,7 +343,7 @@ export async function extractExternalMemoryText(
                     },
                     2,
                     180_000,
-                    { appName: '记忆搬家', purpose: '外部记忆清洗' },
+                    { appName: '记忆搬家', purpose: '外部记忆清洗', featureId: 'memoryLight' },
                 );
                 if (data.choices?.[0]?.finish_reason === 'length') {
                     throw new Error('模型输出达到长度上限，内容可能被截断');

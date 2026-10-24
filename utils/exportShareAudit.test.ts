@@ -41,4 +41,13 @@ describe('文件导出统一分享适配', () => {
         expect(webShare).toBeGreaterThan(nativeShare);
         expect(browserDownload).toBeGreaterThan(webShare);
     });
+
+    it('分享卡编辑器在桌面网页与超限大文件时直接下载，失败保留手动下载入口', () => {
+        const dialog = readFileSync(`${projectRoot}/components/share/ShareCardDialog.tsx`, 'utf8');
+        expect(dialog).toContain('isDesktopWeb()');
+        expect(dialog).toContain('BROWSER_SHARE_FILE_LIMIT');
+        expect(dialog).toContain('preferDownloadOnWeb: preferDownload');
+        expect(dialog).toContain('downloadBlobLocally');
+        expect(dialog).toContain('保存到本地');
+    });
 });

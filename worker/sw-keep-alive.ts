@@ -865,3 +865,55 @@ sw.addEventListener('activate', (event: ExtendableEvent) => {
   // control. Older shells are cleared later, when a started page asks (SULLY_CACHE_TIDY).
   event.waitUntil(sw.clients.claim());
 });
+
+// ── Proactive Message push handler (v2: Worker 侧 AI 生成) ──
+sw.addEventListener('push', (event: PushEvent) => {
+  const payload = readPushPayload(event);
+  if (!payload || payload.type !== 'proactive-message') return;
+
+  const content = payload.content || '';
+  const charId = payload.charId || '';
+  if (!content) return;
+
+  // 尝试从 localStorage 恢复的 schedules 里拿角色名（best-effort）
+  let charName = charId;
+  const sched = proactiveSchedules.get(charId);
+  // charName fallback: 用 id 前 15 字符
+  const displayName = charName.length > 20 ? charName.slice(0, 20) : charName;
+
+  event.waitUntil((async () => {
+    try {
+      await sw.registration.showNotification(displayName, {
+        body: content.length > 200 ? content.slice(0, 200) + '…' : content,
+        icon: './icons/icon-192.png',
+        badge: './icons/icon-192.png',
+        data: { type: 'proactive-message', charId, content },
+        tag: `proactive-${charId}-${Math.floor(Date.now() / 60000)}`,
+        requireInteraction: false,
+      });
+
+      // 通知所有打开的 client（用于前台去重 / 本地 AI 路径并行）
+      const clients = await sw.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      for (const client of clients) {
+        client.postMessage({ type: 'proactive-wake-received', charId, t: Date.now() });
+      }
+    } catch (e) {
+      console.error('[ProactivePush] showNotification failed', e);
+    }
+  })());
+});
+
+// ── Notification click handler for proactive messages ──
+sw.addEventListener('notificationclick', (event: NotificationEvent) => {
+  const data = event.notification?.data;
+  if (!data || data.type !== 'proactive-message') return;
+
+  event.notification.close();
+  event.waitUntil((async () => {
+    const charId = data.charId;
+    const openUrl = new URL(sw.registration.scope || sw.location.origin);
+    openUrl.searchParams.set('openApp', 'chat');
+    if (charId) openUrl.searchParams.set('activeMsgCharId', charId);
+    await sw.clients.openWindow(openUrl.toString());
+  })());
+});

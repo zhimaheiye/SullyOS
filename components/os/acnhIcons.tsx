@@ -85,6 +85,33 @@ const ACNH_ICON_MAP: Partial<Record<AppID, React.ReactNode>> = {
   [AppID.Date]: draw([14, 17, 86, 82],
     <path d="M50 82 C22 60 14 46 14 33 C14 23 22 17 31 17 C39 17 46 21 50 30 C54 21 61 17 69 17 C78 17 86 23 86 33 C86 46 78 60 50 82Z" fill={CREAM} />
   ),
+  [AppID.HeartSync]: draw([12, 17, 88, 82], <>
+    <path d="M39 78 C18 61 12 49 12 37 C12 27 19 20 29 20 C36 20 42 24 46 31 C49 23 56 17 66 17 C79 17 88 26 88 38 C88 53 76 66 51 82Z" fill={CREAM} />
+    <path d="M37 37 C42 43 45 47 50 52 C55 47 58 43 63 37" fill="none" stroke="#FC736D" strokeWidth="4" strokeLinecap="round" />
+  </>),
+  [AppID.Debate]: draw([14, 18, 86, 83], <>
+    <rect x="20" y="66" width="60" height="12" rx="5" fill={CREAM} />
+    <path d="M30 61 L61 30 L70 39 L39 70 Z" fill={CREAM} />
+    <rect x="53" y="21" width="27" height="14" rx="5" transform="rotate(45 53 21)" fill="#F7CD67" />
+    <path d="M17 82 H83" stroke={BROWN} strokeWidth="7" strokeLinecap="round" />
+  </>),
+  [AppID.LifeReplay]: draw([14, 18, 86, 82], <>
+    <rect x="18" y="24" width="64" height="52" rx="11" fill={CREAM} />
+    <path d="M18 38 H82 M31 24 L39 38 M50 24 L58 38 M69 24 L77 38" stroke={BROWN} strokeWidth="4" />
+    <path d="M57 49 A13 13 0 1 0 60 67" fill="none" stroke="#8B82D8" strokeWidth="5" strokeLinecap="round" />
+    <path d="M54 66 L62 67 L61 59" fill="none" stroke="#8B82D8" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" />
+  </>),
+  [AppID.TaskWorkshop]: draw([14, 20, 86, 82], <>
+    <rect x="14" y="35" width="72" height="47" rx="10" fill={CREAM} />
+    <path d="M37 35 V27 C37 23 40 20 44 20 H56 C60 20 63 23 63 27 V35" fill="none" stroke={BROWN} strokeWidth="6" strokeLinecap="round" />
+    <path d="M14 50 H86" stroke="#59B89A" strokeWidth="7" />
+    <rect x="43" y="45" width="14" height="13" rx="3" fill="#F7CD67" stroke={BROWN} strokeWidth="3" />
+  </>),
+  [AppID.TimeCapsule]: draw([21, 14, 79, 86], <>
+    <path d="M29 14 H71 V24 C71 36 63 44 55 50 C63 56 71 64 71 76 V86 H29 V76 C29 64 37 56 45 50 C37 44 29 36 29 24Z" fill={CREAM} />
+    <path d="M25 14 H75 M25 86 H75" stroke={BROWN} strokeWidth="6" strokeLinecap="round" />
+    <path d="M37 28 H63 C61 37 56 41 50 45 C44 41 39 37 37 28Z M37 74 H63 C59 64 55 59 50 55 C45 59 41 64 37 74Z" fill="#F7CD67" />
+  </>),
   [AppID.User]: draw([25, 18, 75, 82], <>
     <rect x="25" y="18" width="50" height="64" rx="7" fill={CREAM} />
     <circle cx="50" cy="42" r="12" fill="#F7CD67" />

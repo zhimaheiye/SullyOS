@@ -5,19 +5,14 @@ const out='output/fishing-qa/kanata';mkdirSync(out,{recursive:true});
 const browser=await chromium.launch({headless:true});const page=await browser.newPage({viewport:{width:390,height:844}});const errors=[];const requests=[];
 page.on('pageerror',e=>errors.push(e.message));
 await page.route('**/*',async route=>{
-    const req=route.request();const url=new URL(req.url());
-    if(url.pathname.includes('/poem/')){
-        requests.push({url:req.url(),method:req.method()});
-        const data=url.pathname.endsWith('/current')?{ok:true,ended:true,paused:true,booklet:{id:'archive',title:'信号坠落处',subtitle:'低电量合唱',poemsTarget:40,poemCount:0,linesMin:4,linesMax:12,charsPerLine:24,status:'done'},poem:null,recent:[]}:{ok:true,poems:[]};
-        return route.fulfill({json:data});
-    }
+    const url=new URL(route.request().url());
     // No model, mail or account requests leave this isolated test context.
     if(url.hostname!=='127.0.0.1'&&url.hostname!=='localhost')return route.fulfill({status:200,body:'',headers:{'access-control-allow-origin':'*'}});
     return route.continue();
 });
 try{
     await page.goto((process.env.FISHING_QA_URL||'http://127.0.0.1:5177')+'/test/fixtures/kanata.html');
-    await page.getByRole('button',{name:'下一页房间',exact:true}).waitFor();
+    await page.getByRole('button',{name:'进入 图书馆',exact:true}).waitFor();
     await page.screenshot({path:`${out}/01-world.png`});
     const forward=page.getByRole('button',{name:'SAR',exact:true});await forward.click();
     const waterEntry=page.getByRole('button',{name:'进入水域',exact:true});
@@ -63,10 +58,8 @@ try{
     await page.getByRole('button',{name:'图鉴',exact:true}).click();
     assert.equal(await page.getByRole('button',{name:/cm/}).count(),1);
     await page.getByRole('button',{name:'离开水域',exact:true}).click();
-    await page.setViewportSize({width:390,height:844});await page.getByRole('button',{name:'返回彼方',exact:true}).click();await page.getByRole('button',{name:'下一页房间',exact:true}).click();
-    await page.getByRole('heading',{name:'往期活动',exact:true}).waitFor();await page.screenshot({path:`${out}/03-archives.png`});
-    await page.getByRole('button',{name:/已封存 · 纪念馆/}).click();await page.getByText('落　幕',{exact:true}).waitFor();
-    await page.screenshot({path:`${out}/04-memorial.png`});
-    assert.equal(requests.some(r=>r.method!=='GET'),false);assert.deepEqual(errors,[]);writeFileSync(`${out}/result.json`,JSON.stringify({requests,errors},null,2));
-    console.log('Kanata integration: separate water/board entrances, shared inventory/wallet/prices, mobile returns and read-only memorial passed.');
+    await page.setViewportSize({width:390,height:844});await page.getByRole('button',{name:'返回彼方',exact:true}).click();
+    await page.getByRole('button',{name:'进入 图书馆',exact:true}).waitFor();
+    assert.deepEqual(errors,[]);writeFileSync(`${out}/result.json`,JSON.stringify({requests,errors},null,2));
+    console.log('Kanata integration: separate water/board entrances, shared inventory/wallet/prices and mobile returns passed.');
 }finally{await browser.close();}

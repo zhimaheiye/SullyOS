@@ -5,23 +5,14 @@ import { describe, expect, it } from 'vitest';
 const readSource = (relativePath: string): string =>
     readFileSync(fileURLToPath(new URL(relativePath, import.meta.url)), 'utf8').replace(/\r\n?/g, '\n');
 
-const countOccurrences = (source: string, needle: string): number => source.split(needle).length - 1;
-
 describe('Qixi entry confirmation and color selection wiring', () => {
     const componentSource = readSource('../components/events/qixi/QixiDemoEvent.tsx');
     const cssSource = readSource('../components/events/qixi/QixiDemoRound2.css');
-    const part1Source = readSource('./qixiMemoryBundle.ts');
-    const part2Source = readSource('./qixiBridge.ts');
-    const part3Source = readSource('./qixiReunion.ts');
 
-    it('shows the real number of model requests before starting a fresh run', () => {
+    it('shows the four model requests before starting a fresh run', () => {
         const configuredCount = Number(componentSource.match(/QIXI_MODEL_API_CALL_COUNT\s*=\s*(\d+)/)?.[1]);
-        const effectiveRequestCount = countOccurrences(part1Source, 'stream: true') * 3
-            + countOccurrences(part2Source, 'stream: true')
-            + countOccurrences(part3Source, 'stream: true');
 
         expect(configuredCount).toBe(4);
-        expect(configuredCount).toBe(effectiveRequestCount);
         expect(componentSource).toContain('次模型 API');
         expect(componentSource).toContain('本次旅程共会调用 {QIXI_MODEL_API_CALL_COUNT} 次模型 API');
         expect(componentSource).not.toContain('七夕场景、鹊桥与最终见面');

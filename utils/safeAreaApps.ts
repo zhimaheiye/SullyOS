@@ -25,6 +25,8 @@ export const SELF_SAFE_AREA_APPS: ReadonlySet<AppID> = new Set<AppID>([
     AppID.Study,
     AppID.FAQ,
     AppID.Game,
+    AppID.BoardGame,
+    AppID.MurderMystery,
     AppID.Worldbook,
     AppID.Novel,
     AppID.Bank,
@@ -44,6 +46,15 @@ export const SELF_SAFE_AREA_APPS: ReadonlySet<AppID> = new Set<AppID>([
     AppID.WorldHome,
     AppID.CharCreatorDev,
     AppID.SpecialMoments,
+    AppID.HeartSync,
+    AppID.Debate,
+    AppID.LifeReplay,
+    AppID.Healing,
+    AppID.CommunityCommittee,
+    AppID.TaskWorkshop,
+    AppID.TimeCapsule,
+    AppID.MySchedule,
+    AppID.OneChange,
 ]);
 
 // 外壳是否需要替这个 App 让出安全区：不在自理名单里的才需要。

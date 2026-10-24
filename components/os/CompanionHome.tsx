@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   ArrowClockwise,
   ArrowsOutCardinal,
@@ -22,6 +23,7 @@ import { AppID, type AvatarTouchRegion, type CompanionStartupSettings, type Comp
 import { Icons, INSTALLED_APPS } from '../../constants';
 import VRMVideoCallStage from '../call/VRMVideoCallStage';
 import { ScheduleFullscreenViewer } from '../schedule/ScheduleHomeWidget';
+import TheaterPlayer from '../schedule/TheaterPlayer';
 import type { AvatarMotionState } from '../call/VRMAvatarCanvas';
 import type { Live2DActionTrigger } from '../call/Live2DAvatarCanvas';
 import {
@@ -68,6 +70,8 @@ import { isChatPreviewMessage } from '../../utils/chatMessageVisibility';
 import { getLastInnerState } from '../../utils/emotionApply';
 import { getFlowNarrativeKey } from '../../utils/scheduleFeature';
 import { getDailyScheduleForChar } from '../../utils/dailySchedule';
+import { generateSlotTheater } from '../../utils/theaterGenerator';
+import { persistScheduleTheaterCard } from '../../utils/scheduleTheater';
 import { useLocalDateKey } from '../../hooks/useLocalDateKey';
 import { resolveCharTimeZone } from '../../utils/timezone';
 import { getCurrentScheduleSlotIndex, getScheduleWallClock } from '../../utils/scheduleTime';
@@ -436,6 +440,8 @@ const CompanionHome: React.FC = () => {
   const [touchSettingsOpen, setTouchSettingsOpen] = useState(false);
   const [appStarOpen, setAppStarOpen] = useState(false);
   const [scheduleViewerOpen, setScheduleViewerOpen] = useState(false);
+  const [theaterSlotIdx, setTheaterSlotIdx] = useState<number | null>(null);
+  const [theaterGenerating, setTheaterGenerating] = useState(false);
   const [wardrobeOpen, setWardrobeOpen] = useState(false);
   const [wardrobeDiscoveryActive, setWardrobeDiscoveryActive] = useState(() => {
     try { return localStorage.getItem(COMPANION_WARDROBE_DISCOVERY_KEY) !== 'seen'; }
@@ -543,6 +549,10 @@ const CompanionHome: React.FC = () => {
     recentChat: '',
     schedule: null,
   });
+  // 切换角色后，新日程异步读回前不要把上一位角色的卡片短暂挂到当前角色名下。
+  const activeSchedule = character && hudContent.schedule?.charId === character.id
+    ? hudContent.schedule
+    : null;
 
   useEffect(() => {
     let cancelled = false;
@@ -579,11 +589,57 @@ const CompanionHome: React.FC = () => {
   }, [character?.id, character?.customTimezoneEnabled, character?.customTimezone, characterDateKey, isDataLoaded, lastMsgTimestamp, period.key]);
 
   const currentScheduleSlot = useMemo(() => {
-    const slots = hudContent.schedule?.slots || [];
+    const slots = activeSchedule?.slots || [];
     if (!slots.length) return null;
     const index = getCurrentScheduleSlotIndex(slots, character);
     return slots[index >= 0 ? index : 0] || null;
-  }, [character, hudContent.schedule, virtualTime.hours, virtualTime.minutes]);
+  }, [activeSchedule, character, virtualTime.hours, virtualTime.minutes]);
+
+  const runScheduleTheater = async (index: number, forceRegenerate = false) => {
+    if (!character || !activeSchedule || theaterGenerating) return;
+    const schedule = activeSchedule;
+    const slot = schedule.slots[index];
+    if (!slot) return;
+
+    trackEvent('从桌面日程打开小剧场', { mode: forceRegenerate ? 'replay' : 'play' });
+    setScheduleViewerOpen(false);
+    setTheaterSlotIdx(index);
+    if (!forceRegenerate && slot.theater?.lines.length) return;
+
+    setTheaterGenerating(true);
+    try {
+      const updated = await generateSlotTheater(character, userProfile, schedule, index, apiConfig, forceRegenerate);
+      if (!updated) {
+        addToast('小剧场生成失败，稍后再试', 'error');
+        setTheaterSlotIdx(null);
+        setScheduleViewerOpen(true);
+        return;
+      }
+      setHudContent(current => ({ ...current, schedule: updated }));
+    } catch (error) {
+      console.error('[CompanionHome] schedule theater failed:', error);
+      addToast('小剧场生成失败，稍后再试', 'error');
+      setTheaterSlotIdx(null);
+      setScheduleViewerOpen(true);
+    } finally {
+      setTheaterGenerating(false);
+    }
+  };
+
+  const sendScheduleTheaterToChat = async (exposed: boolean) => {
+    if (theaterSlotIdx === null || !activeSchedule) return;
+    try {
+      const saved = await persistScheduleTheaterCard(activeSchedule, theaterSlotIdx, exposed);
+      if (!saved) return;
+      setTheaterSlotIdx(null);
+      setScheduleViewerOpen(false);
+      addToast(exposed ? '已让 TA 发现你在看 👀' : '已悄悄记下 · TA 不知道你看了 🙈', 'info');
+      openApp(AppID.Chat);
+    } catch (error) {
+      console.error('[CompanionHome] schedule theater card failed:', error);
+      addToast('写回聊天失败，稍后再试', 'error');
+    }
+  };
 
   const todayEventProgress = useMemo(() => {
     const wallClock = getScheduleWallClock(character);
@@ -2595,9 +2651,26 @@ const CompanionHome: React.FC = () => {
         characters={characters}
         activeCharId={character.id}
         onSwitchCharacter={setActiveCharacterId}
-        schedule={hudContent.schedule}
+        schedule={activeSchedule}
         activeCharacter={character}
+        onPlayTheater={(index) => void runScheduleTheater(index)}
       />
+
+      {theaterSlotIdx !== null && activeSchedule && createPortal(
+        <TheaterPlayer
+          character={character}
+          slot={activeSchedule.slots[theaterSlotIdx] || null}
+          lines={activeSchedule.slots[theaterSlotIdx]?.theater?.lines || null}
+          isGenerating={theaterGenerating}
+          onReplay={() => void runScheduleTheater(theaterSlotIdx, true)}
+          onSendCard={(exposed) => void sendScheduleTheaterToChat(exposed)}
+          onClose={() => {
+            setTheaterSlotIdx(null);
+            setScheduleViewerOpen(true);
+          }}
+        />,
+        document.body,
+      )}
 
       {/* ── 顶部：统一尺寸的角色内容 HUD。真实心声、聊天和日程直接出现在桌面。 ── */}
       {!editing && !independentChrome && (

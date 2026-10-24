@@ -35,8 +35,8 @@ export function VRActivityPicker({char,libraryAvailable,gardenReason,onGo,onClos
             <main>{!group?<>
                 <button className="vra-group" onClick={()=>setGroup('ordinary')}><span><b>普通空间</b><small>读书、听歌、版聊、写信……</small></span><CaretRight size={18}/></button>
                 <button className="vra-group" onClick={()=>setGroup('sar')}><span><b>SAR 活动室</b><small>芯片、模块、钓鱼、布告板、箱庭</small></span><CaretRight size={18}/></button>
-            </>:group==='ordinary'?ORDINARY_ACTIVITIES.map(a=><button className="vra-choice" key={a.id} disabled={a.id==='library'&&!libraryAvailable} onClick={()=>onGo(a.id)}><span><b>{a.name}</b><small>{a.id==='library'&&!libraryAvailable?'阅读范围内还没有书':a.description}</small></span><CaretRight size={15}/></button>):SAR_ACTIVITIES.map(a=><button className="vra-choice" key={a.id} disabled={a.id==='garden'&&!!gardenReason} onClick={()=>onGo('sar',a.id)}><span><b>{a.name}</b><small>{a.id==='garden'&&gardenReason?gardenReason:a.description}</small></span><CaretRight size={15}/></button>)}</main>
-            <footer><p>手动邀请可前往高级选项中限制的地方。</p>{!group?<button onClick={()=>onGo()}>随便逛逛</button>:group==='sar'?<button onClick={()=>onGo('sar')}>在活动室随便玩一样</button>:null}</footer>
+            </>:group==='ordinary'?ORDINARY_ACTIVITIES.map(a=><button data-manual-relay-action className="vra-choice" key={a.id} disabled={a.id==='library'&&!libraryAvailable} onClick={()=>onGo(a.id)}><span><b>{a.name}</b><small>{a.id==='library'&&!libraryAvailable?'阅读范围内还没有书':a.description}</small></span><CaretRight size={15}/></button>):SAR_ACTIVITIES.map(a=><button data-manual-relay-action className="vra-choice" key={a.id} disabled={a.id==='garden'&&!!gardenReason} onClick={()=>onGo('sar',a.id)}><span><b>{a.name}</b><small>{a.id==='garden'&&gardenReason?gardenReason:a.description}</small></span><CaretRight size={15}/></button>)}</main>
+            <footer><p>手动邀请可前往高级选项中限制的地方。</p>{!group?<button data-manual-relay-action onClick={()=>onGo()}>随便逛逛</button>:group==='sar'?<button data-manual-relay-action onClick={()=>onGo('sar')}>在活动室随便玩一样</button>:null}</footer>
         </section>
     </div>;
 }

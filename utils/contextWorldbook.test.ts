@@ -12,6 +12,41 @@ const book = (id: string, extra: Partial<MountedWorldbook> = {}): MountedWorldbo
 });
 
 describe('ContextBuilder 世界书公共契约', () => {
+    it('暂停组在七个位置、旧文本和诊断中均不注入，恢复仍遵守禁用与触发条件', async () => {
+        const paused = [...[0, 1, 2, 3, 4, 5, 6].map(position => book(`pause-${position}`, {
+            category: 'A', position: position as MountedWorldbook['position'], mountPaused: true,
+        })), book('disabled', { category: 'A', mountPaused: true, disable: true })];
+        const active = [book('normal', { category: 'B', position: 1 }), book('waiting', { category: 'B', constant: false, key: ['未出现'] })];
+        const character = char([...paused, ...active]);
+        const history = [{ role: 'user', content: '普通消息' }];
+        const request = await ContextBuilder.buildCharacterRequest({ char: character, user }, history);
+        expect(JSON.stringify(request)).toContain('WB_normal_正文');
+        expect(JSON.stringify(request)).not.toContain('WB_pause-');
+        expect((await ContextBuilder.buildCoreContext(character, user))).not.toContain('WB_pause-');
+        expect(ContextBuilder.inspectWorldbooks(character, user, history).filter(entry => entry.book.id.startsWith('pause-')).every(entry => entry.status === 'paused')).toBe(true);
+        const restored = char([...paused.map(({ mountPaused, ...entry }) => entry), ...active]);
+        const restoredRequest = JSON.stringify(await ContextBuilder.buildCharacterRequest({ char: restored, user }, history));
+        for (let position = 0; position <= 6; position++) expect(restoredRequest).toContain(`WB_pause-${position}_正文`);
+        expect(restoredRequest).not.toContain('WB_disabled_正文');
+        expect(restoredRequest).not.toContain('WB_waiting_正文');
+    });
+
+    it('相同 ID 仅启用成员是 owner，不会误入群共享块或暂停者私聊', async () => {
+        const shared = book('same', { category: 'A' });
+        const a = char([{ ...shared, mountPaused: true }]);
+        const b = { ...char([shared]), id: 'other', name: '角色乙' };
+        expect(JSON.stringify(await ContextBuilder.buildCharacterRequest({ char: a, user }, []))).not.toContain(shared.content);
+        expect(JSON.stringify(await ContextBuilder.buildCharacterRequest({ char: b, user }, []))).toContain(shared.content);
+        const scene = ContextBuilder.buildGroupSharedScene([a, b], user);
+        expect(scene.sharedWorldbookIds.has(shared.id)).toBe(false);
+        expect(scene.text).not.toContain(shared.content);
+        const messages = ContextBuilder.buildGroupWorldbookRequest({
+            members: [a, b], user, history: [{ role: 'user', content: '群消息' }],
+            render: (_slots, history) => [{ role: 'system', content: '资料' }, ...history],
+        });
+        expect(JSON.stringify(messages)).toContain('[世界书归属：角色乙；仅用于这些角色]');
+        expect(JSON.stringify(messages)).not.toContain('世界书归属：角色甲');
+    });
     it.each([true, false])('详细记忆=%s：默认上下文包含全部七个位置的常驻世界书且只出现一次', async detailed => {
         const books = Array.from({ length: 7 }, (_, position) => book(String(position), {
             position: position as MountedWorldbook['position'],

@@ -2,6 +2,7 @@ import NavigationBallSettings from '../components/settings/NavigationBallSetting
 import { useSettingsFocus } from '../utils/settingsNavigation';
 import ApiPresetGroups from '../components/settings/ApiPresetGroups';
 import DialogueApiFields from '../components/settings/DialogueApiFields';
+import FeatureApiManager from '../components/settings/FeatureApiManager';
 import ModelPicker from '../components/settings/ModelPicker';
 import { buildModelPickerView } from '../utils/modelPickerView';
 
@@ -25,7 +26,7 @@ import { XhsMcpClient } from '../utils/xhsMcpClient';
 import { resolveXhsDeploymentMode } from '../utils/xhsMcpConfig';
 import { getMcdToken, setMcdToken as saveMcdToken, isMcdEnabled, setMcdEnabled as saveMcdEnabled, testMcdConnection, resetMcdSession } from '../utils/mcdMcpClient';
 import { getLuckinToken, setLuckinToken as saveLuckinToken, isLuckinEnabled, setLuckinEnabled as saveLuckinEnabled, testLuckinConnection, resetLuckinSession } from '../utils/luckinMcpClient';
-import { consumeProxyWorkerSettingsFocus, getProxyWorkerUrl, setProxyWorkerUrl, DEFAULT_PROXY_WORKER } from '../utils/proxyWorker';
+import { consumeProxyWorkerSettingsFocus, getBuiltInPublicProxyUrl, getProxyWorkerUrl, hasPlayerProxyOverride, isAuthorProxyWorkerUrl, setProxyWorkerUrl } from '../utils/proxyWorker';
 import { VOICE_ACTING_GUIDE } from '../utils/minimaxTts';
 import { FISH_VOICE_ACTING_GUIDE } from '../utils/fishAudioTts';
 import {
@@ -35,7 +36,7 @@ import {
     isElevenLabsV4Model,
 } from '../utils/elevenLabsTts';
 import { getDateVoiceGuide } from '../utils/datePrompts';
-import { Sun, Newspaper, NotePencil, Notebook, Book, ForkKnife, Coffee, PlugsConnected } from '@phosphor-icons/react';
+import { Sun, Newspaper, NotePencil, Notebook, Book, ForkKnife, Coffee, PlugsConnected, CaretDown, GlobeHemisphereWest } from '@phosphor-icons/react';
 import { loadMcpServers, saveMcpServers, createMcpServer, testMcpConnection, resetMcpSession, getMcpUseNativeTools, setMcpUseNativeTools, type McpServerConfig } from '../utils/mcpClient';
 import { loadPushConfig, savePushConfig, registerScheduleOnWorker, startHeartbeat, stopHeartbeat, isPushConfigAvailable, ensureSubscribed, sendTestPush, getPushDiagnostics, resetSubscription, deepResetSubscription, type PushDiagnostics } from '../utils/proactivePushConfig';
 import { ProactiveChat } from '../utils/proactiveChat';
@@ -43,8 +44,7 @@ import { PushVapidSettingsModal } from '../components/settings/PushVapidSettings
 import AmsgCloudDataModal from '../components/settings/AmsgCloudDataModal';
 import PushSubscriptionPanel from '../components/settings/PushSubscriptionPanel';
 import ActiveMsgGlobalSettingsModal from '../components/settings/ActiveMsgGlobalSettingsModal';
-import { syncAmsgLlmCredentials, syncAmsgToolConfig, syncAmsgToolConfigAndPrompts } from '../utils/amsgStateSync';
-import { ActiveMsgClient } from '../utils/activeMsgClient';
+import { syncAmsgToolConfig, syncAmsgToolConfigAndPrompts } from '../utils/amsgStateSync';
 import VersionInfo from '../components/settings/VersionInfo';
 import { isPushVapidReady } from '../utils/pushVapid';
 import ApiCallLogModal from '../components/settings/ApiCallLogModal';
@@ -62,8 +62,15 @@ import {
 } from '../utils/avatarModelBackup';
 import { normalizeApiBaseUrl, normalizeApiCredential, normalizeApiModel } from '../utils/apiConfigNormalize';
 import { configFromPreset, findActivePresetId, presetDiffersFromConfig, type PresetSwitchPatch } from '../utils/apiPresetSwitch';
+import { commitApiConfig as commitSharedApiConfig } from '../utils/apiConfigCommit';
+import {
+    loadApiPresetFloatingSettings,
+    subscribeApiPresetFloatingSettings,
+    updateApiPresetFloatingSettings,
+} from '../utils/apiPresetFloatingSettings';
 import type { APIConfig, TtsProvider } from '../types';
 import { describeImageWithVisionApi, VISION_API_TEST_IMAGE_DATA_URL, visionApiConfigFromPreset } from '../utils/visionApi';
+import { loadGlobalStickerVisionEnabled, saveGlobalStickerVisionEnabled } from '../utils/stickerVision';
 import {
     FIRECRAWL_API_KEYS_URL,
     getFirecrawlApiKey,
@@ -122,7 +129,6 @@ const DiagRow: React.FC<{ label: string; value: string; bad?: boolean }> = ({ la
 // 用户版 MCP 教程（自包含，写给用户和他们的 AI 助手看的）。静态部署的站点
 // 看不到仓库内文档，所以帮助弹窗只能跳 GitHub 的 blob 页。
 const MCP_USER_GUIDE_URL = 'https://github.com/qegj567-cloud/SullyOS/blob/master/docs/mcp-user-guide.md';
-const PROXY_WORKER_SOURCE_URL = 'https://github.com/qegj567-cloud/SullyOS/blob/master/worker/index.js';
 
 const formatBackupBytes = (bytes: number): string => {
     if (!Number.isFinite(bytes) || bytes <= 0) return '0 MB';
@@ -176,10 +182,9 @@ const SettingsSection: React.FC<{
     );
 };
 
-let mcpToolConfigSyncTimer: ReturnType<typeof setTimeout> | null = null;
-let pendingMcpToolConfigSync: (() => void) | null = null;
 
-const runMcpToolConfigSync = () => {
+let mcpToolConfigSyncTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingMcpToolConfigSync: (() => void) | null = null;const runMcpToolConfigSync = () => {
     const sync = pendingMcpToolConfigSync;
     mcpToolConfigSyncTimer = null;
     pendingMcpToolConfigSync = null;
@@ -485,7 +490,7 @@ const Settings: React.FC = () => {
       apiConfig, updateApiConfig, closeApp, availableModels, setAvailableModels,
       theme, updateTheme, resetAppearance,
       exportSystem, importSystem, addToast, showError, resetSystem, updateCharacter,
-      apiPresets, addApiPreset, updateApiPreset, removeApiPreset,
+      apiPresets, addApiPreset, updateApiPreset, removeApiPreset, memoryPalaceConfig,
       sysOperation, // Get progress state
       realtimeConfig, updateRealtimeConfig, // 实时感知配置
       // 改工具凭据时要连云端提示词一起刷（见 syncAmsgToolConfigAndPrompts）
@@ -501,7 +506,9 @@ const Settings: React.FC = () => {
   const [localTemperature, setLocalTemperature] = useState<number>(
     typeof apiConfig.temperature === 'number' ? apiConfig.temperature : 0.85
   );
+  const [apiPresetFloatingSettings, setApiPresetFloatingSettings] = useState(loadApiPresetFloatingSettings);
   const [localVisionEnabled, setLocalVisionEnabled] = useState(apiConfig.visionApi?.enabled === true);
+  const [stickerVisionEnabled, setStickerVisionEnabled] = useState(loadGlobalStickerVisionEnabled());
   const [localVisionUrl, setLocalVisionUrl] = useState(apiConfig.visionApi?.baseUrl || '');
   const [localVisionKey, setLocalVisionKey] = useState(apiConfig.visionApi?.apiKey || '');
   const [localVisionModel, setLocalVisionModel] = useState(apiConfig.visionApi?.model || '');
@@ -711,7 +718,8 @@ const Settings: React.FC = () => {
   const [rtXhsEnabled, setRtXhsEnabled] = useState(realtimeConfig.xhsEnabled);
   // lite 模式走中心配置的主代理 worker（/api 是 worker/index.js 里的 XHSLite 桥）。
   // 用户改了「自定义网络代理」，lite 模式自动跟着切到新 worker。
-  const XHS_LITE_URL = `${getProxyWorkerUrl()}/api`;
+  const proxyBaseForXhs = getProxyWorkerUrl();
+  const XHS_LITE_URL = proxyBaseForXhs ? `${proxyBaseForXhs}/api` : '';
   const XHS_RISK_TEXT = '使用提示：Lite 通过网页接口连接小红书，平台规则变化时可能出现登录失效或功能暂时不可用。建议先用小号体验，并在发布或互动前确认内容。';
   const XHS_COOKIE_GUIDE = [
     '【获取小红书 cookie 教程】',
@@ -988,6 +996,7 @@ const Settings: React.FC = () => {
       setLocalVisionModel(apiConfig.visionApi?.model || '');
   }, [apiConfig.visionApi?.baseUrl || '', apiConfig.visionApi?.apiKey || '', apiConfig.visionApi?.model || '']);
 
+
   useEffect(() => {
       setLocalMiniMaxKey(apiConfig.minimaxApiKey || '');
       setLocalMiniMaxGroupId(apiConfig.minimaxGroupId || '');
@@ -1026,15 +1035,18 @@ const Settings: React.FC = () => {
       [apiPresets, apiConfig.baseUrl, apiConfig.apiKey, apiConfig.model],
   );
 
+  useEffect(() => subscribeApiPresetFloatingSettings(setApiPresetFloatingSettings), []);
+
   /**
    * 把一份配置真正切过去。保存按钮和点预设走的是同一条路——除了写进全局配置，
    * 还要把已排程的主动消息凭据一起换掉，否则聊天换了、后台任务还拿旧 Key 打请求。
    */
-  const commitApiConfig = (patch: PresetSwitchPatch | Partial<APIConfig>) => {
-    updateApiConfig(patch);
-    // 凭据行与存量任务统一从同步队列更新，失败自动重试并留底账供下次启动补传。
-    syncAmsgLlmCredentials({ ...apiConfig, ...patch });
-  };
+  const commitApiConfig = (patch: Partial<APIConfig>) => commitSharedApiConfig({
+    apiConfig,
+    patch,
+    updateApiConfig,
+    addToast,
+  });
 
   /**
    * 点预设 = 直接切过去并生效，没有「载入了但还没保存」的中间状态。
@@ -1109,9 +1121,15 @@ const Settings: React.FC = () => {
   // 删预设只是把这张「存档卡」扔掉：当前生效的配置是拷贝，不受影响。
   const deleteApiPreset = (id: string, name: string) => {
       cancelPresetDeleteHold();
+      const wasActive = activePresetId === id;
       removeApiPreset(id);
       setEditingPresetId(current => (current === id ? null : current));
-      addToast(`已删除预设: ${name}`, 'success');
+      addToast(
+          wasActive
+              ? `已删除预设: ${name}（当前生效配置未清空，如需停用请修改下方地址或密钥）`
+              : `已删除预设: ${name}`,
+          'success',
+      );
   };
 
   const beginPresetDeleteHold = (id: string, name: string) => {
@@ -1120,9 +1138,15 @@ const Settings: React.FC = () => {
       presetDeleteTimerRef.current = setTimeout(() => {
           presetDeleteTimerRef.current = null;
           setHoldingDeletePresetId(null);
+          const wasActive = activePresetId === id;
           removeApiPreset(id);
           setEditingPresetId(current => (current === id ? null : current));
-          addToast(`已删除预设: ${name}`, 'success');
+          addToast(
+              wasActive
+                  ? `已删除预设: ${name}（当前生效配置未清空，如需停用请修改下方地址或密钥）`
+                  : `已删除预设: ${name}`,
+              'success',
+          );
       }, 700);
   };
 
@@ -1625,21 +1649,39 @@ const Settings: React.FC = () => {
           trackEvent('代理地址格式被拒');
           return;
       }
-      setProxyWorkerUrl(raw);                 // 传空 / 默认地址 → 自动回落默认
+      if (raw && isAuthorProxyWorkerUrl(raw)) {
+          addToast('这是原作者的公共服务器，这个版本不能使用。请留空以使用本版本的公共代理，或填写你自己的地址。', 'error');
+          trackEvent('代理地址格式被拒');
+          return;
+      }
+      setProxyWorkerUrl(raw);
       const applied = getProxyWorkerUrl();
       setProxyWorkerInput(applied);
       // 上云那份的 proxyWorkerUrl 是现算的（读 getProxyWorkerUrl），所以要在生效之后再传。
       syncAmsgToolConfig(realtimeConfig);
-      if (applied === DEFAULT_PROXY_WORKER) trackEvent('恢复默认代理 Worker', { via: 'save-empty' });
-      addToast(applied === DEFAULT_PROXY_WORKER ? '已恢复为默认 Worker' : 'Worker 地址已保存', 'success');
+      if (!raw) trackEvent('清空网络代理', { via: 'save-empty' });
+      addToast(
+          raw
+              ? '网络代理地址已保存'
+              : applied
+                  ? '已恢复为本版本提供的公共网络代理。'
+                  : '已恢复。公共地址还没填进这个构建，联网功能会暂时不可用；聊天不受影响。',
+          raw ? 'success' : 'info',
+      );
   };
 
   const handleResetProxyWorker = () => {
       setProxyWorkerUrl('');
-      setProxyWorkerInput(getProxyWorkerUrl());
+      const applied = getProxyWorkerUrl();
+      setProxyWorkerInput(applied);
       syncAmsgToolConfig(realtimeConfig);
-      trackEvent('恢复默认代理 Worker', { via: 'reset-button' });
-      addToast('已恢复为默认 Worker', 'info');
+      trackEvent('清空网络代理', { via: 'reset-button' });
+      addToast(
+          applied
+              ? '已恢复为本版本提供的公共网络代理。'
+              : '已恢复。公共地址还没填进这个构建，联网功能会暂时不可用；聊天不受影响。',
+          'info',
+      );
   };
 
   const handleCheckFirecrawl = async () => {
@@ -1841,6 +1883,10 @@ const Settings: React.FC = () => {
   };
   const handleSaveRealtimeConfig = () => {
       if (rtUserHolidays.enabled && !rtUserHolidays.countryCode) { addToast('请选择生活所在的国家／地区，或关闭节假日感知', 'error'); return; }
+      if (rtXhsEnabled && rtXhsMode === 'lite' && !XHS_LITE_URL) {
+          addToast('小红书 Lite 需要先在「设置 → 网络代理」填写你自己的地址。', 'error');
+          return;
+      }
       if (!handleSaveUserLocation()) return;
       const updates = {
           weatherEnabled: rtWeatherEnabled,
@@ -1945,7 +1991,7 @@ const Settings: React.FC = () => {
       const urlToUse = rtXhsMode === 'lite' ? XHS_LITE_URL : rtXhsLocalUrl;
       const cookieToUse = rtXhsMode === 'lite' ? (rtXhsCookie.trim() || undefined) : undefined;
       if (!urlToUse) {
-          setRtTestStatus('请填写服务器 URL');
+          setRtTestStatus(rtXhsMode === 'lite' ? '请先在「设置 → 网络代理」填写你自己的地址' : '请填写服务器 URL');
           return;
       }
       if (rtXhsMode === 'lite' && !cookieToUse) {
@@ -2508,6 +2554,27 @@ const Settings: React.FC = () => {
                 </button>
             }
         >
+            <div className="mb-4 flex items-center justify-between gap-4 rounded-xl border border-slate-200/70 bg-white/60 px-3 py-2.5">
+                <div className="min-w-0">
+                    <div className="text-xs font-bold text-slate-700">API 预设悬浮窗</div>
+                    <div className="mt-0.5 text-[10px] leading-relaxed text-slate-400">在解锁后的页面快速切换已保存的 API 预设</div>
+                </div>
+                <button
+                    type="button"
+                    role="switch"
+                    aria-checked={apiPresetFloatingSettings.enabled}
+                    aria-label="API 预设悬浮窗"
+                    onClick={() => updateApiPresetFloatingSettings({ enabled: !apiPresetFloatingSettings.enabled })}
+                    className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+                        apiPresetFloatingSettings.enabled ? 'bg-primary' : 'bg-slate-200'
+                    }`}
+                >
+                    <span className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                        apiPresetFloatingSettings.enabled ? 'translate-x-5' : 'translate-x-0.5'
+                    }`} />
+                </button>
+            </div>
+
             {/* Presets List */}
             {apiPresets.length > 0 && (
                 <div className="mb-4">
@@ -2630,6 +2697,10 @@ const Settings: React.FC = () => {
                     </div>
                 )}
             </div>
+        </SettingsSection>
+
+        <SettingsSection title="副 API 管理" icon={<div className="rounded-xl bg-indigo-100 p-2 text-indigo-600">⚙</div>}>
+          <FeatureApiManager mainApi={apiConfig} memoryApi={memoryPalaceConfig.lightLLM} presets={apiPresets} characters={characters} />
         </SettingsSection>
 
         {/* 独立识图 API：给不支持 image_url 的主模型补视觉能力；可手动从通用模型预设载入。 */}
@@ -2789,6 +2860,58 @@ const Settings: React.FC = () => {
                 )}
             </div>
         </SettingsSection>
+
+        {/* 表情包视觉理解：全局默认开关（独立持久化，不与识图 API 绑定）。
+            角色 / 群在各自设置里用三态覆盖；只有开启后新发的表情才带视觉资格，旧表情永不补识别。 */}
+        <SettingsSection
+            title="表情包视觉理解"
+            badge={
+                <span className={`text-[9px] font-bold px-2 py-1 rounded-full ${
+                    stickerVisionEnabled
+                        ? 'bg-fuchsia-100 text-fuchsia-600'
+                        : 'bg-slate-100 text-slate-400'
+                }`}>
+                    {stickerVisionEnabled ? '全局开启' : '全局关闭'}
+                </span>
+            }
+            icon={
+                <div className="p-2 bg-fuchsia-100/60 rounded-xl text-fuchsia-500">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M15.182 15.182a4.5 4.5 0 0 1-6.364 0M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0ZM9.75 9.75c0 .414-.168.75-.375.75S9 10.164 9 9.75 9.168 9 9.375 9s.375.336.375.75Zm-.375 0h.008v.015h-.008V9.75Zm5.625 0c0 .414-.168.75-.375.75s-.375-.336-.375-.75.168-.75.375-.75.375.336.375.75Zm-.375 0h.008v.015h-.008V9.75Z" />
+                    </svg>
+                </div>
+            }
+        >
+            <div className="space-y-3">
+                <div className="rounded-2xl border border-fuchsia-100 bg-fuchsia-50/60 p-3.5">
+                    <div className="flex items-center justify-between gap-3">
+                        <div>
+                            <div className="text-xs font-bold text-slate-600">读取表情包图片（全局默认）</div>
+                            <p className="text-[10px] text-slate-400 mt-1">各角色与群可在自己的设置里选择跟随全局、强制开启或强制关闭。</p>
+                        </div>
+                        <button
+                            type="button"
+                            role="switch"
+                            aria-checked={stickerVisionEnabled}
+                            onClick={() => {
+                                const next = !stickerVisionEnabled;
+                                setStickerVisionEnabled(next);
+                                saveGlobalStickerVisionEnabled(next);
+                            }}
+                            className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${stickerVisionEnabled ? 'bg-fuchsia-500' : 'bg-slate-200'}`}
+                        >
+                            <span className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${stickerVisionEnabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                        </button>
+                    </div>
+                </div>
+                <p className="text-[10px] text-slate-400 leading-relaxed px-1">
+                    开启后，新发送的表情包会允许角色结合真实图片理解其中的文字、动作和 meme 含义。
+                    已发送的旧表情包不会补识别。
+                    若已配置独立识图 API，会优先把表情包转成文字描述；否则由支持视觉的主聊天模型直接阅读图片。
+                </p>
+            </div>
+        </SettingsSection>
+
 
         {/* API 调用记录入口 — 点开看最近 5 天各 App / 角色 / 用途的调用明细 */}
         <button
@@ -3492,42 +3615,48 @@ const Settings: React.FC = () => {
             </button>
         </section>
 
-        {/* 自定义网络代理 — 刻意低调的高级入口。默认折叠，不主动指引基本发现不了。
-            普通用户无需配置：默认走作者部署的公共 Worker，所有功能开箱即用。 */}
         {!showProxyConfig ? (
             <button
                 onClick={() => setShowProxyConfig(true)}
-                className="w-full text-center text-[10px] text-slate-300 hover:text-slate-400 py-1 transition-colors"
+                className="w-full text-left text-[12px] text-slate-600 bg-white/70 border border-slate-200 rounded-2xl px-4 py-3"
             >
-                · 自定义网络代理 ·
+                {hasPlayerProxyOverride()
+                    ? '已改用你自己的网络代理 · 点这里更换'
+                    : getBuiltInPublicProxyUrl()
+                        ? '正在使用本版本提供的网络代理 · 高级用户可点这里更换'
+                        : '公共网络代理地址还没填好。基础联网会暂时不可用，点这里查看。聊天不需要这项。'}
             </button>
         ) : (
             <section ref={proxyConfigSectionRef} className="scroll-mt-4 bg-white/60 rounded-2xl p-4 border border-slate-100">
                 <div className="flex items-center justify-between mb-2">
-                    <h2 className="text-xs font-semibold text-slate-500">自定义网络代理 (Worker)</h2>
+                    <h2 className="text-xs font-semibold text-slate-500">网络代理</h2>
                     <button onClick={() => { setShowProxyConfig(false); setProxyWorkerInput(getProxyWorkerUrl()); }} className="text-[10px] text-slate-400">收起</button>
                 </div>
 
                 <div className="text-[10px] text-slate-500 bg-slate-50 border border-slate-100 rounded-lg px-2.5 py-2 mb-3 leading-relaxed">
-                    <b>一般无需修改这里。</b>默认地址负责静态网页环境中需要跨域转发的联网功能；
-                    GitHub 备份仍默认直连，只有你在备份设置中主动开启中转后才会使用 Worker。
-                    如果你部署了自己的 <b>worker/index.js</b>，可以在这里换成自己的实例。
+                    普通使用不用注册 Cloudflare，也不用填写地址。音乐、网页读取、小红书签名和小红书以外的备份中转，会走本版本提供的公共代理。
+                    中文热榜不经过这里。聊天也不需要这项。
+                    {getBuiltInPublicProxyUrl()
+                        ? '当前构建已经带有公共地址。'
+                        : '这个构建还没有填入公共地址，所以上面几项会暂时不可用。'}
+                    主动消息仍由你自己的 Cloudflare 账号部署；一键部署只是借公共代理转发你的 Cloudflare 接口，不会把数据存进发行方的账号。
+                    GitHub 备份默认直连，只有你在备份设置里主动打开中转后才会走这里。
+                    不要填写原作者的公共服务器。
                 </div>
 
                 <div className="mb-3 rounded-xl border border-sky-100 bg-sky-50/80 px-3 py-2.5 text-[10px] leading-relaxed text-sky-900">
-                    <p className="mb-1.5 font-bold">部署自己的 Worker</p>
-                    <ol className="space-y-1">
-                        <li><b>1.</b> 在 Cloudflare 控制台进入 Workers &amp; Pages，新建一个 Worker。</li>
-                        <li><b>2.</b> 打开并复制完整的 <a href={PROXY_WORKER_SOURCE_URL} target="_blank" rel="noreferrer" className="font-bold underline underline-offset-2">worker/index.js 源码</a>，替换编辑器里的默认代码，然后部署。</li>
-                        <li><b>3.</b> 复制部署得到的 <b>https://xxx.workers.dev</b> 地址，粘贴到下方并保存。</li>
-                    </ol>
+                    <p className="mb-1.5 font-bold">高级用户：换成自己的地址</p>
+                    <p>
+                        只有不想使用公共代理时才需要填写。把本版本仓库里的 worker/index.js 部署到你自己的 Cloudflare，再把得到的 https 地址粘贴到下面。
+                        留空并保存，会回到本版本的公共地址。
+                    </p>
                 </div>
 
                 <input
                     type="text"
                     value={proxyWorkerInput}
                     onChange={(e) => setProxyWorkerInput(e.target.value)}
-                    placeholder={DEFAULT_PROXY_WORKER}
+                    placeholder={getBuiltInPublicProxyUrl() || '公共地址待填入。高级用户可粘贴自己的 https://….workers.dev'}
                     spellCheck={false}
                     autoCapitalize="none"
                     autoCorrect="off"
@@ -3544,9 +3673,8 @@ const Settings: React.FC = () => {
                 </div>
 
                 <p className="text-[10px] text-slate-400 px-1 mt-2 leading-relaxed">
-                    只填到域名（如 <b>{DEFAULT_PROXY_WORKER}</b>），不要带 /search、/webdav、/api 等路径。
-                    联网搜索 / 备份代理 / Notion / 飞书 / 点单 / 网页抓取 / 出图 / 小红书 Lite / 音乐 都会切到这里填的 Worker。
-                    （音乐播放器里还留了一个独立地址框，单独填了就以那个为准。）
+                    只填到域名，例如 <b>https://你的名字.workers.dev</b>，不要带 /search、/webdav、/api 等路径。
+                    音乐播放器里还有一个单独的地址框；那里单独填了，就只有音乐走那个地址。
                 </p>
             </section>
         )}
@@ -4220,6 +4348,7 @@ const Settings: React.FC = () => {
                                   <p className="text-[10px] text-slate-400/90 leading-relaxed">
                                       上面的中文热榜在国内场景比 Brave 好用一万倍，<b className="text-slate-500">基本不需要配这个</b>。
                                       它只是热榜彻底拉不到时的英文回落，配了反而可能盖掉中文热点。除非你清楚自己在做什么，否则留空即可。
+                                      留空时如果打开了新闻热点，角色的少量主动搜索会使用发行方的公共额度；填了自己的 Key，就改用你自己的额度。
                                   </p>
                                   <input type="password" value={rtNewsApiKey} onChange={e => setRtNewsApiKey(e.target.value)} className="w-full bg-white/60 border border-slate-200 rounded-xl px-3 py-2 text-sm font-mono text-slate-500" placeholder="（不建议）brave.com/search/api" />
                                   <p className="text-[10px] text-slate-400/70">仅当中文热榜拉取失败时才启用；都不可用时再兜底 Hacker News（英文）。</p>

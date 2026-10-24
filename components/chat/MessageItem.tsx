@@ -20,9 +20,15 @@ import ChatImage from './ChatImage';
 import { SARSpeechSwitch } from '../sar/SARSpeechSwitch';
 import McdCard from './McdCard';
 import HtmlCard from './HtmlCard';
+import HtmlRepairComposite from './HtmlRepairComposite';
+import type { HtmlRepairSegment } from '../../utils/htmlFormatRepair';
 import LuckinCard from './LuckinCard';
 import LuckinCheckoutCard from './LuckinCheckoutCard';
 import QixiEventCardView from './QixiEventCard';
+import { getWithdrawal } from '../../utils/messageWithdrawal';
+import { serializeDiaryObservations } from '../../utils/journal';
+import { isOperatorAuthoredCharacterMessage } from '../../utils/operatorMessageProvenance';
+import { readThinkingTranslation, thinkingSourceFingerprint } from '../../utils/thinkingTranslation';
 
 import {SERIF, resolveThinkingChainStyle, type ThinkingChainStyleId, type ThinkingChainStyleSpec} from '../../utils/psycheAppearance';
 export {THINKING_CHAIN_PRESETS,resolveThinkingChainStyle} from '../../utils/psycheAppearance';
@@ -133,12 +139,39 @@ export const PsycheDecor: React.FC<{ spec: ThinkingChainStyleSpec; compact?: boo
 // 多风格通过 resolveThinkingChainStyle() 统一渲染；齿轮触发 onOpenSettings 进入设置弹窗。
 export const ThinkingChainBlock: React.FC<{
     chain: string;
+    translation?: string;
+    translationError?: string;
+    onTranslate?: () => Promise<string>;
     initiallyExpanded?: boolean;
     styleId?: ThinkingChainStyleId;
     customColors?: { bg?: string; accent?: string; text?: string };
     onOpenSettings?: () => void;
-}> = ({ chain, styleId, customColors, onOpenSettings, initiallyExpanded=false }) => {
+}> = ({ chain, translation, translationError, onTranslate, styleId, customColors, onOpenSettings, initiallyExpanded=false }) => {
     const [expanded, setExpanded] = useState(initiallyExpanded);
+    const [showTranslated, setShowTranslated] = useState(!!translation);
+    const [localTranslation, setLocalTranslation] = useState('');
+    const [translateState, setTranslateState] = useState<'idle' | 'loading' | 'error'>('idle');
+    const [translateError, setTranslateError] = useState('');
+    const mountedRef = useRef(true);
+    const chainRef = useRef(chain);
+    chainRef.current = chain;
+    useEffect(() => {
+        mountedRef.current = true;
+        return () => { mountedRef.current = false; };
+    }, []);
+    useEffect(() => { if (translation) { setShowTranslated(true); setTranslateState('idle'); } }, [translation]);
+    useEffect(() => {
+        setLocalTranslation('');
+        setShowTranslated(!!translation);
+        setTranslateState('idle');
+        setTranslateError('');
+    }, [chain]);
+    useEffect(() => {
+        if (translationError && !translation) {
+            setTranslateError(translationError);
+            setTranslateState('error');
+        }
+    }, [translationError, translation]);
     const [copyState, setCopyState] = useState<'idle' | 'ready' | 'ok' | 'error'>('idle');
     const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -147,7 +180,8 @@ export const ThinkingChainBlock: React.FC<{
     const pointerStartRef = useRef({ x: 0, y: 0 });
     const longPressReadyRef = useRef(false);
     const suppressNextClickRef = useRef(false);
-    const trimmed = (chain || '').trim();
+    const availableTranslation = translation || localTranslation;
+    const trimmed = ((showTranslated && availableTranslation) || chain || '').trim();
     const spec = resolveThinkingChainStyle(styleId, customColors);
     const firstLine = trimmed.replace(/\s+/g, ' ').slice(0, 38);
     const hasMore = trimmed.length > 38;
@@ -165,6 +199,25 @@ export const ThinkingChainBlock: React.FC<{
     }, []);
 
     if (!trimmed) return null;
+
+    const handleTranslateClick = (e: React.MouseEvent<HTMLButtonElement>) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (availableTranslation) { setShowTranslated(value => !value); return; }
+        if (!onTranslate || translateState === 'loading') return;
+        const requestedChain = chain;
+        setTranslateState('loading');
+        void onTranslate().then(text => {
+            if (!mountedRef.current || chainRef.current !== requestedChain) return;
+            setLocalTranslation(text);
+            setShowTranslated(true);
+            setTranslateState('idle');
+        }).catch(error => {
+            if (!mountedRef.current || chainRef.current !== requestedChain) return;
+            setTranslateError(error instanceof Error ? error.message : '请稍后重试');
+            setTranslateState('error');
+        });
+    };
 
     const copyThinkingChain = async () => {
         let success = false;
@@ -359,7 +412,7 @@ export const ThinkingChainBlock: React.FC<{
                 )}
 
                 {/* 标题行 */}
-                <div className="relative flex items-center gap-2">
+                <div className="relative flex flex-wrap items-center gap-x-2 gap-y-0.5 min-w-0">
                     <span
                         className="sully-psyche-title text-[13px] font-semibold tracking-[0.4em]"
                         style={{
@@ -370,19 +423,36 @@ export const ThinkingChainBlock: React.FC<{
                     >
                         {spec.titleZh}
                     </span>
-                    <span className="text-[8.5px] tracking-[0.32em] opacity-70" style={{ color: spec.text }}>
+                    <span className="text-[8.5px] tracking-[0.32em] opacity-70 hidden min-[340px]:inline" style={{ color: spec.text }}>
                         {spec.titleEn}
                     </span>
                     {spec.showCorners && (
                         <span aria-hidden className="text-[7px] mx-0.5" style={{ color: spec.border }}>◆</span>
                     )}
                     <span
-                        className="sully-psyche-status ml-auto text-[10px] tracking-[0.18em] transition-opacity opacity-65 group-hover:opacity-100"
+                        className="sully-psyche-status ml-auto text-[10px] tracking-[0.18em] transition-opacity opacity-65 group-hover:opacity-100 whitespace-nowrap"
                         style={{ color: spec.subtext }}
                     >
                         {copyStatusLabel}
                     </span>
+                    {onTranslate && <button type="button"
+                        className="sully-psyche-translate shrink-0 rounded-md px-1.5 py-0.5 text-[10px] leading-tight border border-current/30"
+                        style={{ color: spec.accent }}
+                        aria-label={availableTranslation ? (showTranslated ? '查看原文' : '查看译文') : translateState === 'loading' ? '翻译中' : translateState === 'error' ? '翻译失败，重试' : '翻译成中文'}
+                        title={availableTranslation ? (showTranslated ? '查看原文' : '查看译文') : translateState === 'loading' ? '翻译中' : translateState === 'error' ? `翻译失败：${translateError}，点击重试` : '翻译成中文'}
+                        disabled={translateState === 'loading'}
+                        onPointerDown={e => e.stopPropagation()}
+                        onPointerMove={e => e.stopPropagation()}
+                        onPointerUp={e => e.stopPropagation()}
+                        onPointerCancel={e => e.stopPropagation()}
+                        onTouchStart={e => e.stopPropagation()}
+                        onTouchEnd={e => e.stopPropagation()}
+                        onContextMenu={e => e.stopPropagation()}
+                        onKeyDown={e => e.stopPropagation()}
+                        onClick={handleTranslateClick}
+                    >{availableTranslation ? (showTranslated ? '查看原文' : '查看译文') : translateState === 'loading' ? '翻译中' : translateState === 'error' ? '翻译失败 · 重试' : '翻译'}</button>}
                 </div>
+                {translateState === 'error' && !availableTranslation && <div role="status" className="relative mt-1 text-[10px] break-words" style={{ color: spec.subtext }}>{translateError}</div>}
 
                 {/* 装饰横线 */}
                 {spec.showDivider && (
@@ -406,15 +476,19 @@ export const ThinkingChainBlock: React.FC<{
                 )}
                 {expanded && (
                     <div className="relative mt-1.5">
+                        {/* 上下软渐变盖掉系统滚动条; fadeColor 跟卡片背景一致 */}
+                        {spec.fadeColor && (
+                            <>
+                                <div aria-hidden className="absolute top-0 left-0 right-0 h-3 pointer-events-none z-10" style={{ background: `linear-gradient(to bottom, ${spec.fadeColor} 0%, transparent 100%)` }} />
+                                <div aria-hidden className="absolute bottom-0 left-0 right-0 h-3 pointer-events-none z-10" style={{ background: `linear-gradient(to top, ${spec.fadeColor} 0%, transparent 100%)` }} />
+                            </>
+                        )}
                         <div
                             className={`sully-psyche-body no-scrollbar relative pl-3 pr-1 py-2 text-[12.5px] leading-[1.85] whitespace-pre-wrap break-words max-h-72 overflow-auto ${spec.italic ? 'italic' : ''}`}
                             style={{
                                 color: spec.text,
                                 fontFamily: spec.fontFamily,
                                 borderLeft: `1px solid ${spec.border}`,
-                                // Fade the text itself so CSS outfits can freely change the card background.
-                                maskImage: spec.fadeColor ? 'linear-gradient(to bottom, transparent, black 12px, black calc(100% - 12px), transparent)' : undefined,
-                                WebkitMaskImage: spec.fadeColor ? 'linear-gradient(to bottom, transparent, black 12px, black calc(100% - 12px), transparent)' : undefined,
                                 textShadow: spec.glow ? '0 0 6px rgba(0, 0, 0, 0.4)' : undefined,
                             }}
                             onClick={(e) => e.stopPropagation()}
@@ -1139,6 +1213,8 @@ interface MessageItemProps {
         customColors?: { bg?: string; accent?: string; text?: string };
         onOpenSettings?: () => void;
     };
+    onTranslateThinking?: (message: Message) => Promise<string>;
+    thinkingTranslationError?: string;
 }
 
 const MessageItem = React.memo(({
@@ -1184,9 +1260,13 @@ const MessageItem = React.memo(({
     onResolveLifeRecord,
     onOpenCollaborationFile,
     thinkingChainOptions,
+    onTranslateThinking,
+    thinkingTranslationError,
 }: MessageItemProps) => {
     const isUser = m.role === 'user';
     const isSystem = m.role === 'system';
+    const operatorAuthored = isOperatorAuthoredCharacterMessage(m);
+    const withdrawal = getWithdrawal(m);
     const spacingClass = messageSpacing === 'compact' ? (isLastInGroup ? 'mb-3' : 'mb-0.5') : messageSpacing === 'spacious' ? (isLastInGroup ? 'mb-8' : 'mb-2.5') : (isLastInGroup ? 'mb-6' : 'mb-1.5');
     const marginBottom = spacingClass;
     const avatarSizeClass = avatarSize === 'small' ? 'w-7 h-7' : avatarSize === 'large' ? 'w-12 h-12' : 'w-9 h-9';
@@ -1255,6 +1335,7 @@ const MessageItem = React.memo(({
         if (!replyGestureActiveRef.current) {
             const startsReplySwipe = isTouchPointer
                 && !isSystem
+                && !withdrawal
                 && diffX < -8
                 && Math.abs(diffX) > Math.abs(diffY);
             if (!startsReplySwipe) {
@@ -1327,6 +1408,35 @@ const MessageItem = React.memo(({
 
     const formatTime = (ts: number) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
 
+    if (withdrawal) {
+        const label = isUser ? '我' : '对方';
+        const emojiName = withdrawal.emojiName || '未知表情';
+        return (
+            <div className={`relative flex w-full justify-center px-10 ${marginBottom} ${selectionMode ? 'pl-12' : ''}`}>
+                {selectionMode && (
+                    <div className="absolute left-3 top-1/2 -translate-y-1/2 cursor-pointer z-20" onClick={() => onToggleSelect(m.id)}>
+                        <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors ${isSelected ? 'bg-primary border-primary' : 'border-slate-300 bg-white/80'}`}>
+                            {isSelected && <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" strokeWidth={3} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>}
+                        </div>
+                    </div>
+                )}
+                <div
+                    className="max-w-full cursor-pointer select-none text-center text-[11px] leading-relaxed text-slate-400 active:opacity-70"
+                    {...interactionProps}
+                >
+                    {m.type === 'emoji' ? (
+                        <span>{label}撤回了一个 [{emojiName}] 的表情包</span>
+                    ) : (
+                        <>
+                            <div>{label}撤回了一条消息</div>
+                            <div className="mt-0.5 whitespace-pre-wrap break-words text-slate-500">原文：{m.content}</div>
+                        </>
+                    )}
+                </div>
+            </div>
+        );
+    }
+
     // Render Avatar with potential decoration/frame
     // Removed mb-5 from here, handled via absolute positioning in parent
     const renderAvatar = (
@@ -1394,6 +1504,7 @@ const MessageItem = React.memo(({
                 const year = dateParts[0] || '';
                 const userText = (scoreData.userText || '').trim();
                 const charText = (scoreData.charText || '').trim();
+                const userObservations = serializeDiaryObservations(scoreData.userObservations);
                 const truncate = (s: string, n: number) => (s.length > n ? s.slice(0, n) + '…' : s);
                 return (
                     <div className={`flex items-center w-full ${selectionMode ? 'pl-8' : ''} animate-fade-in relative transition-[padding] duration-300`}>
@@ -1432,6 +1543,14 @@ const MessageItem = React.memo(({
                                     <div className="rounded-xl px-3 py-2.5 text-[11px] leading-relaxed whitespace-pre-wrap" style={{ background: 'rgba(255,253,245,0.85)', border: '1px solid rgba(217,180,120,0.25)', color: '#4a3520', fontFamily: 'ui-serif, Georgia, serif' }}>
                                         {userText ? truncate(userText, 160) : <span className="opacity-40 italic">(空白页)</span>}
                                     </div>
+                                    {userObservations && (
+                                        <div className="mt-2 rounded-xl px-3 py-2.5" style={{ background: 'rgba(250,242,220,0.72)', border: '1px solid rgba(217,180,120,0.22)', color: '#4a3520' }}>
+                                            <div className="text-[8px] font-bold tracking-widest mb-1.5" style={{ color: '#a07840' }}>今天的一些观察</div>
+                                            <div className="text-[10px] leading-relaxed whitespace-pre-wrap" style={{ fontFamily: 'ui-serif, Georgia, serif' }}>
+                                                {truncate(userObservations, 260)}
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
 
                                 {/* Char page */}
@@ -1604,7 +1723,7 @@ const MessageItem = React.memo(({
 
     // HTML 卡片（280px 定宽模块）默认位置就是"视觉居中"的约定：包装层打上 sully-html-wrap，
     // 让「聊天细节微调」的贴边/缩进规则 :not() 绕开它——美化怎么开卡片都不挪窝。
-    const isHtmlCard = m.type === 'html_card';
+    const isHtmlCard = m.type === 'html_card' && !Array.isArray(m.metadata?.htmlRepairSegments);
     // 音乐卡片（一起听 / 收歌单）与 HTML 卡片同为定宽模块，跟随同一套 chatModuleAlign 约定。
     // 条件与下方渲染分支一致：没有 song 元数据会落回普通气泡，不按模块排版。
     const isMusicCard = m.type === 'music_card' && !!m.metadata?.song;
@@ -1627,7 +1746,11 @@ const MessageItem = React.memo(({
             )}
             <div className={selectionMode ? 'pointer-events-none' : ''}>
                 <ThinkingChainBlock
+                    key={`${m.charId}:${m.id}:${thinkingSourceFingerprint(String(m.metadata!.thinkingChain))}`}
                     chain={String(m.metadata!.thinkingChain)}
+                    translation={readThinkingTranslation(m)?.text}
+                    translationError={thinkingTranslationError}
+                    onTranslate={onTranslateThinking ? () => onTranslateThinking(m) : undefined}
                     initiallyExpanded={previewExpanded}
                     styleId={thinkingChainOptions?.styleId}
                     customColors={thinkingChainOptions?.customColors}
@@ -2758,6 +2881,10 @@ const MessageItem = React.memo(({
 
     if (m.type === 'html_card') {
         const meta: any = m.metadata || {};
+        if (Array.isArray(meta.htmlRepairSegments)) {
+            const segments = meta.htmlRepairSegments as HtmlRepairSegment[];
+            return commonLayout(<HtmlRepairComposite segments={segments} isUser={isUser} textStyle={{ backgroundColor: styleConfig.backgroundColor, color: styleConfig.textColor, opacity: styleConfig.opacity }} />);
+        }
         const html: string = (typeof meta.htmlSource === 'string' && meta.htmlSource) ? meta.htmlSource : '';
         if (!html) {
             // 元数据丢了 (老消息或导入数据), 给个友好占位
@@ -2809,6 +2936,146 @@ const MessageItem = React.memo(({
     if (m.type === 'score_card') {
         let scoreData: any = null;
         try { scoreData = m.metadata?.scoreCard || JSON.parse(m.content); } catch {}
+
+
+        if (scoreData?.type === 'heart_sync_event_card') {
+            const display = scoreData.displayPayload || {};
+            if (scoreData.mode === 'psych') {
+                const question = display.question || {};
+                const optionText = (answer: any) => {
+                    const option = (question.options || []).find((item: any) => item.key === answer?.optionKey);
+                    return option ? `${option.key} · ${option.label}` : '';
+                };
+                const turns = Array.isArray(display.turns) ? display.turns : [];
+                return commonLayout(
+                    <div className="w-72" {...interactionProps}><details className="group overflow-hidden rounded-[22px] border border-rose-100 bg-white shadow-md">
+                        <summary className="cursor-pointer list-none bg-gradient-to-br from-rose-500 to-orange-400 px-4 py-4 text-white">
+                            <div className="text-[9px] font-bold tracking-[0.16em] text-white/75">心心相印 · 心理测试</div>
+                            <div className="mt-2 line-clamp-2 text-sm font-black leading-5">{scoreData.title}</div>
+                            <div className="mt-3 text-[9px] text-white/75">与 {scoreData.charName} · 点击展开完整记录</div>
+                        </summary>
+                        <div className="max-h-96 space-y-3 overflow-y-auto px-4 py-4 text-[10px] leading-5 text-slate-600">
+                            {Array.isArray(question.options) && question.options.length > 0 && <div className="rounded-xl bg-slate-50 p-3"><b className="text-slate-700">当时的选项</b>{question.options.map((option: any) => <p key={option.key}>{option.key} · {option.label}</p>)}</div>}
+                            <div className="rounded-xl bg-rose-50 p-3"><b className="text-rose-600">{scoreData.charName} · {optionText(display.partnerAnswer)}</b><p className="mt-1 whitespace-pre-wrap">{display.partnerAnswer?.text || '未记录'}</p>{display.partnerInterpretation && <p className="mt-1 text-slate-400">参考解释：{display.partnerInterpretation}</p>}</div>
+                            <div className="rounded-xl bg-amber-50 p-3"><b className="text-amber-700">我 · {optionText(display.userAnswer)}</b><p className="mt-1 whitespace-pre-wrap">{display.userAnswer?.text || '未记录'}</p>{display.userInterpretation && <p className="mt-1 text-slate-400">参考解释：{display.userInterpretation}</p>}</div>
+                            {turns.length > 0 && <div><b className="text-slate-700">后续讨论</b><div className="mt-2 space-y-2">{turns.map((turn: any, index: number) => <div key={turn.id || index} className={`rounded-xl p-3 ${turn.role === 'user' ? 'bg-rose-500 text-white' : 'bg-slate-100 text-slate-700'}`}><b>{turn.role === 'user' ? '我' : scoreData.charName}</b><p className="mt-1 whitespace-pre-wrap">{turn.content}</p></div>)}</div></div>}
+                        </div>
+                    </details></div>,
+                );
+            }
+
+            const questionnaire = display.questionnaire || {};
+            const questions = Array.isArray(questionnaire.questions) ? questionnaire.questions : [];
+            const answers = Array.isArray(display.answers) ? display.answers : [];
+            const answerMap = new Map(answers.map((answer: any) => [answer.questionId, answer.optionKey]));
+            return commonLayout(
+                <div className="w-72" {...interactionProps}><details className="group overflow-hidden rounded-[22px] border border-orange-100 bg-[#fffdf6] shadow-md">
+                    <summary className="cursor-pointer list-none bg-gradient-to-br from-orange-500 to-rose-400 px-4 py-4 text-white">
+                        <div className="text-[9px] font-bold tracking-[0.16em] text-white/75">心心相印 · 问卷填写</div>
+                        <div className="mt-2 line-clamp-2 text-sm font-black leading-5">{scoreData.title}</div>
+                        <div className="mt-3 text-xl font-black">{[display.result?.scoreSummary, display.result?.resultLabel].filter(Boolean).join(' · ') || '已完成'}</div>
+                        <div className="mt-2 text-[9px] text-white/75">{scoreData.charName} · 点击查看完整问卷</div>
+                    </summary>
+                    <div className="max-h-96 space-y-3 overflow-y-auto px-4 py-4 text-[10px] leading-5 text-slate-600">
+                        {display.result?.calculationSummary && <p className="rounded-xl bg-orange-50 p-3">{display.result.calculationSummary}</p>}
+                        {display.result?.reaction && <div className="rounded-xl bg-rose-50 p-3"><b className="text-rose-600">TA 的反应</b><p className="mt-1 whitespace-pre-wrap">“{display.result.reaction}”</p></div>}
+                        <div><b className="text-slate-700">全部冻结答案</b><div className="mt-2 space-y-2">{questions.map((question: any, index: number) => { const optionKey = answerMap.get(question.id); const option = (question.options || []).find((item: any) => item.key === optionKey); return <div key={question.id || index} className="rounded-xl bg-white p-3 shadow-sm"><b>{index + 1}. {question.text}</b><p className="mt-1 text-orange-700">{String(optionKey || '—')} · {option?.label || '未记录'}</p></div>; })}</div></div>
+                        <details className="rounded-xl bg-orange-50 p-3"><summary className="cursor-pointer font-bold text-orange-700">问卷规则</summary><p className="mt-2 whitespace-pre-wrap">{questionnaire.scoringRules || '未记录'}</p>{questionnaire.resultGuide && <p className="mt-2 whitespace-pre-wrap border-t border-orange-100 pt-2">{questionnaire.resultGuide}</p>}</details>
+                    </div>
+                </details></div>,
+            );
+        }
+
+        if (scoreData?.type === 'companion_test_card' || scoreData?.type === 'xiaohongshu_discussion_card') {
+            return null;
+        }
+
+        if (scoreData?.type === 'debate_card') {
+            const winnerLabel = scoreData.winner === 'draw' ? '平局' : scoreData.winner === 'pro' ? '正方获胜' : '反方获胜';
+            return commonLayout(
+                <div className="w-72 overflow-hidden rounded-2xl bg-stone-900 text-white shadow-md" {...interactionProps}>
+                    <div className="flex items-center justify-between bg-amber-400 px-4 py-3 text-amber-950">
+                        <div><div className="text-[9px] font-bold tracking-[0.16em]">辩论赛 · 赛后报告</div><div className="mt-1 text-sm font-black">{scoreData.mode === 'team' ? '八人正式赛' : '一对一对辩'}</div></div>
+                        <div className="rounded-full bg-stone-900 px-3 py-1 text-[10px] font-bold text-amber-300">{winnerLabel}</div>
+                    </div>
+                    <div className="px-4 py-4">
+                        <div className="line-clamp-2 text-sm font-bold leading-5 text-white">{scoreData.topic}</div>
+                        <div className="mt-4 grid grid-cols-2 gap-2">
+                            <div className="rounded-xl bg-red-500 px-3 py-2.5"><div className="text-[9px] font-bold text-red-100">正方</div><div className="mt-0.5 text-2xl font-black">{scoreData.proScore ?? 0}</div></div>
+                            <div className="rounded-xl bg-blue-600 px-3 py-2.5"><div className="text-[9px] font-bold text-blue-100">反方</div><div className="mt-0.5 text-2xl font-black">{scoreData.conScore ?? 0}</div></div>
+                        </div>
+                        {scoreData.mode === 'team' && <div className="mt-3 rounded-xl bg-white/10 px-3 py-2 text-[10px] leading-5 text-stone-200"><div>用户观赛和组织，未发言、不属任何一方</div><div>正方：{Array.isArray(scoreData.proTeam) ? scoreData.proTeam.map((row: any, i: number) => `${i + 1}辩${row.name}`).join('、') : '名单未记录'}</div><div>反方：{Array.isArray(scoreData.conTeam) ? scoreData.conTeam.map((row: any, i: number) => `${i + 1}辩${row.name}`).join('、') : '名单未记录'}</div></div>}
+                        <p className="mt-3 line-clamp-4 text-[11px] leading-5 text-stone-300">{scoreData.summary}</p>
+                        {scoreData.participantSide && <div className="mt-3 rounded-xl bg-white/10 px-3 py-2 text-[10px] text-stone-200">本次席位 · {scoreData.participantSide === 'pro' ? '正方' : '反方'}{scoreData.participantRole ? ` ${scoreData.participantRole}辩` : ''} · 个人累计 {scoreData.participantScore ?? 0} 分</div>}
+                        <div className="mt-3 border-t border-white/10 pt-2 text-[9px] text-stone-400">已写入共同聊天与记忆</div>
+                    </div>
+                </div>,
+            );
+        }
+
+        if (scoreData?.type === 'board_game_liars_bar_card') {
+            const stats = scoreData.participantStats || {};
+            return commonLayout(
+                <div className="w-72 overflow-hidden rounded-2xl bg-[#251517] text-white shadow-md" {...interactionProps}>
+                    <div className="flex items-center justify-between bg-[#8f2335] px-4 py-3">
+                        <div><div className="text-[9px] font-bold tracking-[0.16em] text-rose-100/75">桌游 · 骗子酒馆</div><div className="mt-1 text-sm font-black">酒馆散场</div></div>
+                        <div className="rounded-full bg-[#251517] px-3 py-1 text-[10px] font-bold text-amber-200">{scoreData.winnerName} 获胜</div>
+                    </div>
+                    <div className="px-4 py-4">
+                        <div className="grid grid-cols-3 gap-2 text-center"><div className="rounded-xl bg-white/10 py-2"><b className="block text-base">{stats.plays ?? 0}</b><span className="text-[8px] text-white/55">出牌</span></div><div className="rounded-xl bg-white/10 py-2"><b className="block text-base">{stats.successfulChallenges ?? 0}/{stats.challenges ?? 0}</b><span className="text-[8px] text-white/55">抓谎</span></div><div className="rounded-xl bg-white/10 py-2"><b className="block text-base">{stats.shots ?? 0}</b><span className="text-[8px] text-white/55">扳机</span></div></div>
+                        <p className="mt-3 line-clamp-5 text-[11px] leading-5 text-white/70">{scoreData.summary}</p>
+                        <div className="mt-3 border-t border-white/10 pt-2 text-[9px] text-white/40">未翻开的暗牌仍保持私密</div>
+                    </div>
+                </div>,
+            );
+        }
+
+        if (scoreData?.type === 'community_committee_card') {
+            const names = Array.isArray(scoreData.participantNames) ? scoreData.participantNames.join('、') : '';
+            return commonLayout(
+                <div className="w-72 overflow-hidden rounded-2xl bg-[#f6faf8] text-slate-900 shadow-md" {...interactionProps}>
+                    <div className="bg-[#123e3a] px-4 pb-4 pt-3 text-white">
+                        <div className="flex items-center justify-between text-[9px] font-bold tracking-[0.15em] text-teal-100/75"><span>居委会 · 议事总结</span><span>已落点</span></div>
+                        <div className="mt-3 line-clamp-2 text-sm font-black leading-5">{scoreData.topic}</div>
+                        {names && <div className="mt-2 text-[9px] text-teal-100/70">一起听的人 · {names}</div>}
+                    </div>
+                    <div className="px-4 py-4">
+                        <p className="line-clamp-6 whitespace-pre-line text-[11px] leading-5 text-slate-700">{scoreData.report}</p>
+                        <div className="mt-3 flex items-center justify-between border-t border-teal-100 pt-2 text-[9px] text-slate-400"><span>现实困境 · 不判输赢</span><span>逐字倾诉仍在本机</span></div>
+                    </div>
+                </div>,
+            );
+        }
+
+        if (scoreData?.type === 'task_workshop_card') {
+            const steps = Array.isArray(scoreData.suggestedSteps) ? scoreData.suggestedSteps.slice(0, 3) : [];
+            return commonLayout(
+                <div className="w-72 overflow-hidden rounded-2xl border border-emerald-100 bg-[#fbfffc] text-slate-900 shadow-md" {...interactionProps}>
+                    <div className="flex items-center gap-3 border-b border-emerald-100 bg-emerald-950 px-4 py-3 text-white">
+                        {scoreData.charAvatar ? <img src={scoreData.charAvatar} className="h-9 w-9 rounded-full object-cover ring-2 ring-white/25" /> : <div className="flex h-9 w-9 items-center justify-center rounded-full bg-emerald-700 text-sm font-black">{String(scoreData.charName || '?').slice(0, 1)}</div>}
+                        <div className="min-w-0 flex-1"><div className="text-[9px] font-bold tracking-[0.16em] text-emerald-200">任务工坊 · {scoreData.origin === 'task' ? '任务快照' : '来访便签'}</div><div className="mt-0.5 truncate text-sm font-black">{scoreData.title}</div></div>
+                    </div>
+                    <div className="px-4 py-4">
+                        <p className="text-[11px] leading-5 text-slate-700">{scoreData.summary}</p>
+                        {steps.length > 0 && <ol className="mt-3 space-y-1.5">{steps.map((step: string, index: number) => <li key={`${index}-${step}`} className="flex gap-2 text-[10px] leading-4 text-slate-600"><b className="text-emerald-700">{index + 1}.</b><span>{step}</span></li>)}</ol>}
+                        {scoreData.nextAction && <div className="mt-3 rounded-xl bg-emerald-50 px-3 py-2 text-[10px] leading-4 text-emerald-950"><b>可以马上开始：</b>{scoreData.nextAction}</div>}
+                        <div className="mt-3 border-t border-emerald-100 pt-2 text-[9px] text-slate-400">由你主动带到聊天 · 尚未执行任何工具</div>
+                    </div>
+                </div>,
+            );
+        }
+
+        if (scoreData?.type === 'my_schedule_card') {
+            const start = new Date(scoreData.startAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+            const end = scoreData.endAt ? new Date(scoreData.endAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }) : '未填写结束时间';
+            const tag = ({ study: '学习', entertainment: '娱乐', rest: '休息', sleep: '睡眠' } as Record<string, string>)[scoreData.tag];
+            return commonLayout(
+                <div className="w-72 overflow-hidden rounded-2xl bg-[#f5f7fa] text-[#1d2d46] shadow-md" {...interactionProps}>
+                    <div className="flex items-center justify-between bg-[#20395e] px-4 py-3 text-white"><div><div className="text-[9px] font-bold tracking-[0.14em] text-[#c9d8ef]">我的日程 · {tag ? `${tag} · ` : ''}现实时间轴</div><div className="mt-1 text-sm font-black">{scoreData.title || '一条日程'}</div></div><div className="rounded-full bg-white/12 px-2 py-1 text-[9px] font-black">{scoreData.endAt ? '已完成' : '开放中'}</div></div>
+                    <div className="px-4 py-4"><p className="text-[10px] font-bold tabular-nums text-[#536682]">{start} — {end}{scoreData.estimatedTime ? ' · 估算' : ''}</p>{scoreData.note && <p className="mt-3 whitespace-pre-wrap border-t border-[#dce2eb] pt-3 text-[11px] leading-5 text-[#3f4e64]">{scoreData.note}</p>}<div className="mt-3 border-t border-[#dce2eb] pt-2 text-[9px] text-[#8792a2]">由用户自动同步 · 随笔保持原文</div></div>
+                </div>,
+            );
+        }
 
         if (scoreData?.type === 'lifesim_reset_card') {
             return commonLayout(<LifeSimResetCardView card={scoreData} />);
@@ -3099,6 +3366,7 @@ const MessageItem = React.memo(({
         );
     }
 
+
     if (m.type === 'image') {
         return commonLayout(
             <div className="relative group">
@@ -3321,7 +3589,6 @@ const MessageItem = React.memo(({
         ? voiceSubtitleText
         : cleanVoiceText(voiceData?.originalText);
     const hasVoiceContent = voiceData?.url || voiceLoading || hasVoiceTag;
-    // Don't render empty bubbles (e.g. messages that were just "---"), unless voice data exists or pending
     if (!displayContent && !hasVoiceContent) return null;
 
     // Voice-only messages (no display text, only voice bar): skip bubble styling
@@ -3385,6 +3652,12 @@ const MessageItem = React.memo(({
                     </div>
                 )}
             </div>
+            )}
+
+            {operatorAuthored && (
+                <div className="relative z-10 mt-1 flex justify-end select-none" title="你曾接管这个身份代发">
+                    <span className="text-[9px] opacity-45" style={{ color: styleConfig.textColor }}>🎭 代发</span>
+                </div>
             )}
 
             {hasSarSurface && (displayContent || hasVoiceContent) && (
@@ -3605,6 +3878,7 @@ const MessageItem = React.memo(({
     );
 }, (prev, next) => {
     return prev.msg.id === next.msg.id &&
+           prev.msg.charId === next.msg.charId &&
            prev.msg.content === next.msg.content &&
            // 可交互卡片的状态活在 metadata 里（生活记录卡确认/否决、转账卡收退款）。
            // 这里不深比整个 metadata（可能含大对象），只盯这几个会改变渲染的状态位——
@@ -3612,7 +3886,20 @@ const MessageItem = React.memo(({
            prev.msg.metadata?.reviewStatus === next.msg.metadata?.reviewStatus &&
            prev.msg.metadata?.status === next.msg.metadata?.status &&
            prev.msg.metadata?.receipt === next.msg.metadata?.receipt &&
+           prev.msg.metadata?.withdrawal?.by === next.msg.metadata?.withdrawal?.by &&
+           prev.msg.metadata?.withdrawal?.withdrawnAt === next.msg.metadata?.withdrawal?.withdrawnAt &&
+           prev.msg.metadata?.withdrawal?.characterSawOriginal === next.msg.metadata?.withdrawal?.characterSawOriginal &&
+           prev.msg.metadata?.withdrawal?.emojiName === next.msg.metadata?.withdrawal?.emojiName &&
+           prev.msg.metadata?.imagePrompt?.fullPrompt === next.msg.metadata?.imagePrompt?.fullPrompt &&
            prev.msg.metadata?.sarModuleSurface?.surface === next.msg.metadata?.sarModuleSurface?.surface &&
+           prev.msg.metadata?.thinkingChain === next.msg.metadata?.thinkingChain &&
+           prev.msg.metadata?.thinkingTranslation?.source === next.msg.metadata?.thinkingTranslation?.source &&
+           prev.msg.metadata?.thinkingTranslation?.text === next.msg.metadata?.thinkingTranslation?.text &&
+           prev.msg.metadata?.operatorProvenance?.actualAuthor === next.msg.metadata?.operatorProvenance?.actualAuthor &&
+           prev.msg.metadata?.operatorProvenance?.source === next.msg.metadata?.operatorProvenance?.source &&
+           prev.msg.metadata?.operatorProvenance?.claimedSpeaker?.kind === next.msg.metadata?.operatorProvenance?.claimedSpeaker?.kind &&
+           prev.msg.metadata?.operatorProvenance?.claimedSpeaker?.charId === next.msg.metadata?.operatorProvenance?.claimedSpeaker?.charId &&
+           prev.msg.metadata?.operatorProvenance?.claimedSpeaker?.identityId === next.msg.metadata?.operatorProvenance?.claimedSpeaker?.identityId &&
            prev.isFirstInGroup === next.isFirstInGroup &&
            prev.isLastInGroup === next.isLastInGroup &&
            prev.activeTheme === next.activeTheme &&
@@ -3635,6 +3922,8 @@ const MessageItem = React.memo(({
            prev.moduleAlign === next.moduleAlign &&
            prev.previewExpanded === next.previewExpanded &&
            prev.previewTransferOpen === next.previewTransferOpen &&
+           prev.onTranslateThinking === next.onTranslateThinking &&
+           prev.thinkingTranslationError === next.thinkingTranslationError &&
            prev.suppressEntranceAnimation === next.suppressEntranceAnimation &&
            prev.voiceData?.url === next.voiceData?.url &&
            prev.voiceLoading === next.voiceLoading &&

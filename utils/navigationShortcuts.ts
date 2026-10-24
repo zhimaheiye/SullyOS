@@ -23,7 +23,7 @@ export const APP_SHORTCUT_ENTRIES: Partial<Record<AppID, Entry[]>> = {
   [AppID.Bank]: pages(['game', '存钱小屋'], ['manage', '收支管理'], ['report', '统计报告']),
   [AppID.Social]: pages(['home', '动态首页'], ['me', '我的主页']),
   [AppID.Schedule]: pages(['quest', '任务契约'], ['server_events', '纪念日']),
-  [AppID.VRWorld]: pages(['world', '世界大厅'], ['library', '图书馆'], ['music', '听歌房'], ['guestbook', '留言簿'], ['gym', '娱乐室'], ['postoffice', '邮局'], ['theater', '剧院'], ['signal', '信号坠落处'], ['sar', 'SAR 活动空间'], ['settings', '接入设置'], ['api', 'API 设置']),
+  [AppID.VRWorld]: pages(['world', '世界大厅'], ['library', '图书馆'], ['music', '听歌房'], ['guestbook', '留言簿'], ['gym', '娱乐室'], ['theater', '剧院'], ['sar', 'SAR 活动空间'], ['settings', '接入设置'], ['api', 'API 设置']),
 };
 export const CHARACTER_SHORTCUT_APPS = [AppID.Chat, AppID.Journal, AppID.Study, AppID.XhsFreeRoam, AppID.Guidebook, AppID.Gallery];
 export const RESOURCE_SHORTCUT_APPS = [AppID.GroupChat, AppID.Worldbook];

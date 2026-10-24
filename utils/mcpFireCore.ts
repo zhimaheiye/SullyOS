@@ -397,6 +397,8 @@ export interface McpTransportTarget {
      * 代理和 CORS 都是浏览器侧才有的概念，话术由调用方给；worker 直连可以不传。
      */
     fetchErrorHint?: string;
+    /** stdio 等非 HTTP 传输可额外接受的旧握手版本；HTTP 单端点不能借此冒充兼容。 */
+    additionalProtocolVersions?: readonly string[];
 }
 
 const buildRpcRequest = (
@@ -564,11 +566,18 @@ const initializeCore = async (
     const negotiated = String(
         response?.result?.protocolVersion || MCP_LATEST_HANDSHAKE_PROTOCOL_VERSION,
     );
-    if (!(MCP_SUPPORTED_HANDSHAKE_PROTOCOL_VERSIONS as readonly string[]).includes(negotiated)) {
+    const supportedVersions = [
+        ...MCP_SUPPORTED_HANDSHAKE_PROTOCOL_VERSIONS,
+        ...(target.additionalProtocolVersions || []),
+    ];
+    if (!supportedVersions.includes(negotiated)) {
+        const transportHint = target.additionalProtocolVersions?.includes('2024-11-05')
+            ? '2026-07-28 需要新的无握手生命周期。'
+            : '2024-11-05 属于旧 HTTP+SSE 双端点，2026-07-28 则需要新的无握手生命周期。';
         throw new Error(
             `MCP 协议版本不兼容：服务器选择了 ${negotiated}。` +
-            `SullyOS 的 Streamable HTTP 接线支持 ${MCP_SUPPORTED_HANDSHAKE_PROTOCOL_VERSIONS.join(' / ')}；` +
-            `2024-11-05 属于旧 HTTP+SSE 双端点，2026-07-28 则需要新的无握手生命周期。`,
+            `当前传输支持 ${supportedVersions.join(' / ')}；` +
+            transportHint,
         );
     }
     session.protocolVersion = negotiated;

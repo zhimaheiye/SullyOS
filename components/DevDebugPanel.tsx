@@ -20,6 +20,7 @@ import { trackEvent } from '../utils/analytics';
 import { runBlobGc } from '../utils/blobGc';
 import type { DevDebugCaptureCategory, DevDebugFlags, DevDebugFloatingPosition } from '../utils/devDebug';
 import { shareOrDownloadFile } from '../utils/shareExport';
+import { armManualRelay, disarmManualRelay, getManualRelayState, subscribeManualRelay } from '../utils/manualModelRelay';
 
 const FLOATING_BUTTON_SIZE = 44;
 const FLOATING_SAFE_MARGIN = 16;
@@ -152,6 +153,7 @@ const DevDebugPanel: React.FC = () => {
     const [flags, setFlags] = useState<DevDebugFlags>(() => readDevDebugFlags());
     const [logCount, setLogCount] = useState(() => readDevDebugLog().length);
     const [copied, setCopied] = useState(false);
+    const [relayState, setRelayState] = useState(getManualRelayState);
     // 孤儿图片 GC 是一次性动作不是行为开关，状态只在本次会话内有效——不进 DevDebugFlags，不持久化。
     const [blobGcRunning, setBlobGcRunning] = useState(false);
     const [blobGcResult, setBlobGcResult] = useState<
@@ -171,6 +173,7 @@ const DevDebugPanel: React.FC = () => {
     const suppressClickRef = useRef(false);
 
     useEffect(() => subscribeDevDebugFlags(setFlags), []);
+    useEffect(() => subscribeManualRelay(setRelayState), []);
     // 解锁时（false→true）从 storage 重读 flags：mount 时 isDevDebugAvailable() 为 false 的话
     // useState 拿到的是 DEFAULT_DEV_DEBUG_FLAGS（canUseDevDebugStorage gate 不放行），
     // 后续 unlock 不刷新就会用户改一个开关 → writeDevDebugFlags({...DEFAULT, [k]:v}) 覆盖掉
@@ -216,8 +219,9 @@ const DevDebugPanel: React.FC = () => {
             // 任何类别都返 false。
             + (flags.captureEnabled && flags.captureLogs.length > 0 ? 1 : 0)
             // exposeLogDetail 只在录制实际生效时才计（同上）。
-            + (flags.captureEnabled && flags.captureLogs.length > 0 && flags.exposeLogDetail ? 1 : 0),
-        [flags],
+            + (flags.captureEnabled && flags.captureLogs.length > 0 && flags.exposeLogDetail ? 1 : 0)
+            + (relayState.status === 'armed' ? 1 : 0),
+        [flags, relayState.status],
     );
     // 用 read-write-set 三步：从 localStorage 读 source of truth → 写回 → 同步 React state。
     // 不在 setFlags(updater) 里做副作用——updater 必须是纯函数（StrictMode / concurrent
@@ -415,6 +419,8 @@ const DevDebugPanel: React.FC = () => {
                     </div>
 
                     <div className="flex-1 overflow-y-auto px-4">
+                        <ToggleRow title="外部模型接力 · 持续开启" detail="每次合格前台文字生成都等待人工粘贴；关闭时取消当前轮。" checked={relayState.status !== 'off'} onChange={checked => checked ? armManualRelay() : disarmManualRelay()} />
+                        <div className="h-px bg-white/10" />
                         <HomeCompanionDebug />
                         <ToggleRow
                             title="跳过 Prompt Build"

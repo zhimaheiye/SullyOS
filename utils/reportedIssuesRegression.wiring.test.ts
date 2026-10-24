@@ -20,13 +20,13 @@ describe('用户反馈回归保护', () => {
     it('剧情重试会在再次生成前先尝试归档，避免超长上下文把后置归档永久卡死', () => {
         const source = read('../components/date/story/StoryTheaterSession.tsx');
         const send = source.slice(source.indexOf('const send = useCallback'), source.indexOf('const archivedCount ='));
-        const preflight = send.indexOf('const promptEntry = await archiveIfNeeded() || entry;');
+        const preflight = send.indexOf('const promptEntry = await archiveIfNeeded(workingEntry) || workingEntry;');
         const completion = send.indexOf('const generated = await callCompletion');
 
         expect(preflight).toBeGreaterThanOrEqual(0);
         expect(completion).toBeGreaterThan(preflight);
-        expect(send).toContain('mirrorArchived(message, promptEntry)');
-        expect(send).toContain('promptEntry.archives.filter');
+        expect(send).toContain('promptEntry.writesToCharacterMemory ? !mirrorArchived(message, promptEntry)');
+        expect(send).toContain('applicableStoryArchives(promptEntry, current)');
     });
 
     it('剧情预算里的预设只统计启用项，不把关闭的提示词算进总量', () => {

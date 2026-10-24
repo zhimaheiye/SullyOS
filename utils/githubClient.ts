@@ -19,7 +19,7 @@
 import { Capacitor, CapacitorHttp } from '@capacitor/core';
 
 import { CloudBackupConfig, CloudBackupFile } from '../types';
-import { getProxyWorkerUrl } from './proxyWorker';
+import { getProxyWorkerUrl, requireProxyWorkerUrl } from './proxyWorker';
 
 const API_HOST = 'https://api.github.com';
 const UPLOAD_HOST = 'https://uploads.github.com';
@@ -113,7 +113,7 @@ export const shouldUseGithubProxy = (config: CloudBackupConfig): boolean =>
     config.githubUseProxy === true && config.githubProxyConsentVersion === 1;
 
 const proxify = (url: string): string =>
-    `${getProxyWorkerUrl()}/github?url=${encodeURIComponent(url)}`;
+    `${requireProxyWorkerUrl()}/github?url=${encodeURIComponent(url)}`;
 
 /**
  * A browser reports DNS failures, blocked domains, VPN split-routing misses,
@@ -128,6 +128,9 @@ export const describeGithubUploadTransportFailure = (
     const prefix = kind === 'timeout' ? '上传超时' : '上传失败：网络请求未完成';
     if (shouldUseGithubProxy(config)) {
         let workerHost = getProxyWorkerUrl();
+        if (!workerHost) {
+            return `${prefix}。已选择应用内中转，但公共网络代理还没有就绪。请到「设置 → 网络代理」确认地址，或关闭中转改试直连。`;
+        }
         try { workerHost = new URL(workerHost).host; } catch { /* keep the configured URL */ }
         return `${prefix}。当前走应用内 Cloudflare 中转（${workerHost}），说明这台设备到中转、`
             + '中转到 GitHub、或大文件传输中的某一段未打通。能打开 github.com、Token 测试通过或开着梯子，'
@@ -331,6 +334,22 @@ const ghRequest = async (
 
 const repoName = (config: CloudBackupConfig): string =>
     (config.githubRepo || DEFAULT_REPO).trim();
+
+const discardFailedRelease = async (
+    config: CloudBackupConfig,
+    releaseId: number,
+    tag: string,
+): Promise<void> => {
+    const token = config.githubToken!;
+    const owner = config.githubOwner!;
+    const repo = repoName(config);
+    await ghRequest(config, `${API_HOST}/repos/${owner}/${repo}/releases/${releaseId}`, 'DELETE', {
+        headers: authHeaders(token),
+    }).catch(() => undefined);
+    await ghRequest(config, `${API_HOST}/repos/${owner}/${repo}/git/refs/tags/${encodeURIComponent(tag)}`, 'DELETE', {
+        headers: authHeaders(token),
+    }).catch(() => undefined);
+};
 
 /**
  * Step 1: validate the token and learn the user's login (so we don't make

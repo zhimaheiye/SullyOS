@@ -8,6 +8,7 @@ import ChatInputSettings from '../components/chat/ChatInputSettings';
 import ChatSettingsSection from '../components/chat/ChatSettingsSection';
 import ChatHeader from '../components/chat/ChatHeaderShell';
 import { CHAT_INPUT_PREFERENCES_KEY, loadChatInputPreferences, saveChatInputPreferences } from './chatInputPreferences';
+import { saveChatActionOrder } from './chatActionOrder';
 
 vi.mock('./analytics', () => ({ trackEvent: vi.fn() }));
 
@@ -52,6 +53,17 @@ afterEach(() => {
 });
 
 describe('private chat input controls', () => {
+    it('keeps poke in the plus menu and does not offer life or phone shortcuts', () => {
+        renderInput({ showPanel: 'actions' });
+        const buttons = [...container.querySelectorAll<HTMLButtonElement>('button')];
+        const poke = buttons.find(button => button.textContent?.trim() === '戳一戳');
+        expect(poke).toBeTruthy();
+        expect(buttons.some(button => button.textContent?.trim() === '电话')).toBe(false);
+        expect(buttons.some(button => button.textContent?.trim() === '生活')).toBe(false);
+        act(() => poke!.click());
+        expect(props.onPanelAction).toHaveBeenCalledWith('poke');
+    });
+
     it('keeps the existing send button and Enter behavior by default', () => {
         renderInput();
         expect(primary().getAttribute('aria-label')).toBe('发送文字');

@@ -3,6 +3,18 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 describe('CallApp runtime references', () => {
+  it('keeps chat-origin dialing on the existing picker surface and starts listening', () => {
+    const source = readFileSync(path.resolve(__dirname, '../apps/CallApp.tsx'), 'utf8');
+    expect(source).toContain("sessionStorage.getItem('sully-call-chat-origin')");
+    expect(source).toContain('!chatOriginCharId && <>');
+    expect(source).toContain('等待你点击拨号');
+    expect(source).toContain("setCallState('listening')");
+    expect(source).not.toContain("setCallState(dialedChar.lifeConfig?.enabled ? 'ringing' : 'listening')");
+    expect(source).not.toContain('setTimeout(resolve, 5000)');
+    expect(source).toContain("if (callState === 'ringing') void saveUnconnectedCall");
+    expect(source).toContain("callState !== 'listening' || bubbles.length > 0");
+  });
+
   it('uses the exported avatar prompt builder and no missing high-quality builder', () => {
     const source = readFileSync(path.resolve(__dirname, '../apps/CallApp.tsx'), 'utf8');
 
@@ -51,7 +63,8 @@ describe('CallApp runtime references', () => {
     expect(source).toContain("onFinal: (t) => setDraftInput(t)");
     expect(source).toContain("await requestAssistantReply(input, userDbId, pendingTouchesForTurn, true, userCameraSnapshotForTurn)");
     expect(source).toContain("{sendingBusy ? '…' : '发送'}");
-    expect(source).toMatch(/const beginSelectedCall[\s\S]*?setViewMode\('in-call'\);\s+setCallStartedAt\(Date\.now\(\)\);\s+setCallState\('listening'\);/);
+    expect(source).toMatch(/const beginSelectedCall[\s\S]*?setViewMode\('in-call'\);[\s\S]*?setCallState\('listening'\)/);
+    expect(source).toContain("if (!callPreferences.characterInitiative || viewMode !== 'in-call' || callState !== 'listening' || bubbles.length > 0) return;");
     expect(source).toContain('fireIdleNudge');
     expect(source).toContain('idleNudgeCountRef');
     expect(source).toContain('电话刚接通。你先开口');

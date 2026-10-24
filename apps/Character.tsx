@@ -34,19 +34,14 @@ import { normalizeUserImpression } from '../utils/impression';
 import { parseGeneratedImpression } from '../utils/impressionGeneration';
 import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
 import { COMMON_TIMEZONES } from '../utils/timezone';
-import { toMountedWorldbook } from '../utils/worldbook';
+import { setMountedWorldbookGroupPaused, toMountedWorldbook } from '../utils/worldbook';
 import { stripSensitiveCardFields } from '../utils/characterCard';
 import { shareOrDownloadFile } from '../utils/shareExport';
-import { readShareText } from '../utils/pngShare';
+import { readShareText, isPng, pngHasChunkType } from '../utils/pngShare';
 import { confirmExportSafety } from '../utils/exportGuard';
 import { trackEvent } from '../utils/analytics';
 import { sortCharacterGroups, GROUP_FILTER_UNGROUPED } from '../components/character/CharacterGroupFilter';
-import {
-    EXTERNAL_MEMORY_MAX_CHARS,
-    extractExternalMemoryText,
-    getExternalMemoryLengthInfo,
-    getExternalMemoryOverLimitMessage,
-} from '../utils/memoryPalace/externalMemory';
+import { processBatchMemoryImport, splitTextIntoChunks, BatchImportProgress } from '../utils/batchMemoryImporter';
 
 // ── 神经链接 · 列表页视觉件（淡紫留白风）────────────────────
 // 之前的「星点 + 玻璃饰带 + 华丽头像框」看久了眼花、低端机也重绘卡。
@@ -178,7 +173,7 @@ const Character: React.FC = () => {
   // Modals
   const [showImportModal, setShowImportModal] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
-  const [showBatchModal, setShowBatchModal] = useState(false); 
+  const [showBatchModal, setShowBatchModal] = useState(false);
   const [deleteConfirmTarget, setDeleteConfirmTarget] = useState<string | null>(null);
   // 云端 amsg2 任务没清干净、本地删除被拦下的角色 → 弹「重试 / 仍然删除」二次确认。
   const [cloudCleanupFailTarget, setCloudCleanupFailTarget] = useState<string | null>(null);
@@ -197,7 +192,13 @@ const Character: React.FC = () => {
   const [exportText, setExportText] = useState('');
   const [isProcessingMemory, setIsProcessingMemory] = useState(false);
   const [importStatus, setImportStatus] = useState('');
-  const importLengthInfo = useMemo(() => getExternalMemoryLengthInfo(importText), [importText]);
+  const [importStartDate, setImportStartDate] = useState('2026-04-01');
+  const [importEndDate, setImportEndDate] = useState('2026-07-31');
+  const [importAutoDetect, setImportAutoDetect] = useState(true);
+  const [importTargetLegacy, setImportTargetLegacy] = useState(true);
+  const [importTargetPalace, setImportTargetPalace] = useState(true);
+  const [importProgress, setImportProgress] = useState<BatchImportProgress | null>(null);
+  const [importMode, setImportMode] = useState<'history' | 'today'>('today');
 
   // Batch Summarize State
   const [batchRange, setBatchRange] = useState({ start: '', end: '' });
@@ -569,7 +570,7 @@ const Character: React.FC = () => {
                   ],
                   temperature: 0.3,
               })
-          }, 0);
+          }, 0, 0, { appName: '角色', charId: targetId, purpose: '月度记忆精炼', featureId: 'memorySummary' });
           const dt = Math.round(performance.now() - t0);
           const summary = extractContent(data);
           if (!summary) {
@@ -665,7 +666,7 @@ const Character: React.FC = () => {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
               body: JSON.stringify({ model: apiConfig.model, messages: (await ContextBuilder.buildCharacterRequest(characterContextInput, [{ role: 'user', content: prompt }])), temperature: 0.5, max_tokens: 8000, stream: false }),
-          }, 0);
+          }, 0, 0, { appName: '角色', charId: targetId, purpose: '日记归档', featureId: 'memorySummary' });
           let summary = extractContent(data).replace(/^["']|["']$/g, '');
           if (!summary) throw new Error('空响应');
 
@@ -727,67 +728,64 @@ const Character: React.FC = () => {
       }
   };
   
-  const handleImportMemories = async () => { 
-      if (!importText.trim() || !apiConfig.apiKey) { addToast('请检查输入内容或 API 设置', 'error'); return; } 
+  const handleImportMemories = async () => {
+      if (!importText.trim() || !apiConfig.apiKey) { addToast('请检查输入内容或 API 设置', 'error'); return; }
       if (!formData) return;
-      if (importLengthInfo.overLimit) {
-          const message = getExternalMemoryOverLimitMessage(importText);
-          setImportStatus(message);
-          addToast(`内容超过 5 万字，建议分 ${importLengthInfo.suggestedBatches} 批导入`, 'error');
-          return;
-      }
-      
-      const targetId = formData.id; // LOCK ID
-      setIsProcessingMemory(true); 
-      setImportStatus('准备清洗：只整理时间和结构，不压缩内容…');
-      trackEvent('执行记忆导入清洗');
-      
-      try { 
-          const result = await extractExternalMemoryText(
-              importText,
-              targetId,
-              formData.name,
-              userProfile.name,
-              {
-                  baseUrl: apiConfig.baseUrl,
-                  apiKey: apiConfig.apiKey,
-                  model: apiConfig.model,
-              },
-              stage => setImportStatus(stage),
-          );
-          const failedBatch = result.batches.find(batch => !batch.ok);
-          if (failedBatch) {
-              throw new Error(
-                  `第 ${failedBatch.index}/${failedBatch.total} 批未能无损清洗：${failedBatch.error || '完整性校验失败'}。本次没有写入任何记忆`,
-              );
-          }
-          if (result.memories.length === 0) {
-              throw new Error('没有整理出可导入的记忆');
-          }
 
-          const pad2 = (value: number) => String(value).padStart(2, '0');
-          const newMems: MemoryFragment[] = result.memories.map(memory => {
-              const date = new Date(memory.createdAt);
-              return {
-                  id: `mem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                  date: `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`,
-                  // content 是保真清洗后的完整事件，不再二次概括成短 summary。
-                  summary: memory.content,
-                  mood: memory.mood || '记录',
-              };
-          });
-          if (editingIdRef.current === targetId) {
-              handleChange('memories', [...(formData.memories || []), ...newMems]);
-              setShowImportModal(false);
-              setImportText('');
-              addToast(`成功导入 ${newMems.length} 条记忆`, 'success');
+      const targetId = formData.id; // LOCK ID
+      setIsProcessingMemory(true);
+      setImportStatus(importMode === 'today' ? '正在提炼当日记忆...' : '正在进行长文案离线分块提炼...');
+      setImportProgress(null);
+
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const effectiveStartDate = importMode === 'today' ? todayStr : importStartDate;
+      const effectiveEndDate = importMode === 'today' ? todayStr : importEndDate;
+      const effectiveAutoDetect = importMode === 'today' ? false : importAutoDetect;
+
+      try {
+          const importRes = await processBatchMemoryImport(
+              importText,
+              formData,
+              userProfile,
+              apiConfig,
+              {
+                  startDate: effectiveStartDate,
+                  endDate: effectiveEndDate,
+                  autoDetectDates: effectiveAutoDetect,
+                  targetSystems: {
+                      legacy: importTargetLegacy,
+                      palace: importTargetPalace,
+                  },
+              },
+              (progress) => {
+                  setImportProgress(progress);
+                  setImportStatus(progress.statusText);
+              },
+          );
+
+          if (importRes.success && importRes.extractedLegacyMemories.length > 0) {
+              const newMems = importRes.extractedLegacyMemories;
+              if (editingIdRef.current === targetId) {
+                  if (importTargetLegacy) handleChange('memories', [...(formData.memories || []), ...newMems]);
+                  setShowImportModal(false);
+                  addToast(`成功提炼并导入 ${newMems.length} 条记忆！`, 'success');
+              } else {
+                  if (importTargetLegacy) {
+                      const currentMems = characters.find(c => c.id === targetId)?.memories || [];
+                      updateCharacter(targetId, { memories: [...currentMems, ...newMems] });
+                  }
+                  addToast('后台任务完成：记忆已保存到角色', 'success');
+              }
           } else {
-              // Background update
-              const currentMems = characters.find(c => c.id === targetId)?.memories || [];
-              updateCharacter(targetId, { memories: [...currentMems, ...newMems] });
-              addToast(`后台任务完成：已保存 ${newMems.length} 条导入记忆`, 'success');
+              const errDetail = importRes.errors.length > 0 ? importRes.errors.join('; ') : '未能解析出有效记忆';
+              addToast(`导入未完成: ${errDetail}`, 'error');
           }
-      } catch (e: any) { setImportStatus(`错误: ${e.message || '未知错误'}`); addToast('记忆清洗失败', 'error'); } finally { setIsProcessingMemory(false); } 
+      } catch (e: any) {
+          setImportStatus(`错误: ${e.message || '未知错误'}`);
+          addToast(`记忆提炼失败: ${e.message || '未知错误'}`, 'error');
+      } finally {
+          setIsProcessingMemory(false);
+      }
   };
   
   const handleBatchSummarize = async () => {
@@ -855,7 +853,7 @@ const Character: React.FC = () => {
                             max_tokens: 8000,
                             temperature: 0.5
                         })
-                    }, 0);
+                    }, 0, 0, { appName: '角色', charId: targetId, purpose: '批量日记归档', featureId: 'memorySummary' });
                 } catch {
                     // 单天失败软跳过，继续后面的日期（与原 if(response.ok) 的语义一致）
                 }
@@ -1045,7 +1043,7 @@ ${isInitialGeneration ? `
                   // 流式响应由 safeResponseJson 拼回完整对象，下游 extractContent 无需改动。
                   stream: apiConfig.stream === true
               })
-          }, 0);
+          }, 0, 0, { appName: '角色', charId: targetId, purpose: '印象归纳', featureId: 'memorySummary' });
           const parsed = parseGeneratedImpression(data);
 
           if (editingIdRef.current === targetId) {
@@ -1139,8 +1137,66 @@ ${isInitialGeneration ? `
               shareTitle: '导出角色卡',
           });
           if (result === 'cancelled') return;
-          addToast(result === 'shared' ? '已打开角色卡分享面板' : '角色卡已生成并导出', 'success');
+          addToast(result === 'shared' ? '已打开角色卡分享面板' : '角色卡已生成并下载', 'success');
       } catch (error: any) { addToast(error?.message || '角色卡导出失败', 'error'); }
+  };
+
+  // SullyOS 原生卡导入路径：与旧版逐字一致（剥离敏感字段 → 同步挂载世界书 → 存角色 → reload）。
+  const importNativeSullyCard = async (json: string) => {
+      const data: CharacterExportData = JSON.parse(json);
+
+      if (data.type !== 'sully_character_card') {
+          throw new Error('无效的角色卡文件');
+      }
+
+      // 导入侧同样剥离凭据 / 美化 / 语言 / 运行时状态：即便对方给的是旧版
+      // 角色卡（把 API 密钥等私密字段一起打包了），也不会被写进本地角色，
+      // 不会用发卡人的 key / 主题 / 语言偏好覆盖你自己的。清单见 utils/characterCard.ts。
+      const safeData = stripSensitiveCardFields(data);
+
+      // Sync mounted worldbooks into the global worldbook app so they
+      // appear under their original category (or the character's name
+      // as a sensible fallback when the card has no category set).
+      const incomingMounted = (data.mountedWorldbooks || []).map(wb => ({ ...wb }));
+      const fallbackCategory = `${data.name || '导入角色'} 的世界书`;
+      let importedWbCount = 0;
+      for (const wb of incomingMounted) {
+          if (!wb.id || worldbooks.some(existing => existing.id === wb.id)) continue;
+          const category = wb.category && wb.category.trim() ? wb.category : fallbackCategory;
+          wb.category = category;
+          const libraryEntry = { ...wb };
+          delete libraryEntry.mountPaused;
+          await addWorldbook({
+              ...libraryEntry,
+              id: wb.id,
+              title: wb.title || '未命名设定',
+              content: wb.content || '',
+              category,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+          });
+          importedWbCount++;
+      }
+
+      const newChar: CharacterProfile = {
+          ...safeData,
+          id: `char-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          memories: [],
+          refinedMemories: {},
+          activeMemoryMonths: [],
+          mountedWorldbooks: incomingMounted,
+      } as CharacterProfile;
+
+      await DB.saveCharacter(newChar);
+      trackEvent('导入角色卡');
+      // 不要调用 addCharacter()——它不是"刷新"，而是真的新建一个空白
+      // "New Character" 并写进 DB，reload 后就会多出一张空白卡。
+      // 导入的角色已经存进了 DB（上一行），reload 时 OSContext 会从
+      // DB 重新读全部角色，导入的角色自然会出现，无需手动刷新 state。
+      setTimeout(() => window.location.reload(), 500);
+
+      const wbToastSuffix = importedWbCount > 0 ? `，并同步 ${importedWbCount} 本世界书` : '';
+      addToast(`角色 ${newChar.name} 导入成功${wbToastSuffix}`, 'success');
   };
 
   const handleImportCard = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1148,60 +1204,22 @@ ${isInitialGeneration ? `
       if (!file) return;
 
       try {
-          const json = await readShareText(file, 'character');
-          const data: CharacterExportData = JSON.parse(json);
-
-          if (data.type !== 'sully_character_card') {
-              throw new Error('无效的角色卡文件');
+          const head = new Uint8Array(await file.slice(0, 8).arrayBuffer());
+          if (isPng(head)) {
+              const bytes = new Uint8Array(await file.arrayBuffer());
+              if (!pngHasChunkType(bytes, 'suLy')) throw new Error('无效的角色卡文件');
+              await importNativeSullyCard(await readShareText(file, 'character'));
+              return;
           }
 
-          // 导入侧同样剥离凭据 / 美化 / 语言 / 运行时状态：即便对方给的是旧版
-          // 角色卡（把 API 密钥等私密字段一起打包了），也不会被写进本地角色，
-          // 不会用发卡人的 key / 主题 / 语言偏好覆盖你自己的。清单见 utils/characterCard.ts。
-          const safeData = stripSensitiveCardFields(data);
-
-          // Sync mounted worldbooks into the global worldbook app so they
-          // appear under their original category (or the character's name
-          // as a sensible fallback when the card has no category set).
-          const incomingMounted = (data.mountedWorldbooks || []).map(wb => ({ ...wb }));
-          const fallbackCategory = `${data.name || '导入角色'} 的世界书`;
-          let importedWbCount = 0;
-          for (const wb of incomingMounted) {
-              if (!wb.id || worldbooks.some(existing => existing.id === wb.id)) continue;
-              const category = wb.category && wb.category.trim() ? wb.category : fallbackCategory;
-              wb.category = category;
-              await addWorldbook({
-                  ...wb,
-                  id: wb.id,
-                  title: wb.title || '未命名设定',
-                  content: wb.content || '',
-                  category,
-                  createdAt: Date.now(),
-                  updatedAt: Date.now(),
-              });
-              importedWbCount++;
+          const text = await file.text();
+          let raw: unknown;
+          try { raw = JSON.parse(text); } catch { throw new Error('角色卡 JSON 无效，文件可能已损坏'); }
+          if ((raw as any)?.type === 'sully_character_card') {
+              await importNativeSullyCard(text);
+              return;
           }
-
-          const newChar: CharacterProfile = {
-              ...safeData,
-              id: `char-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-              memories: [],
-              refinedMemories: {},
-              activeMemoryMonths: [],
-              mountedWorldbooks: incomingMounted,
-          } as CharacterProfile;
-
-          await DB.saveCharacter(newChar);
-          trackEvent('导入角色卡');
-          // 不要调用 addCharacter()——它不是"刷新"，而是真的新建一个空白
-          // "New Character" 并写进 DB，reload 后就会多出一张空白卡。
-          // 导入的角色已经存进了 DB（上一行），reload 时 OSContext 会从
-          // DB 重新读全部角色，导入的角色自然会出现，无需手动刷新 state。
-          setTimeout(() => window.location.reload(), 500);
-
-          const wbToastSuffix = importedWbCount > 0 ? `，并同步 ${importedWbCount} 本世界书` : '';
-          addToast(`角色 ${newChar.name} 导入成功${wbToastSuffix}`, 'success');
-
+          throw new Error('无效的角色卡文件');
       } catch (err: any) {
           console.error(err);
           addToast(err.message || '导入失败', 'error');
@@ -1209,6 +1227,7 @@ ${isInitialGeneration ? `
           if (cardImportRef.current) cardImportRef.current.value = '';
       }
   };
+
 
   return (
     <div className="h-full w-full bg-slate-50/30 font-light relative">
@@ -1796,11 +1815,15 @@ ${isInitialGeneration ? `
                                            return groups;
                                        }, new Map<string, NonNullable<CharacterProfile['mountedWorldbooks']>>())].map(([category, books]) => (
                                            <details key={category} className="rounded-2xl border border-indigo-50 bg-white overflow-hidden" data-mounted-worldbook-group={category}>
-                                               <summary className="cursor-pointer px-4 py-3 text-xs font-bold text-slate-700 break-words">{category} <span className="font-normal text-slate-400">· {books.length} 条</span></summary>
+                                               <summary className="cursor-pointer px-4 py-3 text-xs font-bold text-slate-700 break-words">{category} <span className="font-normal text-slate-400">· {books.length} 条</span>{books.some(book => book.mountPaused === true) && <span className="ml-2 font-normal text-slate-500">{books.every(book => book.mountPaused === true) ? '已暂停' : '部分暂停'}</span>}</summary>
                                                <div className="px-4 pb-3">
-                                                   <div className="mb-2 flex justify-end"><button type="button" onClick={() => {
+                                                   <div className="mb-2 flex justify-end items-center gap-4"><button type="button" onClick={() => {
                                                        const ids = new Set(books.map(book => book.id));
-                                                       setFormData(prev => prev ? { ...prev, mountedWorldbooks: (prev.mountedWorldbooks || []).filter(book => !ids.has(book.id)) } : prev);
+                                                       const pause = !books.every(book => book.mountPaused === true);
+                                                       setFormData(prev => prev && prev.id === editingId ? { ...prev, mountedWorldbooks: setMountedWorldbookGroupPaused(prev.mountedWorldbooks || [], ids, pause) } : prev);
+                                                   }} className="py-1 text-[11px] text-slate-500">{books.every(book => book.mountPaused === true) ? '恢复生效' : '暂停生效'}</button><button type="button" onClick={() => {
+                                                       const ids = new Set(books.map(book => book.id));
+                                                       setFormData(prev => prev && prev.id === editingId ? { ...prev, mountedWorldbooks: (prev.mountedWorldbooks || []).filter(book => !ids.has(book.id)) } : prev);
                                                    }} className="py-1 text-[11px] text-rose-400">整组取消挂载</button></div>
                                                    {books.map(wb => <div key={wb.id} className="flex items-start gap-2 border-t border-slate-100 py-2">
                                                        <details className="min-w-0 flex-1" onToggle={event => {
@@ -1822,6 +1845,7 @@ ${isInitialGeneration ? `
                                    )}
                                </div>
                            </div>
+
 
                            {/* Export Card Button */}
                            <div className="pt-4">
@@ -1915,27 +1939,54 @@ ${isInitialGeneration ? `
            />
        )}
 
+
        {/* Modals ... */}
-       <Modal isOpen={showImportModal} title="记忆导入/清洗" onClose={() => setShowImportModal(false)} footer={<><button onClick={() => setShowImportModal(false)} className="flex-1 py-3 bg-slate-100 text-slate-500 font-bold rounded-2xl">取消</button><button onClick={handleImportMemories} disabled={isProcessingMemory || importLengthInfo.overLimit} className={`flex-1 py-3 text-white font-bold rounded-2xl shadow-lg flex items-center justify-center gap-2 ${importLengthInfo.overLimit ? 'bg-slate-300 cursor-not-allowed shadow-none' : 'bg-primary shadow-primary/30'}`}>{isProcessingMemory && <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>}{isProcessingMemory ? '处理中...' : importLengthInfo.overLimit ? '请先分批' : '开始执行'}</button></>}>
-           <div className="space-y-3">
-               <div className="text-xs text-slate-400 leading-relaxed bg-slate-50 p-3 rounded-xl border border-slate-100">
-                   适合从其它应用“搬家”。最多 5 万字，字数只在本地统计；AI 只整理时间与事件结构，不摘要、不合并、不省略原有细节。5 万字以内会自动分批，无需手动切。
+       <Modal
+           isOpen={showImportModal}
+           title="记忆文本导入"
+           onClose={() => { if (!isProcessingMemory) { setShowImportModal(false); setImportText(''); setImportStatus(''); setImportProgress(null); } }}
+           footer={<div className="flex gap-2 w-full">
+               <button onClick={() => { setShowImportModal(false); setImportText(''); setImportStatus(''); setImportProgress(null); }} disabled={isProcessingMemory} className="flex-1 py-3 bg-slate-100 text-slate-500 font-bold rounded-2xl disabled:opacity-50">取消</button>
+               <button onClick={handleImportMemories} disabled={isProcessingMemory || !importText.trim()} className="flex-1 py-3 bg-primary text-white font-bold rounded-2xl shadow-lg shadow-primary/30 flex items-center justify-center gap-2 disabled:opacity-50">
+                   {isProcessingMemory && <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>}
+                   {isProcessingMemory ? '正在处理...' : '开始提炼并写入'}
+               </button>
+           </div>}
+       >
+           <div className="space-y-4 text-slate-700">
+               <div className="flex bg-slate-100 rounded-2xl p-1 gap-1">
+                   <button type="button" onClick={() => setImportMode('today')} disabled={isProcessingMemory} className={`flex-1 py-2 text-xs font-bold rounded-xl transition-all ${importMode === 'today' ? 'bg-white text-primary shadow-sm' : 'text-slate-400'}`}>📅 当日记忆</button>
+                   <button type="button" onClick={() => setImportMode('history')} disabled={isProcessingMemory} className={`flex-1 py-2 text-xs font-bold rounded-xl transition-all ${importMode === 'history' ? 'bg-white text-primary shadow-sm' : 'text-slate-400'}`}>📚 历史记忆（时间映射）</button>
                </div>
-               {importStatus && <div className="text-xs text-primary font-medium">{importStatus}</div>}
-               <textarea
-                   value={importText}
-                   onChange={e => setImportText(e.target.value)}
-                   placeholder="在此粘贴从别处带来的记忆文本…"
-                   className="w-full h-40 bg-slate-100 border-none rounded-2xl px-4 py-3 text-sm text-slate-700 resize-none focus:ring-2 focus:ring-primary/20 transition-all"
-               />
-               {importLengthInfo.overLimit && (
-                   <div className="text-xs leading-relaxed rounded-xl border border-amber-200 bg-amber-50 p-3 text-amber-700">
-                       {getExternalMemoryOverLimitMessage(importText)}
+               <div className="text-xs text-slate-500 leading-relaxed bg-indigo-50/70 p-3 rounded-2xl border border-indigo-100/60">
+                   {importMode === 'today' ? '💡 将文本提炼为今天的记忆，适合记录当天发生的事情或对话片段。' : '💡 自动将超长历史文案分块发送给 AI 提炼，并统一映射到设定的时间跨度中。'}
+               </div>
+               <div className="space-y-1">
+                   <div className="flex justify-between items-center text-xs px-1">
+                       <span className="font-semibold text-slate-600">{importMode === 'today' ? '粘贴当日内容:' : '粘贴大段文案 / 历史记录:'}</span>
+                       <span className="text-[11px] text-indigo-600 font-mono">{importText.length.toLocaleString()} 字{importMode === 'history' && importText.length > 0 && ` (约分 ${splitTextIntoChunks(importText).length} 批)`}</span>
                    </div>
-               )}
-               <div className={`text-right text-[10px] ${importLengthInfo.overLimit ? 'text-red-500 font-bold' : 'text-slate-400'}`}>
-                   {importLengthInfo.count.toLocaleString()} / {EXTERNAL_MEMORY_MAX_CHARS.toLocaleString()} 字（本地统计）
+                   <textarea value={importText} onChange={e => setImportText(e.target.value)} disabled={isProcessingMemory} placeholder={importMode === 'today' ? '在此粘贴今天的聊天记录、日记或事件...' : '在此粘贴任意长度的历史文案或日记...'} className="w-full h-36 bg-slate-100/80 border-none rounded-2xl px-4 py-3 text-xs text-slate-800 resize-none focus:ring-2 focus:ring-primary/20 font-mono leading-relaxed" />
                </div>
+               {importMode === 'history' && <div className="bg-slate-50 p-3.5 rounded-2xl border border-slate-100 space-y-3">
+                   <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider">时间线映射区间</label>
+                   <div className="grid grid-cols-2 gap-2 text-xs">
+                       <input type="date" value={importStartDate} onChange={e => setImportStartDate(e.target.value)} disabled={isProcessingMemory} className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5" />
+                       <input type="date" value={importEndDate} onChange={e => setImportEndDate(e.target.value)} disabled={isProcessingMemory} className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5" />
+                   </div>
+                   <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer"><input type="checkbox" checked={importAutoDetect} onChange={e => setImportAutoDetect(e.target.checked)} disabled={isProcessingMemory} className="rounded text-primary" />优先识别文中的显式时间戳</label>
+               </div>}
+               <div className="bg-slate-50 p-3.5 rounded-2xl border border-slate-100 space-y-2">
+                   <span className="text-[11px] font-bold text-slate-600 uppercase tracking-wider block">写入目标系统</span>
+                   <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={importTargetLegacy} onChange={e => setImportTargetLegacy(e.target.checked)} disabled={isProcessingMemory} className="rounded text-primary" />写入传统记忆库</label>
+                   <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={importTargetPalace} onChange={e => setImportTargetPalace(e.target.checked)} disabled={isProcessingMemory} className="rounded text-primary" />写入向量记忆宫殿</label>
+               </div>
+               {isProcessingMemory && importProgress && <div className="bg-primary/5 p-3 rounded-2xl border border-primary/20 space-y-2">
+                   <div className="flex justify-between text-xs text-primary font-bold"><span>{importStatus || '处理中...'}</span><span>{importProgress.percentage}%</span></div>
+                   <div className="w-full bg-slate-200 rounded-full h-2 overflow-hidden"><div className="bg-primary h-full transition-all rounded-full" style={{ width: `${importProgress.percentage}%` }} /></div>
+                   <div className="text-[10px] text-slate-500 text-right">已提炼记忆: {importProgress.extractedCount} 条 | 块进度: {importProgress.currentChunk}/{importProgress.totalChunks}</div>
+               </div>}
+               {importStatus && !isProcessingMemory && <div className="text-xs text-primary font-medium bg-slate-50 p-2.5 rounded-xl border border-slate-100">{importStatus}</div>}
            </div>
        </Modal>
 

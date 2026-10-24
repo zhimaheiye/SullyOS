@@ -9,7 +9,7 @@
  * 1. 群聊导演响应后，GroupChat fire-and-forget 调用 processGroupNewMessages
  * 2. 检查群聊高水位线（per-groupId localStorage key），缓冲区超 BUFFER_THRESHOLD_GROUP 才触发
  * 3. LLM 用第三人称提取群记忆草稿（groupExtraction.extractGroupMemoriesFromBuffer）
- * 4. 每个成员各持久化一份（同样的草稿，charId=member.id，附 groupId/groupName 字段）
+ * 4. 按消息当时的成员可见范围分段，仅给该段可见且启用记忆宫殿的成员各持久化一份
  *    → 私聊里 retrieveMemories(member.id) 自然能召回这条群记忆，**无需额外注入路径**
  * 5. 更新群聊高水位线
  *
@@ -23,6 +23,7 @@ import { MemoryNodeDB, MemoryVectorDB, ensureFloat32 } from './db';
 import { getEmbeddings, cosineSimilarity } from './embedding';
 import { extractGroupMemoriesFromBuffer } from './groupExtraction';
 import { isMessageSemanticallyRelevant } from '../messageFormat';
+import { splitMessagesByMembershipAudience } from '../groupChat/membership';
 
 // ─── 群聊水位线：私聊用 200/100，群聊更宽松 300/200 ─────────────────
 const HOT_ZONE_SIZE_GROUP = 300;
@@ -106,6 +107,11 @@ function makeSpeakerNameOf(members: CharacterProfile[], userName: string) {
 // ─── 并发锁：每个群同时只跑一个处理任务 ─────────────────
 const processingLocks = new Set<string>();
 
+export function resolveGroupMemoryAudience(characters: CharacterProfile[], audienceMemberIds: string[]): CharacterProfile[] {
+    const audience = new Set(audienceMemberIds);
+    return characters.filter(character => audience.has(character.id) && character.memoryPalaceEnabled);
+}
+
 /**
  * 删除某个群的所有群记忆（成员各自存的副本一并清掉）
  *
@@ -156,7 +162,7 @@ export async function deleteGroupMemoriesByGroupId(groupId: string): Promise<{ d
  */
 export async function processGroupNewMessages(
     group: GroupProfile,
-    members: CharacterProfile[],
+    characters: CharacterProfile[],
     userName: string,
     onProgress?: (stage: string) => void,
 ): Promise<{
@@ -177,7 +183,7 @@ export async function processGroupNewMessages(
 
     try {
         // 1. 至少要有一个成员开启了记忆宫殿
-        const enabledMembers = members.filter(m => (m as any).memoryPalaceEnabled);
+        const enabledMembers = characters.filter(m => (m as any).memoryPalaceEnabled);
         if (enabledMembers.length === 0) {
             return { stored: 0, perMemberStored: {}, reason: 'no_enabled_member' };
         }
@@ -223,42 +229,42 @@ export async function processGroupNewMessages(
         console.log(`🏰 [GroupPalace] 群 ${group.name}：开始处理 ${toProcess.length} 条群消息（保留尾部 ${keptTail} 条）`);
         onProgress?.(`正在整理 ${toProcess.length} 条群消息...`);
 
-        // 5. LLM 提取（第三人称草稿）
-        const memberNames = members.map(m => m.name);
-        const speakerNameOf = makeSpeakerNameOf(members, userName);
-        onProgress?.(`正在提取【${group.name}】群记忆...`);
-        const { drafts } = await extractGroupMemoriesFromBuffer(
-            toProcess,
-            group.name,
-            memberNames,
-            userName || '用户',
-            speakerNameOf,
-            lightLLM,
-        );
-
-        if (drafts.length === 0) {
-            console.warn(`🏰 [GroupPalace] 群 ${group.name}：提取 0 条群记忆，不更新水位线，下次重试`);
-            return { stored: 0, perMemberStored: {}, extracted: 0, processedMessageCount: toProcess.length };
-        }
-
-        console.log(`🏰 [GroupPalace] 群 ${group.name}：提取 ${drafts.length} 条群记忆，开始为 ${enabledMembers.length} 个成员各持久化一份`);
-        onProgress?.(`提取到 ${drafts.length} 条群记忆，正在向量化并存入 ${enabledMembers.length} 个成员的记忆宫殿...`);
-
-        // 6. 为每个开启记忆宫殿的成员各存一份
-        //    每个成员用 ta 自己的 embedding 配置——这样 retrieve 时向量空间一致
+        // 5. 按连续 audience 分段提取；每段只写给当时真正可见且开启宫殿的成员。
         const perMemberStored: Record<string, number> = {};
         const remoteVectorCfg = readRemoteVectorConfig();
         let totalStored = 0;
+        let extracted = 0;
+        const speakerNameOf = makeSpeakerNameOf(characters, userName);
+        const segments = splitMessagesByMembershipAudience(group, toProcess);
 
-        for (const member of enabledMembers) {
-            const memberEmb = getEmbeddingConfigForMember(member, globalEmb);
-            if (!memberEmb) {
-                console.warn(`🏰 [GroupPalace] 成员 ${member.name} 没有 embedding 配置，跳过 ta 这一份`);
-                perMemberStored[member.id] = 0;
-                continue;
+        for (const segment of segments) {
+            const audienceMembers = resolveGroupMemoryAudience(characters, segment.audienceMemberIds);
+            if (audienceMembers.length === 0) continue;
+            onProgress?.(`正在提取【${group.name}】群记忆（${audienceMembers.map(member => member.name).join('、')}可见）...`);
+            const { drafts } = await extractGroupMemoriesFromBuffer(
+                segment.messages,
+                group.name,
+                audienceMembers.map(member => member.name),
+                userName || '用户',
+                speakerNameOf,
+                lightLLM,
+            );
+            if (drafts.length === 0) {
+                console.warn(`🏰 [GroupPalace] 群 ${group.name}：某成员范围提取 0 条，不更新水位线，下次重试`);
+                return { stored: totalStored, perMemberStored, extracted, processedMessageCount: toProcess.length };
             }
+            extracted += drafts.length;
+            onProgress?.(`提取到 ${drafts.length} 条群记忆，正在存入 ${audienceMembers.length} 个成员的记忆宫殿...`);
 
-            try {
+            for (const member of audienceMembers) {
+                const memberEmb = getEmbeddingConfigForMember(member, globalEmb);
+                if (!memberEmb) {
+                    console.warn(`🏰 [GroupPalace] 成员 ${member.name} 没有 embedding 配置，跳过 ta 这一份`);
+                    perMemberStored[member.id] ||= 0;
+                    continue;
+                }
+
+                try {
                 // 6a. 这个成员现有向量（用于本批去重）
                 const existingVectors = await MemoryVectorDB.getAllByCharId(member.id);
 
@@ -323,12 +329,13 @@ export async function processGroupNewMessages(
                     storedForMember++;
                 }
 
-                perMemberStored[member.id] = storedForMember;
+                perMemberStored[member.id] = (perMemberStored[member.id] || 0) + storedForMember;
                 totalStored += storedForMember;
                 console.log(`🏰 [GroupPalace] ${member.name}：存入 ${storedForMember} 条群记忆`);
-            } catch (e: any) {
-                console.warn(`🏰 [GroupPalace] ${member.name} 持久化群记忆失败: ${e.message}（其他成员继续）`);
-                perMemberStored[member.id] = 0;
+                } catch (e: any) {
+                    console.warn(`🏰 [GroupPalace] ${member.name} 持久化群记忆失败: ${e.message}（其他成员继续）`);
+                    perMemberStored[member.id] ||= 0;
+                }
             }
         }
 
@@ -344,7 +351,7 @@ export async function processGroupNewMessages(
         return {
             stored: totalStored,
             perMemberStored,
-            extracted: drafts.length,
+            extracted,
             processedMessageCount: toProcess.length,
         };
     } catch (e: any) {

@@ -13,12 +13,17 @@ import {
 import type { APIConfig, CharacterProfile, UserProfile } from '../../types';
 import { useBlobRefUrl } from '../../utils/blobRef';
 import {
+    assertMemoryRepairProposalCurrent,
     diagnoseRecallIssue,
     formatRepairMemoryDate,
     getMemoryGuideCopy,
+    getSnapshotRepairNodeIds,
     loadRecallRepairSnapshot,
+    MemoryRepairProposalConflict,
     patchRecallMemory,
+    proposeRecallMemoryRepairs,
     searchEditableMemories,
+    type MemoryRepairProposal,
     type RecallRepairSnapshot,
     type RepairNode,
 } from '../../utils/memoryPalace/memoryRepair';
@@ -30,6 +35,9 @@ type EditorTarget =
     | { type: 'node'; id: string }
     | { type: 'box'; id: string }
     | null;
+
+type RepairStage = 'inspect' | 'planning' | 'reviewing' | 'complete';
+type ProposalStatus = 'pending' | 'approved' | 'skipped' | 'conflict';
 
 interface MemoryRepairPortalProps {
     inline?: boolean;
@@ -75,6 +83,14 @@ function boxDateLabel(nodes: RepairNode[]): string {
     return first === last ? first : `${first} — ${last}`;
 }
 
+function findSnapshotRepairNode(
+    snapshot: RecallRepairSnapshot,
+    nodeId: string,
+): RepairNode | undefined {
+    return snapshot.standalone.find(item => item.node.id === nodeId)
+        || snapshot.boxes.flatMap(group => group.nodes).find(item => item.node.id === nodeId);
+}
+
 const MemoryRepairPortal: React.FC<MemoryRepairPortalProps> = ({
     inline=false,
     char,
@@ -108,6 +124,17 @@ const MemoryRepairPortal: React.FC<MemoryRepairPortalProps> = ({
     const [searchQuery, setSearchQuery] = useState('');
     const [searchResults, setSearchResults] = useState<RepairNode[]>([]);
     const [searching, setSearching] = useState(false);
+    const [repairStage, setRepairStage] = useState<RepairStage>('inspect');
+    const [repairInstruction, setRepairInstruction] = useState('');
+    const [repairPlanSummary, setRepairPlanSummary] = useState('');
+    const [proposals, setProposals] = useState<MemoryRepairProposal[]>([]);
+    const [reviewIndex, setReviewIndex] = useState(0);
+    const [proposalStatuses, setProposalStatuses] = useState<Record<string, ProposalStatus>>({});
+    const [proposalDraft, setProposalDraft] = useState('');
+    const [proposalEditing, setProposalEditing] = useState(false);
+    const [proposalSaving, setProposalSaving] = useState(false);
+    const [proposalError, setProposalError] = useState('');
+    const [proposalCurrentContent, setProposalCurrentContent] = useState('');
 
     useEffect(() => {
         let alive = true;
@@ -242,6 +269,103 @@ const MemoryRepairPortal: React.FC<MemoryRepairPortalProps> = ({
         }
     };
 
+    const generateRepairProposals = async () => {
+        const instruction = repairInstruction.trim();
+        if (!instruction || !snapshot || repairStage === 'planning') return;
+        const candidateIds = suspectIds.length > 0
+            ? suspectIds
+            : getSnapshotRepairNodeIds(snapshot);
+        setRepairStage('planning');
+        setProposalError('');
+        setProposalCurrentContent('');
+        setNotice('');
+        try {
+            const plan = await proposeRecallMemoryRepairs({
+                char,
+                user,
+                apiConfig,
+                snapshot,
+                candidateIds,
+                instruction,
+            });
+            setRepairPlanSummary(plan.summary);
+            setProposals(plan.proposals);
+            setReviewIndex(0);
+            setProposalStatuses(Object.fromEntries(
+                plan.proposals.map(proposal => [proposal.nodeId, 'pending' as const]),
+            ));
+            setProposalEditing(false);
+            setProposalDraft(plan.proposals[0]?.proposedContent || '');
+            setRepairStage(plan.proposals.length > 0 ? 'reviewing' : 'complete');
+        } catch (error: any) {
+            setProposalError(error?.message || '没能生成修补提案');
+            setRepairStage('inspect');
+        }
+    };
+
+    const advanceProposal = (status: ProposalStatus) => {
+        const proposal = proposals[reviewIndex];
+        if (!proposal) return;
+        setProposalStatuses(current => ({ ...current, [proposal.nodeId]: status }));
+        const nextIndex = reviewIndex + 1;
+        setProposalError('');
+        setProposalCurrentContent('');
+        setProposalEditing(false);
+        if (nextIndex >= proposals.length) {
+            setRepairStage('complete');
+            return;
+        }
+        setReviewIndex(nextIndex);
+        setProposalDraft(proposals[nextIndex].proposedContent);
+    };
+
+    const approveCurrentProposal = async () => {
+        const proposal = proposals[reviewIndex];
+        if (!proposal || !snapshot || proposalSaving) return;
+        const acceptedContent = proposalDraft.trim();
+        if (!acceptedContent || acceptedContent === proposal.originalContent.trim()) return;
+        const item = findSnapshotRepairNode(snapshot, proposal.nodeId);
+        if (!item) {
+            setProposalError('这条记忆已不在当前召回现场，不能写回。');
+            return;
+        }
+        setProposalSaving(true);
+        setProposalError('');
+        setProposalCurrentContent('');
+        try {
+            await assertMemoryRepairProposalCurrent(proposal);
+            await saveNode(item, acceptedContent);
+            advanceProposal('approved');
+        } catch (error: any) {
+            if (error instanceof MemoryRepairProposalConflict) {
+                setProposalStatuses(current => ({
+                    ...current,
+                    [proposal.nodeId]: 'conflict',
+                }));
+                setProposalCurrentContent(error.currentContent || '');
+            }
+            setProposalError(error?.message || '写回失败，请重试');
+        } finally {
+            setProposalSaving(false);
+        }
+    };
+
+    const restartRepairPlanning = async () => {
+        setProposalError('');
+        setProposalCurrentContent('');
+        setProposals([]);
+        setProposalStatuses({});
+        setReviewIndex(0);
+        setProposalEditing(false);
+        setRepairStage('inspect');
+        try {
+            const refreshed = await loadRecallRepairSnapshot(char.id, sinceTs);
+            setSnapshot(refreshed);
+        } catch (error: any) {
+            setNotice(error?.message || '没能刷新召回现场');
+        }
+    };
+
     const openNode = (id: string) => setEditorTarget({ type: 'node', id });
     const openSuspect = (id: string) => {
         const group = snapshot?.boxes.find(box => box.nodes.some(item => item.node.id === id));
@@ -261,6 +385,11 @@ const MemoryRepairPortal: React.FC<MemoryRepairPortalProps> = ({
     const editorBox = editorTarget?.type === 'box'
         ? snapshot?.boxes.find(group => group.box.id === editorTarget.id)
         : undefined;
+    const currentProposal = proposals[reviewIndex];
+    const approvedProposalCount = Object.values(proposalStatuses)
+        .filter(status => status === 'approved').length;
+    const skippedProposalCount = Object.values(proposalStatuses)
+        .filter(status => status === 'skipped').length;
 
     const portal = (
         <div className={`memory-repair-root ${farewell ? 'is-farewell' : ''}`}>
@@ -698,6 +827,170 @@ const MemoryRepairPortal: React.FC<MemoryRepairPortalProps> = ({
                                         </div>
                                     </div>
                                 )}
+                                <section className="mb-5 rounded-2xl border border-violet-200/15 bg-violet-200/[.06] p-4">
+                                    <div className="flex items-start justify-between gap-3 mb-3">
+                                        <div>
+                                            <div className="text-[10px] uppercase tracking-[.2em] text-violet-200/45 mb-1">
+                                                proposal review
+                                            </div>
+                                            <h3 className="text-sm font-semibold text-white/90">让？？？准备修补提案</h3>
+                                        </div>
+                                        {proposals.length > 0 && (
+                                            <span className="text-[11px] text-white/45">
+                                                {repairStage === 'reviewing'
+                                                    ? `${reviewIndex + 1} / ${proposals.length}`
+                                                    : `${proposals.length} 条`}
+                                            </span>
+                                        )}
+                                    </div>
+
+                                    {(repairStage === 'inspect' || (repairStage === 'complete' && proposals.length === 0)) && (
+                                        <>
+                                            <p className="mb-3 text-xs leading-5 text-white/45">
+                                                AI 可以一次理解并生成多条草案，但在你逐条同意之前，一条都不会写回记忆。
+                                                {suspectIds.length > 0
+                                                    ? ` 本次只允许处理上面标出的 ${suspectIds.length} 条线索。`
+                                                    : ' 尚未标出线索时，只允许处理当前召回现场。'}
+                                            </p>
+                                            <textarea
+                                                rows={4}
+                                                value={repairInstruction}
+                                                onChange={event => setRepairInstruction(event.target.value)}
+                                                placeholder="告诉？？？你希望这些记忆变成什么样……"
+                                            />
+                                            <button
+                                                className="memory-action-primary mt-3 !w-full flex items-center justify-center gap-2"
+                                                onClick={generateRepairProposals}
+                                                disabled={!repairInstruction.trim()}
+                                            >
+                                                <Sparkle size={15} /> 生成修补提案
+                                            </button>
+                                        </>
+                                    )}
+
+                                    {repairStage === 'planning' && (
+                                        <div className="py-7 text-center text-sm text-violet-100/70">
+                                            <Sparkle size={19} className="mx-auto mb-2 animate-pulse" />
+                                            正在整理修补草案……
+                                        </div>
+                                    )}
+
+                                    {repairStage === 'reviewing' && currentProposal && (
+                                        <div>
+                                            <p className="mb-3 text-xs leading-5 text-violet-100/65">
+                                                {repairPlanSummary} 在你确认这一条之前，它不会写回。
+                                            </p>
+                                            <div className="mb-3 flex flex-wrap items-center gap-2 text-[11px] text-white/45">
+                                                <span>{currentProposal.eventBoxName
+                                                    ? `同一事件链「${currentProposal.eventBoxName}」`
+                                                    : '独立记忆'}</span>
+                                                <span>·</span>
+                                                <span>{currentProposal.kind === 'summary'
+                                                    ? '摘要记忆'
+                                                    : currentProposal.kind === 'archived'
+                                                        ? '归档记忆'
+                                                        : currentProposal.kind === 'live'
+                                                            ? '活跃记忆'
+                                                            : '独立记忆'}</span>
+                                                <span>·</span>
+                                                <span>{formatRepairMemoryDate(currentProposal.createdAt)}</span>
+                                                <span>·</span>
+                                                <span>{getRoomLabel(currentProposal.room, user.name)}</span>
+                                            </div>
+                                            <div className="mb-3 rounded-xl bg-amber-100/[.07] p-3">
+                                                <div className="mb-1 text-[11px] text-amber-100/55">修补理由</div>
+                                                <p className="text-xs leading-5 text-amber-50/80">{currentProposal.reason}</p>
+                                            </div>
+                                            <div className="grid gap-3">
+                                                <div className="rounded-xl bg-black/15 p-3">
+                                                    <div className="mb-2 text-[11px] text-white/40">原记忆</div>
+                                                    <p className="whitespace-pre-wrap text-xs leading-6 text-white/65">
+                                                        {currentProposal.originalContent}
+                                                    </p>
+                                                </div>
+                                                <div className="rounded-xl border border-violet-200/15 bg-violet-200/[.05] p-3">
+                                                    <div className="mb-2 text-[11px] text-violet-100/55">建议修补</div>
+                                                    {proposalEditing ? (
+                                                        <textarea
+                                                            rows={Math.min(12, Math.max(5, Math.ceil(proposalDraft.length / 34)))}
+                                                            value={proposalDraft}
+                                                            onChange={event => setProposalDraft(event.target.value)}
+                                                            autoFocus
+                                                        />
+                                                    ) : (
+                                                        <p className="whitespace-pre-wrap text-xs leading-6 text-white/85">
+                                                            {proposalDraft}
+                                                        </p>
+                                                    )}
+                                                </div>
+                                            </div>
+                                            {proposalError && (
+                                                <div className="mt-3 rounded-xl border border-rose-300/20 bg-rose-300/10 p-3 text-xs leading-5 text-rose-100">
+                                                    <p>{proposalError}</p>
+                                                    {proposalCurrentContent && (
+                                                        <details className="mt-2">
+                                                            <summary className="cursor-pointer">查看当前内容</summary>
+                                                            <p className="mt-2 whitespace-pre-wrap text-white/70">{proposalCurrentContent}</p>
+                                                        </details>
+                                                    )}
+                                                </div>
+                                            )}
+                                            <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                                                <button
+                                                    className="memory-action-quiet"
+                                                    onClick={() => advanceProposal('skipped')}
+                                                    disabled={proposalSaving}
+                                                >
+                                                    跳过
+                                                </button>
+                                                <button
+                                                    className="memory-action-quiet"
+                                                    onClick={() => setProposalEditing(value => !value)}
+                                                    disabled={proposalSaving}
+                                                >
+                                                    {proposalEditing ? '收起调整' : '手动调整'}
+                                                </button>
+                                                <button
+                                                    className="memory-action-primary !flex-none"
+                                                    onClick={approveCurrentProposal}
+                                                    disabled={proposalSaving
+                                                        || !proposalDraft.trim()
+                                                        || proposalDraft.trim() === currentProposal.originalContent.trim()}
+                                                >
+                                                    {proposalSaving ? '正在写回…' : '同意并写回'}
+                                                </button>
+                                            </div>
+                                            {proposalStatuses[currentProposal.nodeId] === 'conflict' && (
+                                                <button
+                                                    className="mt-3 w-full text-xs text-violet-100/70 underline underline-offset-4"
+                                                    onClick={restartRepairPlanning}
+                                                >
+                                                    刷新现场并重新生成建议
+                                                </button>
+                                            )}
+                                        </div>
+                                    )}
+
+                                    {repairStage === 'complete' && proposals.length > 0 && (
+                                        <div className="py-3 text-center">
+                                            <Sparkle size={20} className="mx-auto mb-2 text-violet-200" />
+                                            <p className="text-sm text-white/85">这组提案已经审核完毕</p>
+                                            <p className="mt-1 text-xs text-white/45">
+                                                已写回 {approvedProposalCount} 条，跳过 {skippedProposalCount} 条。
+                                            </p>
+                                            <button
+                                                className="memory-action-quiet mt-3"
+                                                onClick={restartRepairPlanning}
+                                            >
+                                                再生成一组提案
+                                            </button>
+                                        </div>
+                                    )}
+
+                                    {proposalError && repairStage === 'inspect' && (
+                                        <p className="mt-3 text-xs leading-5 text-rose-200">{proposalError}</p>
+                                    )}
+                                </section>
                                 <div className="relative">
                                     <textarea
                                         rows={4}

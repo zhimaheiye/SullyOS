@@ -70,4 +70,4 @@ SULLY 专属 special）。之后经内置素材包 / 用户上传进来的都是
 转回 base64（iframe 契约要字符串）。备份（v3）里令牌原样进 JSON，二进制随 zip 的 `blobs/<id>`
 旁路走、导入按原 id 写回（见 `utils/backupBlobs.ts`）。详见 `utils/creatorPartsBlob.ts`。
 
-测试：`pnpm vitest run utils/psdCreatorImport.test.ts utils/builtinPartsPack.test.ts utils/creatorPartsBlob.test.ts`。
+测试：`.\node_modules\.bin\vitest.cmd run utils/psdCreatorImport.test.ts utils/builtinPartsPack.test.ts utils/creatorPartsBlob.test.ts`。

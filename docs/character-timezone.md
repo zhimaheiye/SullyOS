@@ -69,6 +69,38 @@
 
 `dailySchedule.ts` 里还有一层旧 key 兼容（更早版本按 UTC 日、接入角色时区前按手机日）。迁移时会校验 `generatedAt` 确实属于角色当地的今天，并且把旧记录**搬走**而不是复制——留副本的话，等角色当地日历翻到那个日期，同一份日程会被当成两天用。
 
+## 日程小剧场入口一致性
+
+角色日程有两个主要查看入口，但它们必须使用同一份 `DailySchedule` 和同一种小剧场语义：
+
+- 主聊天底部的“日程/情绪”面板；
+- 桌面第二页日程摘要进入的多角色全屏查看器。
+
+两个入口都通过 `ScheduleCard.onPlayTheater` 选择时段，并复用 `TheaterPlayer`、`generateSlotTheater()` 和 `persistScheduleTheaterCard()`。已过去及当前时段可以按需生成或重看，未来时段只提示“还没到这个时间”。关闭播放器不会写入聊天；用户选择“TA 不知道你看了”或“让 TA 发现你在看”后，才把 `theater_card` 写入该角色主聊天，二者只通过 `metadata.exposed` 区分角色是否知道用户看过。
+
+多角色查看器切换角色时，异步读回新日程前必须校验 `schedule.charId === activeCharacter.id`。不能把上一位角色尚未卸下的日程拿去给新角色生成小剧场或写回聊天。
+
+关键入口：
+
+- 卡片与全屏查看器：`components/schedule/ScheduleCard.tsx`、`components/schedule/ScheduleHomeWidget.tsx`
+- 桌面控制器：`apps/Launcher.tsx`（普通桌面第二页）、`components/os/CompanionHome.tsx`（角色陪伴桌面）
+- 主聊天控制器：`apps/Chat.tsx`
+- 生成与写回：`utils/theaterGenerator.ts`、`utils/scheduleTheater.ts`
+
+### 2026-08-17 · 多角色查看器只能看整张日程
+
+- 现象：桌面第二页可以打开并切换所有角色的完整日程，但 `compact` 卡片隐藏了每个时段的播放入口；只有从主聊天进入时才能展开小剧场并选择是否留痕。
+- 修复：`compact` 继续只限制编辑能力，不再隐式关闭传入的 `onPlayTheater`；全屏查看器把时段选择交给桌面控制器，后者直接复用既有播放器、生成器和共享写回方法。
+- 返回路径：关闭演出回到多角色日程；选择任一留痕方式后进入对应角色主聊天查看卡片。
+- 防串角：切换角色期间只展示并操作 `charId` 与当前角色一致的日程。
+- 回归：`utils/companionHomeRuntimeReferences.test.ts`、`utils/theaterGenerator.test.ts` 与 `utils/scheduleTheater.test.ts` 共 28 项通过，覆盖双入口接线、生成解析以及聊天卡 metadata；Vite 生产构建通过。按用户偏好未做浏览器页面测试。
+
+### 2026-08-18 · 普通桌面第二页仍无法进入具体时段
+
+- 原因：首轮只在 `CompanionHome.tsx` 接入了小剧场流程，但用户截图中的普通桌面第二页实际由 `apps/Launcher.tsx` 管理；共用全屏查看器不等于两个宿主会自动获得相同回调。
+- 修复：`Launcher` 现在也负责生成、重看、关闭返回和按用户选择写回聊天；紧凑日程中的整条时段支持点击与键盘进入，不再依赖右侧小按钮。
+- 边界：未来时段仍只显示锁定提示；切换角色时继续校验日程 `charId`，避免异步加载期间串角。
+
 ## 已接入的地方
 
 用户所在地节假日感知是例外：其日期按用户设备时区计算，后台由 tool_config 带入用户时区，不能使用角色时区。普通日期不额外注入，见 [节假日感知](user-holidays.md)。

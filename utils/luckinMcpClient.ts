@@ -5,8 +5,8 @@
  * 平台: https://open.lkcoffee.com  (瑞幸 AI 开放平台)
  * Token: 登录 open.lkcoffee.com 后复制, 每个用户独立, 有效期约 1 个月, 存 localStorage
  *
- * 浏览器无法直连 lkcoffee.com (CORS), 走中心配置的 Cloudflare Worker 透传 (默认
- * https://proxy.friedsully.com, 用户可在「设置 → 自定义网络代理」里改):
+ * 浏览器无法直连 lkcoffee.com (CORS), 走玩家在「设置 → 网络代理」填写的地址透传。
+ * 公开版本没有默认公共地址，没填就不会请求:
  *   POST  <worker>/mcp/luckin
  *   Authorization: Bearer <user_mcp_token>
  *   body: 标准 JSON-RPC 2.0 报文
@@ -17,10 +17,10 @@
  * schema 后再按需收紧)。
  */
 
-import { getProxyWorkerUrl } from './proxyWorker';
+import { requireProxyWorkerUrl } from './proxyWorker';
 
-// 走中心配置的主代理 worker（用户可在设置里换成自部署实例）
-const mcpProxyUrl = (): string => `${getProxyWorkerUrl()}/mcp/luckin`;
+// 走玩家自己在「设置 → 网络代理」填写的地址。没填时不会请求。
+const mcpProxyUrl = (): string => `${requireProxyWorkerUrl()}/mcp/luckin`;
 const MCP_TOKEN_KEY = 'aetheros.luckin.mcpToken';
 const MCP_ENABLED_KEY = 'aetheros.luckin.mcpEnabled';
 

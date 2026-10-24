@@ -3,6 +3,7 @@ import { DB } from './db';
 import { extractContent, safeFetchJson } from './safeApi';
 import { normalizeApiBaseUrl, normalizeApiCredential, normalizeApiModel } from './apiConfigNormalize';
 import { isBlobRef } from './blobRef';
+import { readStickerVision, readStickerVisionDescription } from './stickerVision';
 
 export const VISION_DESCRIPTION_METADATA_KEY = 'visionDescription';
 
@@ -23,6 +24,8 @@ const VISION_PROMPT = `请准确、具体地描述图片中实际可见的内容
  */
 const canDescribeImage = (value: unknown): value is string =>
   typeof value === 'string' && (/^(data:image\/|https?:\/\/)/i.test(value) || isBlobRef(value));
+
+export { canDescribeImage };
 
 const inFlightDescriptions = new Map<string, Promise<string>>();
 
@@ -52,10 +55,13 @@ const cleanDescription = (value: string): string => value
   .trim()
   .slice(0, 4000);
 
-/** 调用 OpenAI 兼容视觉端点，把一张图片变成可交给纯文本模型的描述。 */
+/** 调用 OpenAI 兼容视觉端点，把一张图片变成可交给纯文本模型的描述。
+ *  options.prompt 允许调用方换用专用提示词（如表情包识图）；默认仍是普通图片提示词，
+ *  对现有 image 调用方零行为变化。in-flight 去重键包含 prompt，避免同图不同提示词串结果。 */
 export async function describeImageWithVisionApi(
   imageUrl: string,
   config: VisionApiConfig,
+  options?: { prompt?: string },
 ): Promise<string> {
   if (!isVisionApiReady(config)) {
     throw new Error('识图 API 已开启，但 URL、Key 或 Model 尚未填写完整');
@@ -64,7 +70,9 @@ export async function describeImageWithVisionApi(
     throw new Error('图片数据不可用，无法调用识图 API');
   }
 
-  const existing = inFlightDescriptions.get(imageUrl);
+  const prompt = options?.prompt?.trim() || VISION_PROMPT;
+  const dedupKey = `${prompt}\u0000${imageUrl}`;
+  const existing = inFlightDescriptions.get(dedupKey);
   if (existing) return existing;
 
   const request = (async () => {
@@ -80,7 +88,7 @@ export async function describeImageWithVisionApi(
         messages: [{
           role: 'user',
           content: [
-            { type: 'text', text: VISION_PROMPT },
+            { type: 'text', text: prompt },
             { type: 'image_url', image_url: { url: imageUrl } },
           ],
         }],
@@ -95,11 +103,11 @@ export async function describeImageWithVisionApi(
     return description;
   })();
 
-  inFlightDescriptions.set(imageUrl, request);
+  inFlightDescriptions.set(dedupKey, request);
   try {
     return await request;
   } finally {
-    inFlightDescriptions.delete(imageUrl);
+    inFlightDescriptions.delete(dedupKey);
   }
 }
 
@@ -157,4 +165,99 @@ export async function materializeVisionDescriptions(
   }
 
   return prepared;
+}
+
+/** 表情包专用识图提示词。与普通图片不同：重视聊天语义、图内文字与 meme 含义；
+ *  刻意不给视觉模型表情包名称，避免它被名称诱导「看图说名称」。名称由客户端另拼。 */
+export const STICKER_VISION_PROMPT = `这是一张聊天中使用的表情包 / meme 图片。
+请准确描述图片实际可见的内容，并帮助另一个无法看图的聊天模型理解它在对话中的表达效果。
+
+重点关注：
+1. 图片中的人物、动物、物体、动作和表情；
+2. 图片上的文字；
+3. 夸张、荒诞、反差、抽象等视觉元素；
+4. 这张图通常可能表达的语气、情绪或 meme 式含义。
+
+不要根据文件名或表情包名称猜测画面；
+不要编造画面外的信息；
+“可能表达”可以结合图像本身判断，但不要把不确定的网络梗来源说成事实；
+输出简洁自然的描述，不要寒暄。`;
+
+/**
+ * 为聊天窗口内的 eligible 表情包补齐视觉描述。与普通图片的 materializeVisionDescriptions
+ * 平行、互不干扰：
+ *  - 只处理 type === 'emoji' 且 metadata.stickerVision.eligible === true 且尚无 description 的消息；
+ *    旧表情（无资格）永远不会被它碰，无论当前开关如何。
+ *  - 识别结果写回 metadata.stickerVision.description/recognizedAt/model，一次识别永久复用。
+ *  - 同批次相同资源复用第一次结果；失败过的资源同批次不再重试。
+ *  - 全程 fail-soft：识图配置不完整 / 网络失败 / 返回为空都只让该表情降级为名称模式，
+ *    绝不 throw 让整轮聊天失败（这是与 materializeVisionDescriptions 最大的语义差异）。
+ */
+export async function materializeStickerVisionDescriptions(
+  messages: Message[],
+  config?: VisionApiConfig | null,
+): Promise<Message[]> {
+  if (config?.enabled !== true || !isVisionApiReady(config)) return messages;
+
+  const descriptionByImage = new Map<string, string>();
+  const failedImages = new Set<string>();
+  const prepared: Message[] = [];
+
+  for (const message of messages) {
+    if (message.type !== 'emoji') {
+      prepared.push(message);
+      continue;
+    }
+    const vision = readStickerVision(message);
+    if (!vision || readStickerVisionDescription(message)) {
+      prepared.push(message);
+      continue;
+    }
+    const imageUrl = typeof message.content === 'string' ? message.content : '';
+    if (failedImages.has(imageUrl)) {
+      prepared.push(message);
+      continue;
+    }
+    const shared = descriptionByImage.get(imageUrl);
+    if (shared) {
+      prepared.push(await writeStickerVisionDescription(message, shared, config));
+      continue;
+    }
+    // 纯文字备份会保留消息但移除原图数据；这种历史沿用名称模式，不能让它失败。
+    if (!canDescribeImage(imageUrl)) {
+      failedImages.add(imageUrl);
+      prepared.push(message);
+      continue;
+    }
+    try {
+      const description = await describeImageWithVisionApi(imageUrl, config, { prompt: STICKER_VISION_PROMPT });
+      descriptionByImage.set(imageUrl, description);
+      prepared.push(await writeStickerVisionDescription(message, description, config));
+    } catch (error) {
+      console.warn('[stickerVision] 表情包识图失败，该表情本轮降级为名称模式', error);
+      failedImages.add(imageUrl);
+      prepared.push(message);
+    }
+  }
+
+  return prepared;
+}
+
+/** 把识别到的描述合并进 metadata.stickerVision 并落库；DB 写回失败同样 fail-soft（只丢描述不丢消息）。 */
+async function writeStickerVisionDescription(message: Message, description: string, config: VisionApiConfig): Promise<Message> {
+  const metadata = {
+    ...(message.metadata || {}),
+    stickerVision: {
+      ...(readStickerVision(message) || { eligible: true, name: '未知表情' }),
+      description,
+      recognizedAt: Date.now(),
+      model: config.model.trim(),
+    },
+  };
+  try {
+    await DB.updateMessageMetadata(message.id, prev => ({ ...(prev || {}), ...metadata }));
+  } catch (error) {
+    console.warn('[stickerVision] 描述写回 metadata 失败，本轮仍按已识别内容渲染', error);
+  }
+  return { ...message, metadata };
 }

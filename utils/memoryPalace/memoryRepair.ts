@@ -38,6 +38,47 @@ export interface MemoryRepairDiagnosis {
     reasons: Record<string, string>;
 }
 
+/**
+ * A dry-run proposal. Snapshot-owned fields are filled by the client rather
+ * than trusted from model output.
+ */
+export interface MemoryRepairProposal {
+    nodeId: string;
+    originalContent: string;
+    proposedContent: string;
+    reason: string;
+    kind: RepairNodeKind;
+    eventBoxId?: string;
+    eventBoxName?: string;
+    createdAt: number;
+    room: MemoryNode['room'];
+}
+
+export interface MemoryRepairPlan {
+    summary: string;
+    proposals: MemoryRepairProposal[];
+}
+
+interface RawMemoryRepairProposal {
+    nodeId?: unknown;
+    proposedContent?: unknown;
+    reason?: unknown;
+}
+
+type ProposalConflictCode = 'proposal-conflict' | 'proposal-missing';
+
+export class MemoryRepairProposalConflict extends Error {
+    readonly code: ProposalConflictCode;
+    readonly currentContent?: string;
+
+    constructor(code: ProposalConflictCode, message: string, currentContent?: string) {
+        super(message);
+        this.name = 'MemoryRepairProposalConflict';
+        this.code = code;
+        this.currentContent = currentContent;
+    }
+}
+
 function unique<T>(items: T[]): T[] {
     return [...new Set(items)];
 }
@@ -272,6 +313,211 @@ function snapshotCandidates(snapshot: RecallRepairSnapshot): Array<{
     return candidates;
 }
 
+interface SnapshotProposalNode {
+    item: RepairNode;
+    eventBoxId?: string;
+    eventBoxName?: string;
+}
+
+function snapshotProposalNodeMap(
+    snapshot: RecallRepairSnapshot,
+): Map<string, SnapshotProposalNode> {
+    const result = new Map<string, SnapshotProposalNode>();
+    snapshot.standalone.forEach(item => {
+        result.set(item.node.id, { item });
+    });
+    snapshot.boxes.forEach(group => {
+        group.nodes.forEach(item => {
+            result.set(item.node.id, {
+                item,
+                eventBoxId: group.box.id,
+                eventBoxName: group.box.name,
+            });
+        });
+    });
+    return result;
+}
+
+export function getSnapshotRepairNodeIds(snapshot: RecallRepairSnapshot): string[] {
+    return [...snapshotProposalNodeMap(snapshot).keys()];
+}
+
+/**
+ * Locks model output to the program-authorized snapshot and enriches it with
+ * authoritative node metadata. The first valid proposal wins for each node.
+ */
+export function normalizeMemoryRepairProposals(
+    snapshot: RecallRepairSnapshot,
+    candidateIds: Iterable<string>,
+    rawProposals: RawMemoryRepairProposal[],
+): MemoryRepairProposal[] {
+    const nodes = snapshotProposalNodeMap(snapshot);
+    const allowed = new Set(
+        [...candidateIds].filter(nodeId => nodes.has(nodeId)),
+    );
+    const seen = new Set<string>();
+    const normalized: MemoryRepairProposal[] = [];
+
+    for (const raw of rawProposals) {
+        if (typeof raw?.nodeId !== 'string' || !allowed.has(raw.nodeId) || seen.has(raw.nodeId)) {
+            continue;
+        }
+        if (typeof raw.proposedContent !== 'string') continue;
+        const source = nodes.get(raw.nodeId);
+        if (!source) continue;
+        const proposedContent = raw.proposedContent.trim();
+        if (!proposedContent || proposedContent === source.item.node.content.trim()) continue;
+
+        seen.add(raw.nodeId);
+        normalized.push({
+            nodeId: raw.nodeId,
+            originalContent: source.item.node.content,
+            proposedContent,
+            reason: typeof raw.reason === 'string' && raw.reason.trim()
+                ? raw.reason.trim()
+                : '根据你的修补要求调整这条记忆。',
+            kind: source.item.kind,
+            eventBoxId: source.eventBoxId,
+            eventBoxName: source.eventBoxName,
+            createdAt: source.item.node.createdAt,
+            room: source.item.node.room,
+        });
+    }
+
+    return normalized;
+}
+
+/**
+ * Optimistic conflict guard used immediately before an approved proposal is
+ * passed to the existing single-node patch path.
+ */
+export async function assertMemoryRepairProposalCurrent(
+    proposal: MemoryRepairProposal,
+): Promise<MemoryNode> {
+    const current = await MemoryNodeDB.getById(proposal.nodeId);
+    if (!current) {
+        throw new MemoryRepairProposalConflict(
+            'proposal-missing',
+            '这条记忆已不存在，不能继续写回。',
+        );
+    }
+    if (current.content !== proposal.originalContent) {
+        throw new MemoryRepairProposalConflict(
+            'proposal-conflict',
+            '这条记忆在提案生成后发生过变化，不能直接覆盖。',
+            current.content,
+        );
+    }
+    return current;
+}
+
+/**
+ * Generates a repair plan only. This function deliberately has no dependency
+ * on the memory write/vector update path.
+ */
+export async function proposeRecallMemoryRepairs(params: {
+    char: CharacterProfile;
+    user: UserProfile;
+    apiConfig: APIConfig;
+    snapshot: RecallRepairSnapshot;
+    candidateIds: string[];
+    instruction: string;
+}): Promise<MemoryRepairPlan> {
+    const { apiConfig, snapshot } = params;
+    if (!apiConfig.baseUrl || !apiConfig.apiKey || !apiConfig.model) {
+        throw new Error('请先配置可用的聊天 API');
+    }
+    const instruction = params.instruction.trim();
+    if (!instruction) throw new Error('请先说明希望怎样修补这些记忆');
+
+    const snapshotMap = snapshotProposalNodeMap(snapshot);
+    const candidateIds = unique(
+        params.candidateIds.filter(nodeId => snapshotMap.has(nodeId)),
+    );
+    if (candidateIds.length === 0) {
+        return { summary: '当前没有可生成修补提案的记忆。', proposals: [] };
+    }
+
+    const candidates = candidateIds.map(nodeId => {
+        const source = snapshotMap.get(nodeId)!;
+        return {
+            id: nodeId,
+            scope: source.eventBoxName
+                ? `事件链「${source.eventBoxName}」/${source.item.kind}`
+                : '独立记忆',
+            date: formatRepairMemoryDate(source.item.node.createdAt),
+            content: source.item.node.content,
+        };
+    });
+    const candidateText = candidates
+        .map((item, index) => `[${index + 1}] id=${item.id}\n位置=${item.scope}\n日期=${item.date}\n内容=${item.content}`)
+        .join('\n\n');
+    const coreContext = buildMemoryRepairCoreContext(params.char, params.user);
+    const charName = params.char.name || '对方';
+    const userName = params.user.name || '你';
+    const system = `${coreContext}
+
+你正在为“记忆链接”生成一份修补草案。你只能规划，不能声称已经修改、保存或写回任何记忆。
+只允许为下方明确列出的候选 id 提案；不得补充、搜索或猜测候选范围之外的记忆。
+每条提案都应保留事实信息，只按 ${userName} 的修补要求纠正不准确的表述。不要把建议写成对 ${userName} 的说明，要直接写成可替换原记忆的正文。
+只输出 JSON：
+{
+  "summary": "本次提案概述",
+  "proposals": [
+    { "nodeId": "候选原始 id", "proposedContent": "建议的新正文", "reason": "为什么需要修补" }
+  ]
+}`;
+    const userPrompt = `修补要求：
+${instruction}
+
+允许生成提案的记忆（除此之外没有权限）：
+${candidateText}`;
+
+    const data = await safeFetchJson(
+        `${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`,
+        {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${apiConfig.apiKey}`,
+            },
+            body: JSON.stringify({
+                model: apiConfig.model,
+                temperature: 0.2,
+                stream: false,
+                messages: [
+                    { role: 'system', content: system },
+                    { role: 'user', content: userPrompt },
+                ],
+            }),
+        },
+        1,
+        90_000,
+        { appId: 'chat', charId: params.char.id, purpose: 'memory-repair-proposal', featureId: 'memoryLight' },
+    );
+    const raw = extractContent(data);
+    const parsed = extractJson(raw);
+    const rawProposals = Array.isArray(parsed?.proposals)
+        ? parsed.proposals as RawMemoryRepairProposal[]
+        : [];
+    const proposals = normalizeMemoryRepairProposals(snapshot, candidateIds, rawProposals)
+        .map(proposal => ({
+            ...proposal,
+            reason: naturalizeMemoryRepairLanguage(proposal.reason, charName, userName),
+        }));
+    const parsedSummary = typeof parsed?.summary === 'string'
+        ? parsed.summary.trim()
+        : '';
+    return {
+        summary: parsedSummary
+            ? naturalizeMemoryRepairLanguage(parsedSummary, charName, userName)
+            : proposals.length > 0
+                ? `准备了 ${proposals.length} 处修补。`
+                : '没有生成有效的修补提案。',
+        proposals,
+    };
+}
+
 /** 即使模型偶尔沿用分析术语，也把面向人的称呼收回到具体关系里。 */
 export function naturalizeMemoryRepairLanguage(
     text: string,
@@ -368,7 +614,7 @@ ${candidateText}`;
         },
         1,
         90_000,
-        { appId: 'chat', charId: params.char.id, purpose: 'memory-repair-diagnosis' },
+        { appId: 'chat', charId: params.char.id, purpose: 'memory-repair-diagnosis', featureId: 'memoryLight' },
     );
     const raw = extractContent(data);
     const parsed = extractJson(raw);

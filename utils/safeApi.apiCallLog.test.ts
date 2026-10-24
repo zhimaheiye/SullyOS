@@ -62,7 +62,7 @@ describe('safeFetchJson API log fallback', () => {
 
     it('never retries a billable chat completion after a retryable HTTP status', async () => {
         const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
-            JSON.stringify({ error: { message: 'upstream unavailable' } }),
+            JSON.stringify({ detail: 'upstream unavailable' }),
             { status: 503, headers: { 'content-type': 'application/json' } },
         ));
 
@@ -70,7 +70,7 @@ describe('safeFetchJson API log fallback', () => {
             'https://api.test/v1/chat/completions',
             { method: 'POST', body: JSON.stringify({ model: 'paid-model', messages: [] }) },
             2,
-        )).rejects.toThrow('API Error 503');
+        )).rejects.toThrow('API Error 503: upstream unavailable');
 
         expect(fetchMock).toHaveBeenCalledOnce();
     });

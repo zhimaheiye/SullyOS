@@ -14,14 +14,14 @@
 //  4. 前端直连抓裸 HTML + DOMParser 启发式提取（多数站点会被 CORS 挡掉，纯末路兜底）。
 
 import { htmlToText } from './htmlPrompt';
-import { getProxyWorkerUrl } from './proxyWorker';
+import { requireProxyWorkerUrl } from './proxyWorker';
 import { getVideoParseKey } from './videoParser';
 import { getFirecrawlApiKey, scrapeWebpageWithFirecrawl } from './firecrawl';
 
 // sfworker：项目自带的通用代理 Worker（小红书签名 / 网易云 weapi / Brave 搜索 / WebDAV /
 // 网页抓取都走它，代码见 worker/index.js）。地址走中心配置 utils/proxyWorker.ts，
 // 用户可在「设置 → 网络代理 (Worker)」里换成自部署实例。
-const sfworkerUrl = (): string => getProxyWorkerUrl();
+const sfworkerUrl = (): string => requireProxyWorkerUrl();
 
 /** 视频平台分享的附加信息（utils/videoParser.ts 解析产出，webpage_card 复用展示）。 */
 export interface VideoShareInfo {

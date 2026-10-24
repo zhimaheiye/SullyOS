@@ -4,7 +4,7 @@
 `Access-Control-Expose-Headers: Mcp-Session-Id`），MCP 握手会失败。
 这个 Worker 部署到**你自己的 Cloudflare 账号**，做透明转发并补上 CORS 头。
 
-> 三种接入方式任选其一，详见 [`docs/mcp-integration.md`](../../docs/mcp-integration.md)：
+> 三种接入方式任选其一。开发说明见 [`docs/mcp-client.md`](../../docs/mcp-client.md)，用户教程见 [`docs/mcp-user-guide.md`](../../docs/mcp-user-guide.md)：
 > 1. **直连**：MCP 服务器 CORS 配置正确时，代理 URL 留空即可，什么都不用部署
 > 2. **本地代理**：`node scripts/mcp-proxy.mjs`，适合本地 MCP（如 xiaohongshu-mcp）
 > 3. **自己的 Cloudflare Worker**：就是本目录，适合云端 MCP + 不想在电脑上跑东西

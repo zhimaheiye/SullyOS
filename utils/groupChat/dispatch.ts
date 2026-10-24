@@ -15,6 +15,7 @@ import {
 } from './redpacket';
 import { normalizeAssistantEmojiFormatting } from '../assistantActionFormat';
 import { extractHtmlBlocks } from '../htmlPrompt';
+import { buildStickerVisionMetadata } from '../stickerVision';
 
 interface EmojiItem { name: string; url: string; categoryId?: string }
 
@@ -36,6 +37,8 @@ export interface DispatchContext {
     userName: string;
     /** 群 HTML 模块模式开启时解析 [html] 块为 html_card 消息 */
     htmlMode?: boolean;
+    /** 表情包视觉理解是否生效（全局开关 + 本群三态，调用方已解析好）；true 时群成员发的表情在落库时刻冻结资格 */
+    stickerVisionEnabled?: boolean;
 }
 
 /**
@@ -120,12 +123,14 @@ export async function dispatchMemberActions(actions: DirectorAction[], ctx: Disp
             const emojiName = emojiMatch[1].trim();
             const foundEmoji = charVisibleEmojis.find(e => e.name === emojiName);
             if (foundEmoji) {
+                const stickerVisionMeta = buildStickerVisionMetadata(foundEmoji.name, ctx.stickerVisionEnabled === true);
                 await DB.saveMessage({
                     charId: targetId,
                     groupId,
                     role: 'assistant',
                     type: 'emoji',
-                    content: foundEmoji.url
+                    content: foundEmoji.url,
+                    ...(stickerVisionMeta ? { metadata: stickerVisionMeta } : {}),
                 });
                 await refresh();
                 await new Promise(r => setTimeout(r, 800)); // Delay after emoji

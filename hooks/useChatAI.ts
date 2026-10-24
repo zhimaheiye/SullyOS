@@ -1,17 +1,19 @@
 import { resolveDialogueApi } from '../utils/characterApi';
+import { resolveFeatureApi } from '../utils/featureApi';
 import { createReplyRun, withReplyCancellation } from '../utils/chatReplyCancellation';
 
 import { useState, useRef, useEffect, useSyncExternalStore, MutableRefObject } from 'react';
 import { CharacterProfile, UserProfile, Message, Emoji, EmojiCategory, GroupProfile, RealtimeConfig, CharacterBuff, Amsg2ExpiredNoticeRecord } from '../types';
 import { DB } from '../utils/db';
 import { ChatPrompts } from '../utils/chatPrompts';
-import { safeFetchJson, safeResponseJson } from '../utils/safeApi';
+import { extractReasoningContent, safeFetchJson, safeResponseJson } from '../utils/safeApi';
+import { completeMainChat } from '../utils/mainChatCompletion';
 import { KeepAlive } from '../utils/keepAlive';
 import { ProactiveChat } from '../utils/proactiveChat';
 import { ContextBuilder } from '../utils/context';
 import { ChatParser } from '../utils/chatParser';
 // 思考链 / HTML / MCD / memoryPalace 注入已下沉到 chatRequestPayload；这里不再直接调用
-import { useMusic, loadMusicHooks } from '../context/MusicContext';
+import { loadMusicHooks, loadMusicPlaybackSnapshot, loadMusicCfgStandalone, type MusicPlaybackSnapshot } from '../context/MusicContext';
 import { processNewMessagesWithAutoArchive } from '../utils/memoryPalace/autoArchive';
 import { incrementDigestRound, runCognitiveDigestion, detectPersonalityStyle } from '../utils/memoryPalace';
 // evolveFlowNarrative 保留为低频深刷新备用，日常意识流由副 API 的情绪评估同轮产出（innerState 字段）
@@ -27,6 +29,7 @@ import { LUCKIN_PROPOSE_TOOL, autoFixProposalCodesByName as autoFixLuckinProposa
 import { callLuckinTool } from '../utils/luckinMcpClient';
 import { callMcpTool, getMcpUseNativeTools, hasWorkerUnreachableMcpServer } from '../utils/mcpClient';
 import { buildMcpOpenAITools, buildMcpRejectedToolsFallbackBody, buildMcpTextFallbackBody, extractTextFakedMcpCalls, formatMcpToolResult, MCP_CHAT_MAX_STALLED_ROUNDS, MCP_CHAT_MAX_TOOL_LOOPS, sanitizeMcpLeadInText, shouldRetryMcpWithoutTools, stripTextFakedMcpCalls, type FakedMcpCall } from '../utils/mcpToolBridge';
+import { assertManualRelayLocalRoute, isManualRelayEnabled } from '../utils/manualModelRelay';
 import { buildToolResultMessage, normalizeToolCallsForCompat } from '../utils/toolCallCompat';
 import { toolCallFingerprint } from '../utils/agenticToolFeedback';
 import { buildChatRequestPayload } from '../utils/chatRequestPayload';
@@ -77,6 +80,7 @@ import {
     getMemoryPalaceHighWaterMarkForContext,
     loadCharacterContextRange,
 } from '../utils/chatContextRange';
+
 
 // ─── 云端情绪评估的安全网定时器（模块级，按角色）───
 // 为什么不放 hook 里：结论（emotionDone）是全局事件，用户切了角色、离开聊天页之后
@@ -383,6 +387,10 @@ export async function evaluateEmotionBackground(
         if (signal?.aborted) return null;
         const prompt = buildEmotionEvalPrompt(charData, userProfile, mainSystemPrompt, apiMessages, true, secretTask?.prompt);
 
+        const resolvedEmotion = resolveFeatureApi('emotion', { mainApi: api, character: charData });
+        if (!resolvedEmotion.api) return null;
+        api = { ...api, ...resolvedEmotion.api,
+            stream: resolvedEmotion.source === '本功能独立配置' ? resolvedEmotion.api.stream === true : resolvedEmotion.api.stream ?? api.stream };
         const baseUrl = api.baseUrl.replace(/\/+$/, '');
         const headers = {
             'Content-Type': 'application/json',
@@ -397,7 +405,7 @@ export async function evaluateEmotionBackground(
             // injection+innerState 很长, 会被截断成半截 JSON → buff 静默丢失.
             max_tokens: 8000,
         };
-        const evalMeta = { appName: '消息', charId: charData.id, charName: charData.name, purpose: '情绪评估' };
+        const evalMeta = { appName: '消息', charId: charData.id, charName: charData.name, purpose: '情绪评估', featureId: 'emotion' };
         let data: any;
         try {
             data = await safeFetchJson(`${baseUrl}/chat/completions`, {
@@ -414,7 +422,7 @@ export async function evaluateEmotionBackground(
             }, 2, 0, evalMeta);
         } catch (e: any) {
             if (signal?.aborted) return null;
-            if (!api.stream) throw e;
+            if (!api.stream || /\b429\b/.test(String(e?.message || ''))) throw e;
             // 流式自愈: 个别中转/模型对 stream / stream_options 直接 4xx。主聊天的透明流式
             // 升级层有「用升级前原 body 重发」的回退 (OSContext), 但评估请求自带 stream:true
             // 不经过升级层, 没有这层兜底 —— 这里补上同等待遇: 非流式重发一次, 行为退回
@@ -495,6 +503,19 @@ interface UseChatAIProps {
     luckinChatRef?: MutableRefObject<import('../utils/luckinToolBridge').LuckinChatState | undefined>;
 }
 
+// 音乐上下文 — 聊天注入 "user 正在听什么 + 当前歌词窗口" 用。不走 useMusic() hook（那是组件
+// 层的订阅入口）：useChatAI 只在发消息 / 情绪评估那一刻需要一次快照，直接读 MusicProvider
+// 持续写入的模块级槽位（loadMusicPlaybackSnapshot），与 context 身份解耦；缺席时按「没在听歌」兜底。
+const readMusicSnapshot = (): MusicPlaybackSnapshot => loadMusicPlaybackSnapshot() ?? {
+    current: null,
+    playing: false,
+    lyric: [],
+    activeLyricIdx: -1,
+    listeningTogetherWith: [],
+    cfg: loadMusicCfgStandalone(),
+    recentTrackChange: null,
+};
+
 export const useChatAI = ({
     char,
     userProfile,
@@ -517,13 +538,10 @@ export const useChatAI = ({
     homePhoneContext,
 }: UseChatAIProps) => {
     
-    // 音乐上下文 — 用于聊天时注入"user 正在听什么 + 当前歌词窗口"
-    const music = useMusic();
-
-    const [localTyping, setLocalTyping] = useState(false);
+    const [localTypingCharId, setLocalTypingCharId] = useState<string | null>(null);
     const characterTyping = useSyncExternalStore(subscribeChatReplies, () => isChatReplyActive(char?.id), () => false);
     // 同一挂载实例仍串行使用流式预览状态；跨页面重进则读取角色的后台占位。
-    const isTyping = localTyping || characterTyping;
+    const isTyping = (localTypingCharId === char?.id && !!char) || characterTyping;
     // 流式预览气泡：stream 开启时，已完成行与安全尾句随增量以临时气泡上屏。
     // 流结束后由 applyAssistantPostProcessing 正常落库，整轮完成才清预览 —— 只影响展示，不改持久化。
     const [streamingBubbles, setStreamingBubbles] = useState<string[]>([]);
@@ -642,9 +660,10 @@ export const useChatAI = ({
         overrideApiConfig?: { baseUrl: string; apiKey: string; model: string },
         opts?: { skipEmotionInjection?: boolean },
     ) => {
-        if (isTyping || !char) return;
+        if (localTypingCharId || characterTyping || !char) return;
+        const manualRelay = isManualRelayEnabled();
         const effectiveApi = resolveDialogueApi(apiConfig, char, overrideApiConfig);
-        if (!effectiveApi.baseUrl) { alert("请先在设置中配置 API URL"); return; }
+        if (!effectiveApi.baseUrl && !manualRelay) { alert("请先在设置中配置 API URL"); return; }
 
         // 重 roll（回溯重生）时不带入上一轮的情绪余波：清掉 buff 注入（buffInjection/activeBuffs）和
         // 意识流（innerState/evolvedNarrative），让主回复与情绪评估两边都从干净状态独立重新生成——
@@ -668,7 +687,7 @@ export const useChatAI = ({
         const replyRun = createReplyRun(char.id);
         amsg2Session.signal = replyRun.signal;
         const replyStep = <T>(operation: () => Promise<T>) => withReplyCancellation(replyRun, operation);
-        setLocalTyping(true);
+        setLocalTypingCharId(char.id);
         setStreamingBubbles([]);
         setStreamingThinking('');
         setStreamingHandoverIds([]);
@@ -727,6 +746,11 @@ export const useChatAI = ({
             const keepAliveMs = Math.round(performance.now() - perfSendT0);
             const baseUrl = effectiveApi.baseUrl.replace(/\/+$/, '');
             const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${effectiveApi.apiKey || 'sk-none'}` };
+            const requestMain = (body: Record<string, any>, streamHooks?: Parameters<typeof completeMainChat>[0]['streamHooks']) => {
+                return completeMainChat({ body, url: `${baseUrl}/chat/completions`, headers, scope: 'private',
+                    signal: replyRun.signal, streamHooks,
+                    meta: { appName: '消息', charId: char.id, charName: char.name, purpose: '聊天回复' } });
+            };
 
             // ── 分段计时（从用户发送到 API 发出）──
             const perfStages: Record<string, number> = { keepAlive: keepAliveMs };
@@ -768,7 +792,10 @@ export const useChatAI = ({
                 updateCharacter(char.id, { contextUserStartMessageId: undefined });
             }
             const fullHistory = contextRange?.messages || null;
-            const contextMsgs = fullHistory || currentMsgs;
+            let contextMsgs = fullHistory || currentMsgs;
+            contextMsgs = contextMsgs.filter(message => !(message.role === 'assistant' && message.type === 'text'
+                && (message.content === '我还没能核实或更改生活提醒。请稍后再试；目前不能保证自动送达。'
+                    || /^(?:生活提醒操作失败：|操作未完成：)/.test(message.content || ''))));
             // 空范围先报可操作的本地错误，避免继续识图/召回和发送 system-only 请求。
             // 原始消息可能是无文字图片或卡片，此处只判角色；正文有效性在格式化后校验。
             assertChatHasDialogue(contextMsgs.map(message => ({
@@ -909,6 +936,9 @@ export const useChatAI = ({
                 reason: instantChatRoute ? null : (instantChatReadiness.reason ?? instantChatVeto),
             });
 
+            // 发送那一刻现读播放快照，切歌和歌词推进都取当下值。
+            const music = readMusicSnapshot();
+
             const payload = await replyStep(async () => stageT('payload', buildChatRequestPayload({
                 char: charForGen, userProfile, groups, emojis, categories,
                 homePhoneContext:homePhoneContext?.(),
@@ -928,6 +958,7 @@ export const useChatAI = ({
                 luckinChat: luckinChatOn ? luckinChatRef?.current : undefined,
                 timelyByWorker: instantChatRoute,
                 recallEntryPoint: 'chat_app',
+                disableTools: manualRelay,
                 onPreparationStage:event=>{if(event.status==='end')perfStages['payload.'+event.stage]=event.ms;},
             })));
             const systemPrompt = payload.systemPrompt;
@@ -1106,7 +1137,7 @@ export const useChatAI = ({
             // 主动消息 2.0 的工具本轮会不会注入：thinking 门要先知道这件事（工具在下面才真正
             // 拼进 tools，但参数取舍必须现在就定）。角色级开关关掉的不注入——否则被用户显式
             // 关掉的功能会被角色一次工具调用重新打开。
-            const amsg2ToolsInjected = isAmsg2EnabledForChar(char) && await replyStep(async () => isAmsg2GlobalReady());
+            const amsg2ToolsInjected = !manualRelay && isAmsg2EnabledForChar(char) && await replyStep(async () => isAmsg2GlobalReady());
             if (shouldSendThinkingParams({
                 thinkingActive: !!payload.flags.thinkingActive,
                 legacyToolModeActive: !!toolModeActive,
@@ -1243,6 +1274,7 @@ export const useChatAI = ({
             // MCP（这次 POST 顺手把配置传上去了），云端答得了。排掉它的话，只要全局配着
             // 一台 enabled 的 MCP 服务器，即时对话就永远静默走回本地——设置页亮着
             // 「已开启」、界面毫无异样，用户查无可查。
+            assertManualRelayLocalRoute(instantChatRoute);
             if (instantChatRoute) {
                 // 回执跟着 chat 段上云：台账（collectAmsg2TaskContext）在上面已经读过了。
                 // 本地路径靠 withAmsg2TaskContext 注入的排程清单和能力简介，
@@ -1331,7 +1363,8 @@ export const useChatAI = ({
             // 每次 onDelta 基于累计全文全量重算（safeFetchJson 重试会重开流，天然重置）；
             // 正文尾句和思考内容只在累计文本确实变化时触发重渲染。
             // SAR 的正文包在结构化容器里，流式阶段不能把 TRUE/SURFACE 控制标签闪给用户。
-            const streamUiEligible = !!userStream && !toolModeActive && !bilingualActive && !sarModulePlan.requiresEnvelope;
+            const streamUiEligible = !!userStream && !toolModeActive
+                && !bilingualActive && !sarModulePlan.requiresEnvelope;
             const streamPreviewEligible = streamUiEligible;
             const streamThinkingEligible = streamUiEligible && payload.flags.thinkingActive;
             // 预览真的上过屏才置 true → 后处理落库时跳过拟人打字延迟（instantRender），
@@ -1374,7 +1407,7 @@ export const useChatAI = ({
             } : undefined;
 
             // 主请求即将发出 → 立即并行发射情绪评估（错峰延迟已按用户要求取消，见定义处注释）。
-            fireLocalEmotionEval?.();
+            if (!isManualRelayEnabled()) fireLocalEmotionEval?.();
 
             // 同角色活跃会话租约：本地 fetch 路径本轮真实消息已落库、模型请求即将发出，
             // 启动心跳告诉 worker「正在和这个角色聊」——到点的 expire AI 任务据此 skip，
@@ -1387,11 +1420,7 @@ export const useChatAI = ({
 
             let data: any;
             try {
-                data = await replyStep(async () => safeFetchJson(`${baseUrl}/chat/completions`, {
-                    signal: replyRun.signal,
-                    method: 'POST', headers,
-                    body: JSON.stringify({ ...baseReqBody, messages: withAmsg2TaskContext(baseReqBody.messages) })
-                }, 2, 0, { appName: '消息', charId: char.id, charName: char.name, purpose: '聊天回复' }, streamHooks));
+                data = await replyStep(async () => requestMain({ ...baseReqBody, messages: withAmsg2TaskContext(baseReqBody.messages) }, streamHooks));
             } catch (e) {
                 replyRun.check();
                 let requestError: unknown = e;
@@ -1425,9 +1454,9 @@ export const useChatAI = ({
                 // 仅通用 MCP、且没有和其他工具模式混用时降级。部分 OpenAI 兼容中转
                 // 会对携带 tools 的请求直接回 4xx，而不是忽略参数；去掉 tools 后让
                 // 现有正文假调用容错接手。真实鉴权失败会在这次重试中再次抛出原样错误。
-                const mcpOnly = payload.flags.mcpChatActive
+                const textCompatible = payload.flags.mcpChatActive
                     && !payload.flags.luckinChatActive && !payload.flags.mcdActive && !payload.flags.luckinActive;
-                if (!mcpOnly || !baseReqBody.tools?.length || !shouldRetryMcpWithoutTools(requestError)) throw requestError;
+                if (!textCompatible || !baseReqBody.tools?.length || !shouldRetryMcpWithoutTools(requestError)) throw requestError;
                 console.warn('🔌 [MCP] 当前中转拒绝 tools 请求，降级为正文工具调用兼容模式');
                 // 这条路把 tools 全删了，角色排不了新任务；排程现状照样要带——它得知道
                 // 自己名下已经有哪些承诺，否则又会在正文里许一遍。
@@ -1574,11 +1603,7 @@ export const useChatAI = ({
                     const followBody = { ...baseReqBody, messages: loopMessages };
                     delete followBody.tools;
                     delete followBody.tool_choice;
-                    data = await replyStep(async () => safeFetchJson(`${baseUrl}/chat/completions`, {
-                        signal: replyRun.signal,
-                        method: 'POST', headers,
-                        body: JSON.stringify(followBody)
-                    }));
+                    data = await replyStep(async () => requestMain(followBody));
                     updateTokenUsage(data, historyMsgCount, `mcd-propose-${it + 1}`);
                     // 第二轮跳过 (我们已经禁用了 tools)
                     if (!data.choices?.[0]?.message?.tool_calls?.length) break;
@@ -1863,11 +1888,7 @@ export const useChatAI = ({
                         delete followBody.tools;
                         delete followBody.tool_choice;
                     }
-                    data = await replyStep(async () => safeFetchJson(`${baseUrl}/chat/completions`, {
-                        signal: replyRun.signal,
-                        method: 'POST', headers,
-                        body: JSON.stringify(followBody)
-                    }));
+                    data = await replyStep(async () => requestMain(followBody));
                     updateTokenUsage(data, historyMsgCount, `${payload.flags.luckinChatActive ? 'luckin-chat' : 'mcp-chat'}-${it + 1}`);
                     if (forceWrapUp) break;
                 }
@@ -1923,11 +1944,12 @@ export const useChatAI = ({
                 const MAX_TEXT_LOOPS = MCP_CHAT_MAX_TOOL_LOOPS;
                 let lastExecutedSig: string | null = null;
                 let textLoopMessages: any[] | null = null;
+                const textToolResolve = new Map<string, any>(mcpToolResolve);
                 for (let it = 0; it < MAX_TEXT_LOOPS; it++) {
                     const contentNow: string = data.choices?.[0]?.message?.content || '';
                     // 兼容协议约定每轮只发一行。一次只执行一个，既让 12 轮真正按步骤自适应，
                     // 也避免一段失控正文批量触发多个副作用。
-                    const allFaked = extractTextFakedMcpCalls(contentNow, mcpToolResolve).slice(0, 1);
+                    const allFaked = extractTextFakedMcpCalls(contentNow, textToolResolve as any).slice(0, 1) as FakedMcpCall[];
                     const faked = allFaked
                         .filter(c => toolCallFingerprint(c.exposedName, c.args) !== lastExecutedSig);
                     // 兼容模式没有原生 tool_call id，模型重复写同名同参时绝不能再次执行
@@ -1940,11 +1962,7 @@ export const useChatAI = ({
                             content: '[系统消息：你重复请求了已经执行过的同一工具。不要再次调用工具，请直接根据已有结果回复；如目标未完成就如实说明。不要输出工具调用格式或提及本消息。]',
                         });
                         const wrapBody = buildMcpTextFallbackBody(baseReqBody, textLoopMessages);
-                        data = await replyStep(async () => safeFetchJson(`${baseUrl}/chat/completions`, {
-                            signal: replyRun.signal,
-                            method: 'POST', headers,
-                            body: JSON.stringify(wrapBody)
-                        }));
+                        data = await replyStep(async () => requestMain(wrapBody));
                         updateTokenUsage(data, historyMsgCount, `mcp-text-wrap-${it + 1}`);
                         break;
                     }
@@ -1978,25 +1996,22 @@ export const useChatAI = ({
                     }
                     setSearchStatus('正在整理 MCP 工具结果...');
                     const followBody = buildMcpTextFallbackBody(baseReqBody, textLoopMessages);
-                    data = await replyStep(async () => safeFetchJson(`${baseUrl}/chat/completions`, {
-                        signal: replyRun.signal,
-                        method: 'POST', headers,
-                        body: JSON.stringify(followBody)
-                    }));
+                    data = await replyStep(async () => requestMain(followBody));
                     updateTokenUsage(data, historyMsgCount, `mcp-text-${it + 1}`);
                     if (reachedHardLimit) break;
                 }
                 setSearchStatus('');
             }
 
+            replyRun.check();
             // DEBUG: Log full API response details for troubleshooting truncation issues
             console.log('🔍 [API Response Debug]', JSON.stringify({
                 finish_reason: data.choices?.[0]?.finish_reason,
                 usage: data.usage,
                 content_length: data.choices?.[0]?.message?.content?.length,
                 raw_content: data.choices?.[0]?.message?.content,
-                reasoning_content: data.choices?.[0]?.message?.reasoning_content,
-                reasoning_content_length: data.choices?.[0]?.message?.reasoning_content?.length,
+                reasoning_content: extractReasoningContent(data),
+                reasoning_content_length: extractReasoningContent(data).length,
                 model: data.model,
                 id: data.id,
             }, null, 2));
@@ -2035,7 +2050,7 @@ export const useChatAI = ({
                 setMessages(msgs);
             };
             // 工具轮里说过的话拼在最前面（没有工具轮时 amsg2LeadIns 是空的，原样取最后一轮）。
-            const rawAiContent = amsg2LeadIns.length
+            let rawAiContent = amsg2LeadIns.length
                 ? mergeToolRoundLeadIns(amsg2LeadIns, data.choices?.[0]?.message?.content || '')
                 : data.choices?.[0]?.message?.content || '';
             const sarReply = parseSARModuleReply(rawAiContent, sarModulePlan);
@@ -2098,8 +2113,8 @@ export const useChatAI = ({
                 },
                 // 流式预览已把气泡展示过 → 落库免打字延迟，秒回填（未预览时行为不变）
                 instantRender: streamPreviewShown,
-                // Phase 0: 本地 fetch 路径保持原逻辑, 不跳 2nd-pass LLM, 也没有结构化 directives。
-                skipSecondPassLLM: false,
+                // 人工接力只交回一次完整正文，不进入需要下一次模型回复的处理分支。
+                skipSecondPassLLM: data?.model === 'external-manual-relay',
                 directives: [],
                 sarModuleSurface: assistantSurfaceMeta,
             }));
@@ -2159,7 +2174,7 @@ export const useChatAI = ({
             } catch (error) {
                 console.error('[chat-stop] 回复收尾失败', error);
             } finally { releaseReply(); }
-            setLocalTyping(false);
+            setLocalTypingCharId(previous => previous === char.id ? null : previous);
             KeepAlive.stop();
             // 本轮生成结束（成功/失败/中断都经过）→ 停止本地续租；远端靠 45s TTL 自然失效。
             // 未开过租约（即时对话 / 非 amsg2 角色）时是幂等 no-op。
@@ -2194,12 +2209,10 @@ export const useChatAI = ({
             // embedding 因端点类型特殊（/embeddings），不做回退，必须显式配置。
             const mpEmb = memoryPalaceConfig?.embedding;
             const mpLLMConfigured = memoryPalaceConfig?.lightLLM;
-            const mpLLM = (mpLLMConfigured?.baseUrl)
-                ? mpLLMConfigured
-                : { baseUrl: apiConfig.baseUrl, apiKey: apiConfig.apiKey, model: apiConfig.model };
+            const mpLLM = resolveFeatureApi('memoryLight', { mainApi: apiConfig, memoryApi: mpLLMConfigured }).api;
             // 读 ref 拿到最新的 char 状态；同 id 才信任，否则保守跳过（用户已经切角色了）
             const liveChar = !replyRun.signal.aborted && charRef.current?.id === char.id ? charRef.current : null;
-            if (liveChar?.memoryPalaceEnabled && mpEmb?.baseUrl && mpEmb?.apiKey && mpLLM.baseUrl) {
+            if (liveChar?.memoryPalaceEnabled && mpEmb?.baseUrl && mpEmb?.apiKey && mpLLM?.baseUrl) {
                 const charName = char.name;
                 // 不再预置"正在回味"状态：pipeline 会在水位线未到时立刻 skip，
                 // 预置状态会让"沉思"指示器一闪让用户误以为在干活。
@@ -2272,7 +2285,7 @@ export const useChatAI = ({
 
     const startProactiveChat = (intervalMinutes: number) => {
         if (!char) return;
-        ProactiveChat.start(char.id, intervalMinutes);
+        ProactiveChat.start(char.id, intervalMinutes, char.systemPrompt);
     };
 
     const stopProactiveChat = () => {
@@ -2284,14 +2297,14 @@ export const useChatAI = ({
 
     return {
         isTyping,
-        streamingBubbles,
-        streamingThinking,
-        streamingHandoverIds,
+        streamingBubbles: localTypingCharId === char?.id ? streamingBubbles : [],
+        streamingThinking: localTypingCharId === char?.id ? streamingThinking : '',
+        streamingHandoverIds: localTypingCharId === char?.id ? streamingHandoverIds : [],
         inboxStatus,
-        recallStatus,
-        searchStatus,
-        diaryStatus,
-        xhsStatus,
+        recallStatus: localTypingCharId === char?.id ? recallStatus : '',
+        searchStatus: localTypingCharId === char?.id ? searchStatus : '',
+        diaryStatus: localTypingCharId === char?.id ? diaryStatus : '',
+        xhsStatus: localTypingCharId === char?.id ? xhsStatus : '',
         emotionStatus,
         memoryPalaceStatus,
         memoryPalaceResult,

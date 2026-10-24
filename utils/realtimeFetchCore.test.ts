@@ -1,6 +1,7 @@
 // utils/realtimeFetchCore.test.ts
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { performSearch } from './realtimeFetchCore';
+import { setProxyWorkerUrl } from './proxyWorker';
 
 const respond = (opts: { ok?: boolean; status?: number; body: string }) => ({
   ok: opts.ok ?? true,
@@ -17,7 +18,11 @@ const mockFetch = (value: unknown, reject = false) =>
 // 调用方只看 success 就分不出来，于是「服务器没应答」被角色说成「我搜了下，没什么」。
 // reached 是用来分这两种的，下面每条都在钉它的取值。
 describe('performSearch 的 reached：请求到底跑到没有', () => {
-  afterEach(() => vi.restoreAllMocks());
+  beforeEach(() => setProxyWorkerUrl('https://public-proxy.example.test'));
+  afterEach(() => {
+    setProxyWorkerUrl('');
+    vi.restoreAllMocks();
+  });
 
   it('搜到了 → reached', async () => {
     mockFetch(respond({
@@ -49,9 +54,20 @@ describe('performSearch 的 reached：请求到底跑到没有', () => {
     expect(await performSearch('猫', 'key')).toMatchObject({ success: false, reached: false });
   });
 
-  it('没 key 就没发请求 → 没 reached', async () => {
+  it('没关键词就没发请求 → 没 reached', async () => {
     const fetchSpy = mockFetch(respond({ body: '{}' }));
-    expect(await performSearch('猫', '')).toMatchObject({ success: false, reached: false });
+    expect(await performSearch('', 'key')).toMatchObject({ success: false, reached: false });
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('没填个人 Key 时仍请求公共代理，且不附带 Key 头', async () => {
+    const fetchSpy = mockFetch(respond({
+      body: JSON.stringify({ web: { results: [] } }),
+    }));
+    expect(await performSearch('猫', '')).toMatchObject({ success: false, reached: true });
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    const init = fetchSpy.mock.calls[0][1] as { headers: Record<string, string> };
+    expect(init.headers['X-Brave-API-Key']).toBeUndefined();
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('https://public-proxy.example.test/search');
   });
 });

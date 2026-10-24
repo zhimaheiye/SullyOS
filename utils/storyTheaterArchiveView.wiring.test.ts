@@ -8,8 +8,8 @@ const source = readFileSync(
 ).replace(/\r\n?/g, '\n');
 
 const archivedBlock = source.slice(
-    source.indexOf('const archived = mirrorArchived(message, entry);'),
-    source.indexOf("if (message.role === 'user') return <section", source.indexOf('const archived = mirrorArchived(message, entry);')),
+    source.indexOf('const archived = isMessageArchived(message);'),
+    source.indexOf("if (message.role === 'user') return <section", source.indexOf('const archived = isMessageArchived(message);')),
 );
 
 describe('剧情正常记忆归档原文入口', () => {
@@ -26,7 +26,7 @@ describe('剧情正常记忆归档原文入口', () => {
         expect(source).toContain('const STORY_PAGE_SIZE = 10;');
         expect(source).toContain('messages.slice(messagePage * STORY_PAGE_SIZE');
         expect(source).toContain("allPageArchivesExpanded ? '全部收起' : '全部展开'");
-        expect(source).toContain("title='导出全部剧情原文'");
+        expect(source).toContain("title={entry.writesToCharacterMemory ? '导出全部剧情原文' : '导出当前路线完整原文'}");
         expect(source).toContain("<StoryPagination className='mt-8'");
     });
 });

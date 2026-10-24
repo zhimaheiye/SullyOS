@@ -11,6 +11,7 @@ import {
 } from './avatarPerformanceRehearsal';
 import type { AvatarPerformanceCue } from './avatarPerformance';
 import { extractContent, safeFetchJson } from './safeApi';
+import { resolveFeatureApi } from './featureApi';
 
 export type CompanionPerformanceSentence = AvatarPerformanceSentence;
 
@@ -50,9 +51,8 @@ export const requestCompanionPerformanceCues = async ({
   translation = '',
   modelActions = [],
 }: CompanionPerformanceDirectorInput): Promise<AvatarPerformanceCue[]> => {
-  const directorApi = character.emotionConfig?.api?.baseUrl
-    ? character.emotionConfig.api
-    : apiConfig;
+  const directorApi = resolveFeatureApi('emotion', { character, mainApi: apiConfig }).api;
+  if (!directorApi) throw new Error('请先配置角色情绪副 API');
   const baseUrl = directorApi.baseUrl?.replace(/\/+$/, '');
   if (!baseUrl) throw new Error('请先配置聊天 API URL');
   const reply = translation.trim()
@@ -109,6 +109,7 @@ ${sentencePlan}`;
     charId: character.id,
     charName: character.name,
     purpose: '一次性编排开机台词动作（不重试）',
+    featureId: 'emotion',
   });
   const cues = parseAvatarPerformanceRehearsal(
     extractContent(data),

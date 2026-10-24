@@ -7,6 +7,28 @@
 - **发完后自动生成回复**：发送成功、输入框无草稿和光标、面板及弹窗收起后等 2 秒触发。继续输入、发送或处理图片期间暂停；倒计时可取消。手动生成、退出聊天、切群或关闭开关会取消等待，不因加载历史补触发。群聊使用原有导演／轮询流程，无需新的 API 或后台配置。
 - **表情包智能匹配**：见下节。
 
+公开版不能新建私聊消息撤回。旧备份里如果已经有 `metadata.withdrawal`，展示和角色上下文仍由 `utils/messageWithdrawal.ts` 脱敏：用户看自己的原文，`characterSawOriginal` 为假时角色看不到原文。模型新输出里的旧撤回标记会连同内部文字一起丢掉，不会执行里面的动作。
+
+## 剪贴板图片直发
+
+聊天输入框支持直接粘贴剪贴板图片，并复用现有图片发送入口。长期交互边界如下：
+
+- 只有真正识别到图片时才拦截默认粘贴；普通文本粘贴保持浏览器原行为。
+- 同一次粘贴只取第一张图片，优先读取 clipboard `items`，必要时再用 `files` 兜底。
+- 图片发送不清空、改写或提交当前文字草稿，不调用文字 `onSend()`。
+- 不为粘贴路径另建 base64、预览或 pending attachment 状态；相册、站内相机和粘贴统一进入既有 `onImageSelect(file)` 图片发送管线。
+- paste 事件只绑定当前聊天 `<textarea>`，不得挂到 `document` 级，否则其它文本区粘贴截图也可能被误发。
+- 这条能力历史实现只改输入区接线；私聊与群聊各自已有的图片处理入口继续负责真正发送。
+
+历史提交 `9f5393ec` 落地时只完成构建、整仓 Vitest / TypeScript 等代码级验证；规格列出的浏览器粘贴验收场景没有实际执行，仓库当时也没有 `handlePaste` 专项测试。因此不能把“浏览器粘贴行为已实测”写成历史事实。图片来源与相机复用关系另见 `docs/chat-camera.md`。
+
+## 屏幕伴聊（仅桌面私聊）
+
+- 私聊输入框旁的显示器按钮用于显式开启或关闭；默认关闭且不持久化。开启时只请求一次浏览器屏幕共享授权，视频流仅保存在当前页面内存中，不会持续上传。
+- 开启后，用户每次发送普通文字消息时才抓取当前画面的一帧，压缩为 JPEG，并在文字之后追加为同一轮的用户图片消息；图片复用现有 blobref、相册与视觉模型管线，自动回复会等文字和截图都落库后再触发。
+- 开启期间按钮保持红色高亮与红点提示。用户通过浏览器系统浮条停止共享、离开主聊天或抓帧失败时，模式会自动关闭并释放流。
+- 移动端和不支持 `getDisplayMedia` 的环境不显示入口。自定义内容、功能卡片和非普通文字发送不会暗中截屏。
+
 ## 表情包智能匹配
 
 - 默认关闭；旧存档缺少该字段时也保持关闭。
@@ -22,12 +44,12 @@
 
 表情联想和自动回复倒计时位于 `.sully-chat-inputbar` 外侧的同级区域，不插入输入栏内部。显示、收起辅助提示不会改变原有 `> div:first-child` / `:nth-child(1)` 的输入行目标，也不会重建输入框、丢失草稿或光标。
 
-新美化建议使用固定钩子：`.sully-chat-composer`（输入行）、`.sully-chat-input-wrap`（输入框外壳）、`.sully-chat-textarea`、`.sully-chat-actions-button`、`.sully-chat-send-button`。联想区可单独用 `.sully-chat-emoji-suggestions` 定制（旧 `.sully-emoji-suggestions` 仍保留），倒计时用 `.sully-chat-auto-reply`。不改写用户保存的 CSS。
+新美化建议使用固定钩子：`.sully-chat-composer`（输入行）、`.sully-chat-input-wrap`（输入框外壳）、`.sully-chat-textarea`、`.sully-chat-actions-button`、`.sully-chat-send-button`。屏幕伴聊按钮与其它输入栏动作共用原布局，不改变输入框挂载；联想区可单独用 `.sully-chat-emoji-suggestions` 定制（旧 `.sully-emoji-suggestions` 仍保留），倒计时用 `.sully-chat-auto-reply`。不改写用户保存的 CSS。
 
 ## 折叠设置
 
 聊天设置分为六组，默认全部收起：输入与发送、聊天外观、上下文与记忆、翻译与语音、扩展功能、聊天记录。标题行常显，点击或键盘操作可展开；折叠不会丢失未保存的修改。各项原有的保存方式和执行行为不变。
 
-```sh
-pnpm vitest run utils/emojiSuggestions.test.ts utils/chatInputInteraction.test.ts utils/chatAutoReply.test.ts utils/sarReleaseBackup.test.ts
+```powershell
+.\node_modules\.bin\vitest.cmd run utils/emojiSuggestions.test.ts utils/chatInputInteraction.test.ts utils/chatAutoReply.test.ts utils/sarReleaseBackup.test.ts
 ```

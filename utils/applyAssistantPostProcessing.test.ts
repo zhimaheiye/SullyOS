@@ -49,6 +49,56 @@ const quotedUserMsg = {
     timestamp: Date.now() - 1000,
 };
 
+describe('thinking chain response field compatibility', () => {
+    it.each(['reasoning_content', 'reasoning', 'thinking'] as const)(
+        'persists the %s channel on the first assistant bubble',
+        async (field) => {
+            const charId = `c-thinking-${field}-${Date.now()}-${Math.random()}`;
+            const ctx = makeCtx(charId, []);
+            ctx.char = { ...ctx.char, showThinkingChain: true } as any;
+            ctx.initialData = {
+                choices: [{ message: { content: '我在。', [field]: '先接住这句话，再认真回应。' } }],
+            };
+
+            await applyAssistantPostProcessing('我在。', ctx);
+
+            const messages = await DB.getRecentMessagesByCharId(charId, 10);
+            const assistant = messages.find(message => message.role === 'assistant');
+            expect(assistant?.metadata?.thinkingChain).toBe('先接住这句话，再认真回应。');
+        },
+    );
+});
+
+describe('legacy withdrawal markup is discarded', () => {
+    it('keeps the surrounding text and does not store the hidden sentence', async () => {
+        const charId = `c-withdraw-${Date.now()}-${Math.random()}`;
+        const ctx = { ...makeCtx(charId, []), instantRender: true };
+        await applyAssistantPostProcessing(
+            'A\n[[WITHDRAW_TEXT]]B[[/WITHDRAW_TEXT]]\nC',
+            ctx,
+        );
+
+        const messages = (await DB.getRecentMessagesByCharId(charId, 10)).filter(item => item.role === 'assistant');
+        expect(messages.map(item => item.content).join('\n')).toContain('A');
+        expect(messages.map(item => item.content).join('\n')).toContain('C');
+        expect(messages.map(item => item.content).join('\n')).not.toContain('B');
+        expect(messages.some(item => item.metadata?.withdrawal)).toBe(false);
+    });
+
+    it('does not execute action tags nested inside withdrawn text', async () => {
+        const charId = `c-withdraw-action-${Date.now()}-${Math.random()}`;
+        const ctx = { ...makeCtx(charId, []), instantRender: true };
+        await applyAssistantPostProcessing(
+            '[[WITHDRAW_TEXT]][[ACTION:POKE]]后悔了[[/WITHDRAW_TEXT]]',
+            ctx,
+        );
+
+        const messages = await DB.getRecentMessagesByCharId(charId, 10);
+        expect(messages.filter(item => item.type === 'interaction')).toHaveLength(0);
+        expect(messages.some(item => (item.content || '').includes('后悔了'))).toBe(false);
+    });
+});
+
 describe('renderAndPersist 引用解析', () => {
     it('[[QUOTE:]] 单独成行 (后跟 SEND_EMOJI + 正文) 时引用顺延到第一条文字气泡', async () => {
         const charId = `c-quote-${Date.now()}`;
@@ -829,8 +879,6 @@ describe('ctx.spokenAt — 日程改动按说出口那一刻判', () => {
         expect(notifyScheduleChangeFailed.mock.calls[0][0]).toContain('没有找到对得上的时段');
     });
 });
-
-
 describe('double-bracket sticker history output', () => {
     it.each(['[[你发送了表情包：开心]]', '【你发送了表情包: 开心】'])('persists %s as an image and preserves neighboring text', async raw => {
         const charId = 'c-sticker-history-' + raw;

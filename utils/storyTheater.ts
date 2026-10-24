@@ -12,6 +12,7 @@ import type {
 } from '../types';
 import nightScreeningV627 from '../assets/presets/night-screening-v6.14.sully.json';
 import {
+    isMountedWorldbookUsable,
     type WorldbookScanMessage,
 } from './worldbook';
 import { shareOrDownloadFile } from './shareExport';
@@ -75,6 +76,7 @@ export interface ResolvedStoryTheaterMask {
 }
 
 export type StoryDisplayBlockKind = 'story' | 'scene' | 'backstage' | 'worldline' | 'debts' | 'theater' | 'choices' | 'affinity' | 'other';
+export type StoryTheaterExportFormat = 'obsidian' | 'clean' | 'raw';
 export interface StoryDisplayBlock {
     kind: StoryDisplayBlockKind;
     title?: string;
@@ -166,9 +168,9 @@ export const formatStoryTheaterExport = (
     return `\uFEFF${lines.join('\n')}`;
 };
 
-export const makeStoryTheaterFileName = (title: string, now: number = Date.now()): string => {
+export const makeStoryTheaterFileName = (title: string, now: number = Date.now(), extension: 'md' | 'txt' = 'txt'): string => {
     const safeTitle = title.replace(/[\\/:*?"<>|]/g, '_').trim() || '未命名剧情';
-    return `${safeTitle}_剧情记录_${formatStoryExportTime(now).slice(0, 10)}.txt`;
+    return `${safeTitle}_剧情记录_${formatStoryExportTime(now).slice(0, 10)}.${extension}`;
 };
 
 export const createStoryTheaterDraft = (now: number = Date.now()): StoryTheaterEntry => ({
@@ -1118,7 +1120,7 @@ export const dedupeTheaterWorldbooks = (characters: CharacterProfile[]): Mounted
     const seen = new Set<string>();
     const output: MountedWorldbook[] = [];
     for (const char of characters) {
-        for (const book of (char.mountedWorldbooks || [])) {
+        for (const book of (char.mountedWorldbooks || []).filter(isMountedWorldbookUsable)) {
             const keys = [
                 book.id ? `id:${book.id}` : '',
                 `body:${book.title.trim().toLocaleLowerCase()}\u0000${book.content.trim()}`,
@@ -1378,6 +1380,86 @@ export const parseStoryDisplayBlocks = (content: string): StoryDisplayBlock[] =>
     }
     if (blocks.length === 0) push('story', source);
     return blocks;
+};
+
+const storyExportCallout = (kind: string, title: string, text: string): string => {
+    const body = text.split('\n').map(line => `> ${line}`).join('\n');
+    return `> [!${kind}]- ${title}\n${body}`;
+};
+
+/** Obsidian 友好版：保留完整语义，但把内部 XML 协议转换成标题、正文与折叠 callout。 */
+export const buildStoryTheaterObsidianMarkdown = (
+    entry: Pick<StoryTheaterEntry, 'title' | 'premise' | 'writesToCharacterMemory'>,
+    identityName: string,
+    actorNames: string[],
+    messages: Message[],
+    exportedAt: number = Date.now(),
+): string => {
+    const title = entry.title.trim() || '未命名剧情';
+    const userLabel = identityName.trim() || '你';
+    const lines = [
+        `# ${title}`,
+        '',
+        `> [!info] 剧情档案`,
+        `> 模式：${entry.writesToCharacterMemory ? '真实时间陪伴' : '虚构剧场'}`,
+        `> 你：${userLabel}`,
+        `> 角色：${actorNames.filter(Boolean).join('、') || '暂无其他角色'}`,
+        `> 导出时间：${formatStoryExportTime(exportedAt)}`,
+    ];
+    if (entry.premise.trim()) lines.push(`> 剧情简介：${entry.premise.trim()}`);
+
+    for (const message of [...messages].sort((a, b) => a.id - b.id)) {
+        const time = formatStoryExportTime(message.timestamp);
+        if (message.role === 'user') {
+            lines.push('', `### 💬 ${userLabel} · ${time}`, '', cleanStoryMarkupText(message.content) || '（无内容）');
+            continue;
+        }
+        if (message.role !== 'assistant') {
+            lines.push('', `### 系统 · ${time}`, '', cleanStoryMarkupText(message.content) || '（无内容）');
+            continue;
+        }
+        lines.push('', `### 🎬 剧场正文 · ${time}`);
+        for (const block of parseStoryDisplayBlocks(message.content)) {
+            if (block.kind === 'story') lines.push('', block.text);
+            else if (block.kind === 'scene') {
+                const sceneTime = block.text.match(/(?:^|\n)时间：([^\n]+)/)?.[1]?.trim();
+                lines.push('', storyExportCallout('quote', `这一幕${sceneTime ? ` · ${sceneTime}` : ''}`, block.text));
+            } else if (block.kind === 'backstage') lines.push('', storyExportCallout('note', '幕后暗格 · 点击展开', block.text));
+            else if (block.kind === 'debts') lines.push('', storyExportCallout('warning', '镜头债 · 后果尚未到账', block.text));
+            else if (block.kind === 'affinity') lines.push('', storyExportCallout('example', '关系变化 · 点击展开', block.text));
+            else if (block.kind === 'worldline') lines.push('', storyExportCallout('tip', '世界线仍在前进', block.text));
+            else if (block.kind === 'theater') lines.push('', storyExportCallout('abstract', block.title || '幕间频道', block.text));
+            else if (block.kind === 'choices') lines.push('', storyExportCallout('question', '下一步可以这样写', block.text));
+            else lines.push('', storyExportCallout('info', block.title || '附加信息', block.text));
+        }
+    }
+    return `\uFEFF${lines.join('\n').replace(/\n{3,}/g, '\n\n')}`;
+};
+
+/** 纯正文阅读版：保留用户推进与小说正文，剔除场景面板、幕后、镜头债和关系协议。 */
+export const buildStoryTheaterCleanText = (
+    entry: Pick<StoryTheaterEntry, 'title'>,
+    identityName: string,
+    messages: Message[],
+): string => {
+    const title = entry.title.trim() || '未命名剧情';
+    const userLabel = identityName.trim() || '你';
+    const lines = [`${title}`, ''];
+    for (const message of [...messages].sort((a, b) => a.id - b.id)) {
+        if (message.role === 'user') {
+            const text = cleanStoryMarkupText(message.content);
+            if (text) lines.push(`${userLabel}：${text}`, '');
+            continue;
+        }
+        if (message.role !== 'assistant') continue;
+        const story = parseStoryDisplayBlocks(message.content)
+            .filter(block => block.kind === 'story')
+            .map(block => block.text)
+            .filter(Boolean)
+            .join('\n\n');
+        if (story) lines.push(story, '');
+    }
+    return `\uFEFF${lines.join('\n').trimEnd()}`;
 };
 
 export const formatActorRecentMessages = (

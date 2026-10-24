@@ -5,7 +5,12 @@ import { createRoot } from 'react-dom/client';
 import { useChatAI } from '../hooks/useChatAI';
 import { KeepAlive } from './keepAlive';
 
-vi.mock('../context/MusicContext', () => ({ useMusic: () => ({}), loadMusicHooks: () => null }));
+vi.mock('../context/MusicContext', () => ({
+    useMusic: () => ({}),
+    loadMusicHooks: () => null,
+    loadMusicPlaybackSnapshot: () => null,
+    loadMusicCfgStandalone: () => ({ workerUrl: '', cookie: '', quality: 'standard' }),
+}));
 vi.mock('./keepAlive', () => ({ KeepAlive: { start: vi.fn(), stop: vi.fn() } }));
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -37,7 +42,7 @@ describe('useChatAI 请求生命周期', () => {
         expect(KeepAlive.start).toHaveBeenCalledTimes(1);
         expect(current!.isTyping).toBe(true);
         await act(async () => { root.render(createElement(Probe, { charId: 'other' })); });
-        expect(current!.isTyping).toBe(true); // 同一实例的流式状态不能同时被两个角色写
+        expect(current!.isTyping).toBe(false); // 旧角色的等待状态不能显示在新角色 UI
         await act(async () => { await current!.triggerAI([]); });
         expect(KeepAlive.start).toHaveBeenCalledTimes(1);
         act(() => root.unmount());

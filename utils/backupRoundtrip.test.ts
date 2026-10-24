@@ -11,6 +11,7 @@ import {loadCreatorPartsForRender} from './creatorPartsBlob';
 import {homeFigureSeed} from './homeFigureSeed';
 import {healLocalStorageMirror} from './lsMirror';
 import {readPhotoLooks,PHOTO_LOOK_LIBRARY_KEY} from '../apps/room3d/photoLookStorage';
+import { loadChatActionOrders, saveChatActionOrder } from './chatActionOrder';
 
 // fake-indexeddb 已通过 test-setup.ts 注入。
 // 这组用例走「真实链路」：writeV2Backup → assembleV2Backup → DB.importFullData，钉死 v2 改造
@@ -74,6 +75,27 @@ function vecValues(v: any): number[] {
 }
 
 describe('v2 真实链路：分片 → 组装 → importFullData', () => {
+    it('restores both action orders through v1 JSON and v2/v3 shards; an old backup leaves them intact', async () => {
+        localStorage.clear();
+        saveChatActionOrder('private', ['side-story', 'collaboration']);
+        saveChatActionOrder('group', ['group-html-mode', 'group-image']);
+        const exported = await DB.exportFullData();
+        const expected = loadChatActionOrders();
+        expect(exported.chatActionOrders).toEqual(expected);
+        for (const version of [1, 2, 3]) {
+            const zip = new FakeZip();
+            const source = version === 1 ? JSON.parse(JSON.stringify({ chatActionOrders: exported.chatActionOrders })) : null;
+            const manifest = version === 1 ? null : await writeV2Backup(zip, { chatActionOrders: exported.chatActionOrders });
+            if (manifest && version === 2) manifest.formatVersion = 2;
+            const restored = source || await assembleV2Backup(zip, manifest!);
+            localStorage.clear();
+            await DB.importFullData(restored as any);
+            expect(loadChatActionOrders()).toEqual(expected);
+        }
+        await DB.importFullData({ timestamp: 1, version: 1 } as any);
+        expect(loadChatActionOrders()).toEqual(expected);
+        localStorage.clear();
+    });
     it('restored default home preferences cannot be resurrected by an older storage mirror',async()=>{
         localStorage.setItem('sully-home3d-quality','eco');
         await DB.importFullData({assets:[{id:'ls_mirror_v1',data:{savedAt:1,data:{'sully-home3d-quality':'eco',os_theme:'keep'}}}],home3DLocal:{}} as any);
@@ -374,7 +396,11 @@ describe('v2 真实链路：分片 → 组装 → importFullData', () => {
         const theme = { chatAvatarVisibility: 'hide_both', chatSnapToEdge: true, chatBubbleLineHeight: 1.5, chatEmojiSize: 'large' };
         // 分角色聊天头像（URL 形态）随 user_profile 单例走；data: 形态在 full/media 模式
         // 走 assets 抽取回填（restoreAssetsInPlace），text_only 剥掉——与整体头像同规则。
-        const userProfile = { name: 'me', avatar: 'https://img.example/me.png', bio: '', perCharAvatars: { ft1: 'https://img.example/me-ft1.png' } };
+        const userProfile = {
+            name: 'me', avatar: 'https://img.example/me.png', bio: '',
+            perCharAvatars: { ft1: 'https://img.example/me-ft1.png' },
+            operatorIdentities: [{ id: 'mask-1', name: '林弥', description: '', createdAt: 1 }],
+        };
 
         const zip = new FakeZip();
         const manifest = await writeV2Backup(zip, { characters: [char], theme, userProfile } as any, {});
@@ -388,6 +414,7 @@ describe('v2 真实链路：分片 → 组装 → importFullData', () => {
         expect(restored.chatFineTune).toEqual(char.chatFineTune);
         const profile = (await DB.getRawStoreData('user_profile'))[0];
         expect(profile.perCharAvatars).toEqual(userProfile.perCharAvatars);
+        expect(profile.operatorIdentities).toEqual(userProfile.operatorIdentities);
     });
 
     it('AI 原文范围设置随角色备份完整往返', async () => {

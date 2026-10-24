@@ -50,7 +50,7 @@ it.each([false,true])('adds home phone background only to this request (worker=%
 });
 
 it('本地仅节假日感知可独立注入一句，云端生成不烤进本地提醒', async () => {
-    vi.useFakeTimers(); vi.setSystemTime(new Date(2026, 8, 27, 12));
+    vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date(2026, 8, 27, 12));
     const input = baseInput();
     input.realtimeConfig = { ...realtimeConfig, weatherEnabled: false, newsEnabled: false, userHolidays: { enabled: true, countryCode: 'CN' } };
     const reminder = '小明所在地中国 2026-09-27 为中秋节公共假期，实际休息与否以小明自己的日程和说明为准。';
@@ -102,6 +102,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     localStorage.removeItem(MCP_SERVERS_KEY);
 });
@@ -140,6 +141,15 @@ describe('timelyByWorker —— 时效段交给 worker，前端这份不重复�
         expect(joined).toContain('[外部工具已接入');
         expect(joined).toContain('[MCP 工具 ON');
         expect(normal.flags.mcpChatActive).toBe(true);
+    });
+
+    it('disableMcp: 非聊天 App 保留普通上下文，但完全不进入 MCP 模式', async () => {
+        const readOnlyAppCall = await buildChatRequestPayload({ ...baseInput(), disableMcp: true });
+        const joined = joinMessages(readOnlyAppCall.fullMessages);
+        expect(joined).toContain('### 当前时间 (Now)');
+        expect(joined).not.toContain('[外部工具已接入');
+        expect(joined).not.toContain('[MCP 工具 ON');
+        expect(readOnlyAppCall.flags.mcpChatActive).toBe(false);
     });
 
     it('只裁文本不动 flag：mcpChatActive 照实反映有没有 MCP 可用', async () => {
@@ -371,6 +381,22 @@ it('聊天深度世界书由消息层插入，公共上下文兜底不会再重�
     const payload = await buildChatRequestPayload(input);
     expect(joinMessages(payload.fullMessages).split('UNIQUE_DEPTH_BOOK')).toHaveLength(2);
     expect(payload.fullMessages[0].content).not.toContain('UNIQUE_DEPTH_BOOK');
+});
+
+it('整组暂停后主聊天实际请求与旧文本入口均不包含该角色书籍，恢复后按原规则注入', async () => {
+    const input = baseInput();
+    const paused = { id: 'plot', title: '剧情组', category: '剧情组', content: 'ONLY_PLOT_BOOK', constant: true, position: 4 as const, mountPaused: true };
+    const disabled = { id: 'disabled', title: '本来禁用', category: '剧情组', content: 'STILL_DISABLED_BOOK', constant: true, disable: true };
+    const other = { id: 'everyday', title: '日常组', category: '日常组', content: 'EVERYDAY_BOOK', constant: true, position: 1 as const };
+    input.char.mountedWorldbooks = [paused, disabled, other];
+    const active = await buildChatRequestPayload(input);
+    expect(JSON.stringify(active.fullMessages)).not.toContain('ONLY_PLOT_BOOK');
+    expect(JSON.stringify(active.fullMessages)).toContain('EVERYDAY_BOOK');
+    const oldText = await ChatPrompts.buildSystemPrompt(input.char, input.userProfile, [], [], [], input.historyMsgs);
+    expect(oldText).not.toContain('ONLY_PLOT_BOOK');
+    const restored = await buildChatRequestPayload({ ...input, char: { ...input.char, mountedWorldbooks: [{ ...paused, mountPaused: false }, disabled, other] } });
+    expect(JSON.stringify(restored.fullMessages)).toContain('ONLY_PLOT_BOOK');
+    expect(JSON.stringify(restored.fullMessages)).not.toContain('STILL_DISABLED_BOOK');
 });
 
 it('单串提示词消费者也从同一管线拿到深度世界书', async () => {

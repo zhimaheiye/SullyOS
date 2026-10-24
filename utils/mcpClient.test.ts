@@ -14,6 +14,8 @@ import {
     setMcpUseNativeTools,
     collectMcpFireServers,
     callMcpTool,
+    hasMcpServerEndpoint,
+    isStdioMcpServer,
     normalizeMcpToolArguments,
     MCP_REQUEST_TIMEOUT_MS,
     type McpServerConfig,
@@ -125,6 +127,16 @@ describe('formatMcpToolResult', () => {
 });
 
 describe('服务器配置持久化', () => {
+    it('老配置继续按 HTTP 处理，stdio 用 command 作为可用门槛', () => {
+        const legacy = mkServer({ url: 'https://mcp.example.com/mcp' });
+        const stdio = mkServer({ transport: 'stdio', url: '', command: 'npx' });
+        expect(isStdioMcpServer(legacy)).toBe(false);
+        expect(hasMcpServerEndpoint(legacy)).toBe(true);
+        expect(isStdioMcpServer(stdio)).toBe(true);
+        expect(hasMcpServerEndpoint(stdio)).toBe(true);
+        expect(hasMcpServerEndpoint({ ...stdio, command: '' })).toBe(false);
+    });
+
     it('save → load 往返一致，坏 JSON 回退空数组', () => {
         const s = mkServer({ name: 'Notion' });
         saveMcpServers([s]);
@@ -344,6 +356,45 @@ describe('extractTextFakedMcpCalls（掉格式容错）', () => {
 });
 
 describe('MCP 聊天链路不悬挂', () => {
+    it('stdio 先把启动配置交给本机 bridge，再复用既有 JSON-RPC 工具调用', async () => {
+        const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+        const server = mkServer({
+            id: 'stdio-server', transport: 'stdio', url: '', command: 'npx',
+            args: ['-y', '@modelcontextprotocol/server-filesystem', 'D:/workspace'],
+            env: [{ name: 'API_KEY', value: 'local-secret' }],
+        });
+        const requests: Array<{ url: string; body: any }> = [];
+        vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+            const url = String(input);
+            const body = JSON.parse(String(init?.body || '{}'));
+            requests.push({ url, body });
+            if (url.endsWith('/config')) {
+                return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+            }
+            if (body.method === 'initialize') {
+                return Promise.resolve(new Response(JSON.stringify({
+                    jsonrpc: '2.0', id: body.id, result: { protocolVersion: '2024-11-05' },
+                }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+            }
+            if (body.method === 'notifications/initialized') return Promise.resolve(new Response('', { status: 202 }));
+            return Promise.resolve(new Response(JSON.stringify({
+                jsonrpc: '2.0', id: body.id, result: { content: [{ type: 'text', text: 'ok' }] },
+            }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        });
+
+        await expect(callMcpTool(server, 'search', { q: 'x' })).resolves.toMatchObject({ success: true, data: 'ok' });
+        expect(requests[0]).toEqual({
+            url: '/api/mcp-stdio/stdio-server/config',
+            body: {
+                command: 'npx',
+                args: ['-y', '@modelcontextprotocol/server-filesystem', 'D:/workspace'],
+                env: { API_KEY: 'local-secret' },
+            },
+        });
+        expect(requests.slice(1).every(request => request.url === '/api/mcp-stdio/stdio-server/mcp')).toBe(true);
+        expect(info).toHaveBeenCalled();
+    });
+
     it('只按工具 schema 还原嵌套 object / array 字符串，普通 string 保持不变', () => {
         const schema = {
             type: 'object',
@@ -602,6 +653,16 @@ describe('collectMcpFireServers', () => {
         expect(isMcpChatAvailable('char_a')).toBe(true);
         expect(collectMcpFireServers()).toEqual([]);
         expect(hasWorkerUnreachableMcpServer('char_a')).toBe(true);
+    });
+
+    it('stdio 配置只留在当前电脑，不会携命令或环境变量上传给 worker', () => {
+        saveMcpServers([mkServer({
+            id: 'srv_stdio', transport: 'stdio', url: '', command: 'npx', args: ['server'],
+            env: [{ name: 'SECRET', value: 'value' }],
+        })]);
+        expect(isMcpChatAvailable('char_a')).toBe(true);
+        expect(hasWorkerUnreachableMcpServer('char_a')).toBe(true);
+        expect(collectMcpFireServers()).toEqual([]);
     });
 
     it('无人值守后台不带 destructive 工具', () => {

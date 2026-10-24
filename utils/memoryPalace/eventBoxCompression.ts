@@ -217,7 +217,7 @@ ${sarMemoryBoundary ? `\n${sarMemoryBoundary}` : ''}
                     stream: false,
                 }),
             },
-            2, 120_000, { appName: '记忆宫殿', purpose: '事件压缩' }
+            2, 120_000, { appName: '记忆宫殿', featureId: 'memoryLight', purpose: '事件压缩' }
         );
 
         // 统一剥除 <think> 块并兼容分段 content / reasoning-only 中转。
@@ -309,7 +309,7 @@ async function recompressSummary(
                     stream: false,
                 }),
             },
-            2, 90_000, { appName: '记忆宫殿', purpose: '事件压缩-二次压缩' }
+            2, 90_000, { appName: '记忆宫殿', featureId: 'memoryLight', purpose: '事件压缩-二次压缩' }
         );
         const reply = (data.choices?.[0]?.message?.content || '').trim();
         // 模型偶尔仍会裹 ``` 代码块，剥掉常见包裹

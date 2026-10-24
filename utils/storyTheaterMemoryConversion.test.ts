@@ -49,7 +49,7 @@ describe('story box → character memory',()=>{
   await call();const saved=await DB.getCharacter(char.id);
   expect(getEmbeddings).not.toHaveBeenCalled();expect(await MemoryNodeDB.getById(node().id)).toBeUndefined();
   expect(saved!.memories[1]).toMatchObject({mood:'story',date:'2025-02-03'});expect(saved!.memories[1].palaceMemoryId).toBeUndefined();
-  expect(mergePalaceFragmentsIntoMemories(saved!.memories,[saved!.memories[1]])).toEqual(saved!.memories);
+  expect(mergePalaceFragmentsIntoMemories(saved!.memories,[{...saved!.memories[1],mood:'story'}])).toEqual(saved!.memories);
  });
  it('keeps inputs retryable on empty extraction or embedding failure',async()=>{
   vi.mocked(extractMemoriesFromBuffer).mockResolvedValueOnce({memories:[],crossTimeLinks:[],eventBoxHints:[],unpinIds:[],corrections:[]});

@@ -2,7 +2,7 @@ import { Capacitor } from '@capacitor/core';
 import type { APIConfig, CharacterProfile } from '../types';
 import { DB } from './db';
 import { hashTtsParams } from './ttsCache';
-import { getProxyWorkerUrl } from './proxyWorker';
+import { requireProxyWorkerUrl } from './proxyWorker';
 import { isStaticWebDeployment } from './staticWebDeployment';
 import { friendlyElevenLabsError, buildElevenLabsRequestBody, normalizeElevenLabsVoiceId, resolveElevenLabsApiKey, resolveElevenLabsModel } from './elevenLabsTts';
 import { isElevenLabsV4Model } from './elevenLabsModels';
@@ -85,7 +85,7 @@ function streamUrl(voiceId?: string): string {
   const worker = Capacitor.isNativePlatform() || (typeof window !== 'undefined'
     && isStaticWebDeployment(window.location.protocol, window.location.hostname));
   const query = voiceId ? `voice_id=${encodeURIComponent(voiceId)}` : 'mode=dialogue';
-  return `${worker ? `${getProxyWorkerUrl()}/elevenlabs/tts` : '/api/elevenlabs/tts'}?${query}&timestamps=1&output_format=pcm_24000`;
+  return `${worker ? `${requireProxyWorkerUrl()}/elevenlabs/tts` : '/api/elevenlabs/tts'}?${query}&timestamps=1&output_format=pcm_24000`;
 }
 
 function appendAlignment(target: VoiceCue[], frame: any, offset: number): void {

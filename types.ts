@@ -20,6 +20,8 @@ export enum AppID {
   Study = 'study',
   FAQ = 'faq',
   Game = 'game',
+  BoardGame = 'board_game',
+  MurderMystery = 'murder_mystery',
   Worldbook = 'worldbook', 
   Novel = 'novel', 
   Bank = 'bank', // New App
@@ -38,6 +40,15 @@ export enum AppID {
   VRWorld = 'vrworld', // 彼方 — 角色自主登入的虚拟世界（定时驱动，房间里看小说/听歌/留言，产出活动卡注入聊天+记忆）
   CharCreatorDev = 'char_creator_dev', // 捏脸系统开发模式 — 仅开发模式可见，向捏人器指定类目追加自定义部件
   WorldHome = 'world_home', // 家园 — 同世界观多角色共同生活的大世界（观测驱动演绎，每角色独立 LLM 调用 + NPC 世界引擎）
+  HeartSync = 'heart_sync', // 心心相印 — 心理测试与问卷填写
+  Debate = 'debate', // 辩论赛 — 单人对辩 / 八人正式辩论；结果确认后写回聊天与记忆
+  LifeReplay = 'life_replay', // 人生重映 — 私密过去事件预设；角色携聊天上下文与记忆共同进入叙事模拟
+  CommunityCommittee = 'community_committee', // 居委会 — 多角色陪伴梳理现实两难，结案默认写回聊天与记忆
+  TaskWorkshop = 'task_workshop', // 任务工坊 — 多角色轮流查看共享任务空间，自动来访只留下本机建议
+  TimeCapsule = 'time_capsule', // 时间胶囊 — 用户与角色写给未来的本机私密胶囊
+  MySchedule = 'my_schedule', // 我的日程 — 用户现实时间轴与多角色聊天同步
+  Healing = 'healing', // 聊愈 — 独立会话与跨角色共享的用户中心记忆
+  OneChange = 'one_change', // 只做一个改变 — local-first 单改变习惯实验
 }
 
 export interface SystemLog {
@@ -138,6 +149,9 @@ export interface OSTheme {
   launcherWidgets?: Record<string, string>; // slots: 'tl' | 'tr' | 'wide' | 'dsq' (legacy 'bl' / 'br' are banned)
   /** 默认桌面长按编辑后的 App / Dock / 第二页风车组件顺序。 */
   launcherAppOrder?: string[];
+  /** 桌面收纳文件夹；AppOrder 中空字符串表示保留的空位。随系统主题备份。 */
+  launcherFolderApps?: string[];
+  launcherFolderName?: string;
   launcherDockOrder?: string[];
   launcherPinwheelOrder?: Array<'music' | 'appsA' | 'appsB' | 'image'>;
   /** 默认桌面组件可见性；旧存档未设置时保持显示。随主题备份。 */
@@ -409,6 +423,8 @@ export type ActiveMsg2TaskStatus = 'scheduled' | 'cancelled';
 
 export interface ActiveMsg2TaskRecord {
   taskUuid: string;
+  /** 独立生活提醒渠道；切换主角色或关闭渠道时只取消这类任务。仅用于读取旧数据，公开版已无新建入口。 */
+  lifeReminder?: boolean;
   /** 客户端排程前自造的 uuid v4，与 push metadata 的 amsgClientTaskId 同源——送达归属匹配键。 */
   clientTaskId: string;
   mode: ActiveMsg2Mode;
@@ -751,9 +767,28 @@ export interface ScheduleSlot {
     description?: string; // "在河边慢跑"
     emoji?: string;       // "🏃"
     location?: string;    // "河边"
+    /** Only a POI selected from this generation's verified AMap candidates. */
+    realPlace?: ScheduleRealPlace;
     homePosition?: { kind: 'home'; roomId: string } | { kind: 'away' };
     innerThought?: string; // 该时段的内心独白，生成时由AI写好，运行时直接注入
     theater?: SlotTheater; // 该时段的小剧场（窥视演出），按需生成并缓存
+}
+
+export interface ScheduleRealPlace {
+    source: 'amap';
+    id: string;
+    name: string;
+    city: string;
+    district?: string;
+    category: 'school' | 'work' | 'food' | 'shop' | 'park';
+}
+
+export interface CharacterRealPlaceSchedule {
+    enabled: boolean;
+    /** A user-selected public administrative area, never device location. */
+    region?: { name: string; adcode: string };
+    /** Long-lived places are chosen or confirmed by the user, not inferred as biography. */
+    anchors?: { school?: ScheduleRealPlace; work?: ScheduleRealPlace };
 }
 
 export interface DailySchedule {
@@ -869,6 +904,34 @@ export interface PhoneCustomApp {
     layout?: 'generic' | 'shop' | 'feed' | 'forum' | 'novel'; // 参考样板 UI 风格，默认 generic
 }
 
+/** 用户可在「查手机」里反复使用的全局面具；定义共享，关系状态仍按角色分别保存。 */
+export interface OperatorIdentity {
+    id: string;
+    name: string;
+    description?: string;
+    createdAt: number;
+    updatedAt?: number;
+}
+
+export type PhoneClaimedSpeaker =
+    | { kind: 'character'; charId: string }
+    | { kind: 'custom'; identityId: string };
+
+/**
+ * 手机私聊的结构化消息层。side 永远相对于当前 record 的机主；detail 仍保留为旧版可读镜像。
+ * author 是系统真实作者，claimedSpeaker 是世界内显示的发送身份，两者不可混为一谈。
+ */
+export interface PhoneConversationTurn {
+    id: string;
+    side: 'owner' | 'contact';
+    text: string;
+    createdAt?: number;
+    author: 'ai' | 'operator' | 'legacy';
+    claimedSpeaker?: PhoneClaimedSpeaker;
+    impersonated?: boolean;
+    source?: 'check-phone-automatic' | 'check-phone-impersonation' | 'check-phone-custom-identity' | 'legacy';
+}
+
 export interface PhoneEvidence {
     id: string;
     type: 'chat' | 'order' | 'social' | 'delivery' | string;
@@ -879,6 +942,8 @@ export interface PhoneEvidence {
     value?: string;
     /** 人际关系系统：本条记录归属的联系人（phoneState.contacts 里的 id） */
     contactId?: string;
+    /** 附加式结构化消息层；旧数据缺省时由 detail 确定性物化。 */
+    conversationTurns?: PhoneConversationTurn[];
 }
 
 /**
@@ -919,10 +984,12 @@ export interface PhoneContact {
     /** 已被总结归档的原文条数（水位线）：record.detail 里这之前的内容不再进上下文，只进话题盒 */
     archivedThru?: number;
     avatar?: string;
-    /** 真假甄别结果：real=神经链接里真有这人；npc=纯虚构 */
-    kind: 'real' | 'npc';
+    /** 真假甄别结果：custom=用户手动控制的全局自建身份，不属于随机 NPC。 */
+    kind: 'real' | 'npc' | 'custom';
     /** kind==='real' 时绑定的真实角色 id（指向 characters 里的某个角色） */
     linkedCharId?: string;
+    /** kind==='custom' 时引用 UserProfile.operatorIdentities；name 是删除身份后的可读快照。 */
+    operatorIdentityId?: string;
     /** 机主对此人的好感度，-100..100（负=厌恶，可触发自动删友；正=亲近） */
     affinity: number;
     /** 关系状态 */
@@ -1127,6 +1194,8 @@ export interface MountedWorldbook extends WorldbookEntryConfig {
     title: string;
     content: string;
     category?: string;
+    /** Only this character's mount is paused; independent of the library entry's disable flag. */
+    mountPaused?: boolean;
 }
 
 export interface Worldbook extends WorldbookEntryConfig {
@@ -2204,6 +2273,12 @@ export interface StoryTheaterArchive {
     messageCount: number;
     /** summary 策略的事件盒正文；vector 策略留空，由独立 charId 分区召回。 */
     summary?: string;
+    /** 分支剧情必须按精确楼层集合判断归档是否适用于当前路线。旧数据首次迁移时补齐。 */
+    messageIds?: number[];
+    /** 归档发生时所在分支；仅用于展示与诊断，适用性仍以 messageIds 为准。 */
+    branchId?: string;
+    /** vector 策略使用每批独立分区，避免兄弟分支相互召回。 */
+    vectorPartitionId?: string;
     createdAt: number;
     /** 用户主动转为角色记忆的回执；与聊天高水位无关，随整机备份保留。 */
     memoryConversions?: Record<string, {
@@ -2213,6 +2288,25 @@ export interface StoryTheaterArchive {
         memoryIds: string[];
         skipped: number;
     }>;
+}
+
+export interface StoryTheaterBranch {
+    id: string;
+    name: string;
+    parentBranchId?: string;
+    /** 分支从哪个已存在楼层岔出；根分支为 null。 */
+    forkMessageId: number | null;
+    createdAt: number;
+    updatedAt: number;
+}
+
+export interface StoryTheaterTimelineState {
+    version: 1;
+    rootBranchId: string;
+    activeBranchId: string;
+    /** 当前会话路径的末端；空剧情为 null。 */
+    activeCursorMessageId: number | null;
+    branches: StoryTheaterBranch[];
 }
 
 /** 剧场里用户所扮演的身份；已有角色按 characterId 动态读取，自定义身份来自面具箱。 */
@@ -2260,6 +2354,8 @@ export interface StoryTheaterEntry {
     archiveKeepRecent?: number;
     archiveStrategy: StoryTheaterArchiveStrategy;
     archives: StoryTheaterArchive[];
+    /** 仅虚构剧场启用；真实陪伴继续沿用原有线性消息流。 */
+    timeline?: StoryTheaterTimelineState;
     /** 从演员挂载世界书去重得到；只影响本剧情，不改外部挂载。 */
     selectedWorldbookIds: string[];
     presetId?: string;
@@ -2716,6 +2812,26 @@ export interface MemoryPalaceWaterlineConfig {
 }
 
 export interface CharacterProfile {
+  /** 自主生活默认关闭；习惯为长期人工可编辑配置，运行态另存 character_life。 */
+  lifeConfig?: {
+    enabled: boolean;
+    statusVisibility?: 'vague' | 'hidden';
+    catchUpUnread?: boolean;
+    api?: { baseUrl: string; apiKey: string; model: string };
+    habits?: {
+      sleepHour: number;
+      sleepMinute: number;
+      sleepHours: number;
+      varianceMinutes: number;
+      lightSleeper: boolean;
+      phoneSilent: boolean;
+      bedtimePhoneMinutes: number;
+      socialEnergy: number;
+      /** Stable chance of a short rest on a given local day; absent in older profiles. */
+      napChance?: number;
+      napMinutes?: number;
+    };
+  };
   /** Local default for this character's dialogue; absent means follow Settings. Never shared in cards. */
   dialogueApi?: DialogueApiConfig;
   id: string;
@@ -2912,6 +3028,8 @@ export interface CharacterProfile {
   chatDecorationCssIsolated?: boolean;
   chatBackground?: string;
   contextLimit?: number;
+  /** 用户撤回尚未读消息时，角色看到原文的独立概率；缺省为 40，0 表示关闭抓包。 */
+  withdrawCatchProbability?: number;
   /**
    * AI 原文读取范围策略：
    * - adaptive：全自动记忆接管，最大范围从记忆宫殿水位线之后开始；
@@ -3101,6 +3219,12 @@ export interface CharacterProfile {
     model: string;        // 默认 text-embedding-3-small
     dimensions: number;   // 默认 1024
   };
+
+
+  // 表情包视觉理解三态：inherit 跟随全局开关，on/off 为角色独立覆盖（双向生效）。
+  // 只影响发送时刻冻结过视觉资格（metadata.stickerVision）的新表情；旧表情永不补识别。
+  stickerVisionMode?: 'inherit' | 'on' | 'off';
+
   personalityStyle?: 'emotional' | 'narrative' | 'imagery' | 'analytical';
   ruminationTendency?: number;  // 反刍倾向 0-1，默认 0.3
   /** ChatApp 专属的语言趋同强度；不影响其他 App 的写作人格。 */
@@ -3123,6 +3247,7 @@ export interface CharacterProfile {
    * - 'mindful'（意识系）：角色诚实面对自身存在，内心活动基于真实能力（回忆对话、整理想法、等待用户……），不虚构物理行为
    */
   scheduleStyle?: 'lifestyle' | 'mindful';
+  realPlaceSchedule?: CharacterRealPlaceSchedule;
 
   /**
    * 日程 / 情绪 Buff 总开关。
@@ -3213,17 +3338,26 @@ export interface CharacterGroup {
     createdAt?: number;
 }
 
+export interface GroupMembershipWindow {
+    /** 加入时群里最后一条已存在消息 ID；角色只能看到更大的消息 ID。 */
+    joinedAfterMessageId: number;
+    /** 离开时群里最后一条已存在消息 ID；缺省表示当前仍在群内。 */
+    leftAtMessageId?: number;
+}
+
 export interface GroupProfile {
     id: string;
     name: string;
     members: string[];
     avatar?: string;
     createdAt: number;
-    /** 群聊公共话题盒：由热区以前的群消息总结而成，所有成员共享、可编辑/删除。 */
+    /** 每位 AI 成员实际在群期间可见的消息 ID 窗口；旧群缺省时按当前成员从消息 1 起可见。 */
+    memberVisibilityWindows?: Record<string, GroupMembershipWindow[]>;
+    /** 群聊话题盒：按当时可见成员分段总结、可编辑/删除。 */
     topicBoxes?: GroupTopicBox[];
-    /** 公共话题盒已覆盖到的最后一条群消息 ID；仅用于防止重复成盒，不与任何角色私聊水位混用。 */
+    /** 群聊话题盒已覆盖到的最后一条群消息 ID；仅用于防止重复成盒，不与任何角色私聊水位混用。 */
     archivedThroughMessageId?: number;
-    /** 公共话题盒整理模式：auto 满阈值自动成盒；manual 只累计，用户手动触发。默认 auto。 */
+    /** 群聊话题盒整理模式：auto 满阈值自动成盒；manual 只累计，用户手动触发。默认 auto。 */
     topicArchiveMode?: 'auto' | 'manual';
     /**
      * 私聊里"近期群活动"上下文从这个群最多取最后多少条消息。
@@ -3257,6 +3391,8 @@ export interface GroupProfile {
     htmlModeEnabled?: boolean;
     /** HTML 模式自定义提示词（追加在内置提示词之后） */
     htmlModeCustomPrompt?: string;
+    /** 表情包视觉理解三态：inherit 跟随全局开关，on/off 对整个群生效（不区分成员）。 */
+    stickerVisionMode?: 'inherit' | 'on' | 'off';
 }
 
 export interface GroupTopicBox {
@@ -3290,6 +3426,8 @@ export interface UserProfile {
      *  私聊里「你」的头像取 perCharAvatars[charId] || avatar（上面的整体头像作宏观默认）；
      *  群聊/其他场合仍用整体头像。删角色留下的孤儿键无害，读取端永远按当前 charId 取。 */
     perCharAvatars?: Record<string, string>;
+    /** 旧备份里的自建身份定义。公开版不再提供新建或代发；历史关系仍留在各自 phoneState。 */
+    operatorIdentities?: OperatorIdentity[];
     /**
      * 用户本人接入「彼方」的状态：捏的 chibi、此刻所在房间、在干嘛。可随时改。
      * enabled=false（登出）时，聊天里给角色的"用户在彼方"提示词随之消失。
@@ -3321,6 +3459,762 @@ export interface UserVRState {
         flip?: boolean;
     };
 }
+
+/** 已删除的伴侣测试记录形状，只用于识别后丢弃，不要据此恢复功能。 */
+export type HeartSyncPart = 1 | 2 | 3 | 4;
+
+export interface HeartSyncCustomQuestion {
+    id: string;
+    part: HeartSyncPart;
+    text: string;
+}
+
+export interface HeartSyncSettings {
+    id: 'settings';
+    kind: 'settings';
+    adultConfirmedAt?: number;
+    customQuestions: HeartSyncCustomQuestion[];
+    questionWeights: Record<string, number>;
+    /** 内置题按稳定题目 ID 保存的本机文字覆盖；不改动代码里的默认题库。 */
+    questionEdits?: Record<string, string>;
+    /** 从未来抽题中移除的题目 ID；底层题面仍保留，以兼容已经开始的测试。 */
+    deletedQuestionIds?: string[];
+    /** 按题目 ID 保存的用户预置回答；只用于本机输入框快捷填入。 */
+    presetReplies?: Record<string, string[]>;
+}
+
+export type HeartSyncPosition = 'top' | 'bottom';
+
+export interface HeartSyncAnswer {
+    questionId: string;
+    part: HeartSyncPart;
+    question: string;
+    skipped?: boolean;
+    partnerScore?: number;
+    partnerComment?: string;
+    /** 模型原生 reasoning；只用于本机心象卡，不进入后续测试上下文或写回。 */
+    partnerThinking?: string;
+    userScore?: number;
+    userNote?: string;
+    reaction?: string;
+    /** 角色看见用户答案后的模型原生 reasoning；只在本机展示。 */
+    reactionThinking?: string;
+    completedAt?: number;
+}
+
+export interface HeartSyncReport {
+    totalCompatibility: number;
+    partScores: Record<HeartSyncPart, number>;
+    strongestPart: HeartSyncPart;
+    growthPart: HeartSyncPart;
+    characterLetter: string;
+    generatedAt: number;
+}
+
+export interface HeartSyncSession {
+    id: string;
+    kind: 'session';
+    charId: string;
+    status: 'in_progress' | 'completed';
+    phase: 'partner' | 'user' | 'reaction' | 'report' | 'complete';
+    part: HeartSyncPart;
+    questionIndex: number;
+    questionIds: Record<HeartSyncPart, string[]>;
+    /** 开始测试时冻结的题面，避免之后编辑或删除题库改变本次测试。 */
+    questionSnapshots?: Record<string, string>;
+    answers: HeartSyncAnswer[];
+    /** 新会话必填；旧记录缺失时按“未记录”兼容。 */
+    userPosition?: HeartSyncPosition;
+    partnerPosition?: HeartSyncPosition;
+    createdAt: number;
+    updatedAt: number;
+    report?: HeartSyncReport;
+    /** 私密报告生成时的模型原生 reasoning，仅留在本机会话。 */
+    reportThinking?: string;
+    sharedMessageId?: number;
+}
+
+export interface HeartSyncPsychOption {
+    key: string;
+    label: string;
+    interpretation: string;
+}
+
+export interface HeartSyncPsychDefaultAnswer {
+    optionKey?: string;
+    text: string;
+}
+
+export interface HeartSyncPsychQuestion {
+    id: string;
+    kind: 'psych_question';
+    questionType: 'choice' | 'open';
+    text: string;
+    options?: HeartSyncPsychOption[];
+    defaultAnswer?: HeartSyncPsychDefaultAnswer;
+    createdAt: number;
+    updatedAt: number;
+}
+
+export interface HeartSyncPsychAnswer {
+    optionKey?: string;
+    text: string;
+}
+
+export interface HeartSyncPsychTurn {
+    id: string;
+    role: 'user' | 'assistant';
+    content: string;
+    createdAt: number;
+}
+
+export interface HeartSyncPsychSession {
+    id: string;
+    kind: 'psych_session';
+    charId: string;
+    questionId: string;
+    questionSnapshot: HeartSyncPsychQuestion;
+    phase: 'partner' | 'user' | 'discussion' | 'complete';
+    partnerAnswer?: HeartSyncPsychAnswer;
+    userAnswer?: HeartSyncPsychAnswer;
+    turns: HeartSyncPsychTurn[];
+    sharedMessageId?: number;
+    createdAt: number;
+    updatedAt: number;
+    completedAt?: number;
+}
+
+export interface HeartSyncQuestionnaireOption {
+    key: string;
+    label: string;
+}
+
+export interface HeartSyncQuestionnaireQuestion {
+    id: string;
+    text: string;
+    options: HeartSyncQuestionnaireOption[];
+}
+
+export interface HeartSyncQuestionnaire {
+    id: string;
+    kind: 'questionnaire';
+    formatVersion: 1;
+    title: string;
+    description?: string;
+    instructions?: string;
+    questions: HeartSyncQuestionnaireQuestion[];
+    scoringRules: string;
+    resultGuide?: string;
+    createdAt: number;
+    updatedAt: number;
+}
+
+export interface HeartSyncQuestionnaireAnswer {
+    questionId: string;
+    optionKey: string;
+}
+
+export interface HeartSyncQuestionnaireResult {
+    resultLabel: string;
+    scoreSummary?: string;
+    calculationSummary?: string;
+    reaction?: string;
+}
+
+export interface HeartSyncQuestionnaireSession {
+    id: string;
+    kind: 'questionnaire_session';
+    questionnaireId: string;
+    questionnaireSnapshot: HeartSyncQuestionnaire;
+    charId: string;
+    phase: 'answering' | 'evaluating' | 'complete';
+    answers: HeartSyncQuestionnaireAnswer[];
+    answerRound: number;
+    result?: HeartSyncQuestionnaireResult;
+    sharedMessageId?: number;
+    createdAt: number;
+    updatedAt: number;
+    completedAt?: number;
+}
+
+export interface HeartSyncEventCard {
+    type: 'heart_sync_event_card';
+    mode: 'psych' | 'questionnaire';
+    sessionId: string;
+    title: string;
+    charName: string;
+    displayPayload: Record<string, unknown>;
+    contextText: string;
+}
+
+export type HeartSyncRecord =
+    | HeartSyncSettings
+    | HeartSyncSession
+    | HeartSyncPsychQuestion
+    | HeartSyncPsychSession
+    | HeartSyncQuestionnaire
+    | HeartSyncQuestionnaireSession;
+
+export type DebateMode = 'solo' | 'team';
+export type DebateSide = 'pro' | 'con';
+export type DebateRole = 1 | 2 | 3 | 4;
+export type DebateStage = 'setup' | 'recall' | 'lineup' | 'debate' | 'summary' | 'complete';
+
+export interface DebateRecall {
+    charId: string;
+    side: DebateSide;
+    reason: string;
+    createdAt: number;
+}
+
+export interface DebateSpeech {
+    id: string;
+    speakerType: 'user' | 'character';
+    charId?: string;
+    speakerName: string;
+    side: DebateSide;
+    round: number;
+    phase: 'opening' | 'rebuttal' | 'closing' | 'formal';
+    role?: DebateRole;
+    content: string;
+    score?: number;
+    judgeComment?: string;
+    createdAt: number;
+}
+
+export interface DebateReport {
+    proScore: number;
+    conScore: number;
+    winner: DebateSide | 'draw';
+    summary: string;
+    generatedAt: number;
+}
+
+export interface DebateSession {
+    id: string;
+    mode: DebateMode;
+    topic: string;
+    proPosition: string;
+    conPosition: string;
+    status: 'in_progress' | 'completed';
+    stage: DebateStage;
+    solo?: {
+        charId: string;
+        userSide: DebateSide;
+        turnIndex: number;
+    };
+    team?: {
+        recalls: DebateRecall[];
+        proCharIds: string[];
+        conCharIds: string[];
+        turnIndex: number;
+    };
+    speeches: DebateSpeech[];
+    report?: DebateReport;
+    sharedMessageIds?: Record<string, number>;
+    createdAt: number;
+    updatedAt: number;
+}
+
+export type BoardGameId = 'liars_bar';
+
+export type BoardGameActor =
+    | { type: 'user' }
+    | { type: 'character'; charId: string };
+
+export type LiarsBarRank = 'Q' | 'K' | 'A' | 'JOKER';
+export type LiarsBarGenerationMode = 'batch' | 'individual';
+
+export interface LiarsBarCard {
+    id: string;
+    rank: LiarsBarRank;
+}
+
+export interface LiarsBarRouletteState {
+    chamberCount: number;
+    bulletIndex: number;
+    chamberIndex: number;
+    shotsFired: number;
+}
+
+export interface LiarsBarPlayerState {
+    actorId: string;
+    actor: BoardGameActor;
+    name: string;
+    seat: number;
+    alive: boolean;
+    hand: LiarsBarCard[];
+    roulette: LiarsBarRouletteState;
+}
+
+export interface LiarsBarPlay {
+    id: string;
+    actorId: string;
+    cards: LiarsBarCard[];
+    declaredCount: number;
+    utterance?: string;
+    createdAt: number;
+}
+
+export interface LiarsBarRoundState {
+    number: number;
+    targetRank: Exclude<LiarsBarRank, 'JOKER'>;
+    currentActorId: string;
+    plays: LiarsBarPlay[];
+}
+
+export type LiarsBarEventType = 'round_start' | 'play' | 'challenge' | 'reveal' | 'roulette' | 'elimination' | 'game_over';
+
+export interface LiarsBarEvent {
+    id: string;
+    type: LiarsBarEventType;
+    round: number;
+    actorId?: string;
+    targetActorId?: string;
+    targetRank?: Exclude<LiarsBarRank, 'JOKER'>;
+    declaredCount?: number;
+    /** 规则引擎真相；PlayerView 仅向出牌者本人或翻牌后的所有人投影。 */
+    cardRanks?: LiarsBarRank[];
+    utterance?: string;
+    challengeSucceeded?: boolean;
+    rouletteResult?: 'click' | 'bang';
+    createdAt: number;
+}
+
+export interface BoardGameSessionBase {
+    id: string;
+    gameId: BoardGameId;
+    status: 'in_progress' | 'completed';
+    createdAt: number;
+    updatedAt: number;
+}
+
+export interface LiarsBarSession extends BoardGameSessionBase {
+    gameId: 'liars_bar';
+    revision: number;
+    /** Missing on legacy saves: retain individual isolation. New games default to batch. */
+    settings?: { generationMode: LiarsBarGenerationMode };
+    players: LiarsBarPlayerState[];
+    round: LiarsBarRoundState;
+    events: LiarsBarEvent[];
+    winnerActorId?: string;
+    completedAt?: number;
+    sharedMessageIds?: Record<string, number>;
+}
+
+export type BoardGameSession = LiarsBarSession;
+
+export interface LifeReplayNpc {
+    id: string;
+    name: string;
+    role: string;
+    persona: string;
+    knowledge: string;
+}
+
+export interface LifeReplayPastSelf {
+    label: string;
+    ageStage: string;
+    emotionalState: string;
+    beliefs: string;
+    needs: string;
+    fears: string;
+    behavior: string;
+}
+
+export interface LifeReplayBlueprint {
+    title: string;
+    period: string;
+    location: string;
+    background: string;
+    trigger: string;
+    chronology: string[];
+    pastSelf: LifeReplayPastSelf;
+    npcs: LifeReplayNpc[];
+    openingScene: string;
+    scenePrompt: string;
+    desiredChange: string;
+    boundaries: string;
+}
+
+export interface LifeReplayPreset {
+    id: string;
+    kind: 'preset';
+    sourceText: string;
+    blueprint: LifeReplayBlueprint;
+    createdAt: number;
+    updatedAt: number;
+}
+
+export interface LifeReplayCharacterBeat {
+    perception: string;
+    action: string;
+    speech: string;
+}
+
+export interface LifeReplayNpcBeat {
+    npcId: string;
+    name: string;
+    action: string;
+    speech?: string;
+}
+
+export interface LifeReplayWorldBeat {
+    narrative: string;
+    pastSelfReaction: string;
+    pastSelfSpeech?: string;
+    npcBeats: LifeReplayNpcBeat[];
+    directionChange: string;
+    sceneState: string;
+    suggestedActions: string[];
+}
+
+export interface LifeReplayTurn {
+    id: string;
+    kind: 'opening' | 'interaction';
+    userAction: string;
+    character: LifeReplayCharacterBeat;
+    world: LifeReplayWorldBeat;
+    createdAt: number;
+}
+
+export interface LifeReplayOutcome {
+    summary: string;
+    changedTrajectory: string;
+    closingImage: string;
+    generatedAt: number;
+}
+
+export interface LifeReplaySession {
+    id: string;
+    kind: 'session';
+    presetId: string;
+    presetTitle: string;
+    blueprint: LifeReplayBlueprint;
+    charId: string;
+    status: 'active' | 'completed';
+    turns: LifeReplayTurn[];
+    sceneState: string;
+    outcome?: LifeReplayOutcome;
+    createdAt: number;
+    updatedAt: number;
+}
+
+export type LifeReplayRecord = LifeReplayPreset | LifeReplaySession;
+
+export type CommunityCommitteeStage = 'setup' | 'peeling' | 'summary';
+export type CommunityCommitteeOpeningSide = 'a' | 'b' | 'both';
+
+export interface CommunityCommitteeOpeningSegment {
+    id: string;
+    content: string;
+    side: CommunityCommitteeOpeningSide;
+}
+
+export interface CommunityCommitteeOpeningAnalysis {
+    openingText: string;
+    topic: string;
+    sideA: string;
+    sideB: string;
+    segments: CommunityCommitteeOpeningSegment[];
+}
+
+export interface CommunityCommitteeTurn {
+    id: string;
+    speakerType: 'user' | 'character';
+    charId?: string;
+    speakerName: string;
+    content: string;
+    createdAt: number;
+}
+
+export interface CommunityCommitteeSession {
+    id: string;
+    topic: string;
+    sideA: string;
+    sideB: string;
+    /** 用户开题时一口气写下的原文；旧会话可能没有。 */
+    openingText?: string;
+    /** AI 初标、用户可手动改色的原文段落归属；旧会话可能没有。 */
+    openingSegments?: CommunityCommitteeOpeningSegment[];
+    charIds: string[];
+    stage: CommunityCommitteeStage;
+    turns: CommunityCommitteeTurn[];
+    report?: string;
+    reportGeneratedAt?: number;
+    sharedMessageIds?: Record<string, number>;
+    createdAt: number;
+    updatedAt: number;
+}
+
+export type TaskWorkshopUnitStatus = 'inbox' | 'active' | 'blocked' | 'done' | 'archived';
+export type TaskWorkshopEntryKind = 'note' | 'progress' | 'blocker';
+
+export interface TaskWorkshopEntry {
+    id: string;
+    kind: TaskWorkshopEntryKind;
+    content: string;
+    createdAt: number;
+    updatedAt: number;
+}
+
+export interface TaskWorkshopStep {
+    id: string;
+    content: string;
+    done: boolean;
+    source: 'manual' | 'character';
+    charId?: string;
+    createdAt: number;
+}
+
+/** 同一任务中每位角色最多保留一份来访便签；再次来访会替换自己的旧便签。 */
+export interface TaskWorkshopVisit {
+    charId: string;
+    summary: string;
+    suggestedSteps: string[];
+    nextAction: string;
+    createdAt: number;
+    updatedAt: number;
+    editedAt?: number;
+    sharedMessageId?: number;
+}
+
+export interface TaskWorkshopUnit {
+    id: string;
+    kind: 'unit';
+    title: string;
+    description: string;
+    status: TaskWorkshopUnitStatus;
+    tags: string[];
+    linkedToolIds: string[];
+    /** 稳定引用；提醒内容和排程状态只保存在 my_schedule。 */
+    linkedReminderIds?: string[];
+    entries: TaskWorkshopEntry[];
+    steps: TaskWorkshopStep[];
+    visits: TaskWorkshopVisit[];
+    createdAt: number;
+    updatedAt: number;
+}
+
+export interface TaskWorkshopTool {
+    id: string;
+    kind: 'tool';
+    name: string;
+    description: string;
+    tags: string[];
+    status: 'available' | 'limited' | 'unavailable';
+    /** 本地日期 YYYY-MM-DD；到日自动切换为可用。 */
+    availableFrom?: string;
+    /** 本地日期 YYYY-MM-DD；到日自动切换为不可用，但保留条目。 */
+    unavailableFrom?: string;
+    notes: string;
+    createdAt: number;
+    updatedAt: number;
+}
+
+export interface TaskWorkshopSettings {
+    id: 'settings';
+    kind: 'settings';
+    enabled: boolean;
+    visitorCharIds: string[];
+    intervalMinutes: number;
+    nextVisitorIndex: number;
+    lastVisitAt?: number;
+}
+
+export type TaskWorkshopRecord = TaskWorkshopSettings | TaskWorkshopUnit | TaskWorkshopTool;
+
+export type TimeCapsuleSource = 'user' | 'invited' | 'auto';
+
+export interface TimeCapsuleEntry {
+    id: string;
+    kind: 'capsule';
+    title: string;
+    content: string;
+    source: TimeCapsuleSource;
+    charId?: string;
+    charName?: string;
+    charAvatar?: string;
+    createdAt: number;
+    unlockAt: number;
+    openedAt?: number;
+}
+
+export interface TimeCapsuleSettings {
+    id: 'settings';
+    kind: 'settings';
+    enabled: boolean;
+    visitorCharIds: string[];
+    intervalMinutes: number;
+    nextVisitorIndex: number;
+    lastVisitAt?: number;
+}
+
+export type TimeCapsuleRecord = TimeCapsuleEntry | TimeCapsuleSettings;
+
+export type MyScheduleTag = 'study' | 'entertainment' | 'rest' | 'sleep';
+
+export interface MyScheduleEntry {
+    id: string;
+    kind: 'entry';
+    sourceText: string;
+    title: string;
+    /** 用户随笔原文；不经过 AI，不做改写。 */
+    note: string;
+    startAt: number;
+    endAt?: number;
+    estimatedTime?: boolean;
+    /** 时间用途标签；旧记录为空时保持未分类白色卡片。 */
+    tag?: MyScheduleTag;
+    recipientCharIds: string[];
+    messageIdsByCharId: Record<string, number>;
+    createdAt: number;
+    updatedAt: number;
+    /** 自动观察的稳定事实 ID；手工修改不解除与原始事实的关联。 */
+    activityId?: string;
+    /** Stable grouped episode; raw facts remain separately queryable. */
+    activityEpisodeId?: string;
+    rawObservationIds?: string[];
+    analysisStatus?: 'pending' | 'inferred' | 'confirmed';
+    analysisReason?: string;
+    analyzedObservationCount?: number;
+    lastAnalysisAt?: number;
+    observedThrough?: number;
+    observationOnly?: boolean;
+    legacyFragmentHidden?: boolean;
+    episodeDismissed?: boolean;
+    manualCorrection?: boolean;
+    evidence?: 'observed' | 'inferred' | 'confirmed';
+    confidence?: number;
+    collectedAt?: number;
+    source?: string;
+}
+
+export interface MyScheduleSettings {
+    id: 'settings';
+    kind: 'settings';
+    selectedCharIds: string[];
+    /** 以下 Veglia / 睡眠 / 生活提醒字段仅用于读取旧备份；公开版没有采集与写入路径。 */
+    vegliaServerId?: string;
+    vegliaLastStatus?: 'connected' | 'auth' | 'offline';
+    vegliaLastSuccessAt?: number;
+    sleepMcpServerId?: string;
+    sleepFallbackHour?: number;
+    sleepLastSuccessAt?: number;
+    sleepLastStatus?: 'connected' | 'empty' | 'unrecognized' | 'missing_tool' | 'auth' | 'offline';
+    sleepLastError?: string;
+    vegliaHttpUrl?: string;
+    vegliaProxyUrl?: string;
+    lifeReminderCharId?: string;
+    lifeRemindersEnabled?: boolean;
+    lifeReminderImportVersion?: number;
+}
+
+/** Normalized time boundaries only; no health metrics or raw MCP payload. */
+export interface MyScheduleSleepRecord {
+    id: string;
+    kind: 'sleep_record';
+    startAt: number;
+    endAt: number;
+    wakeAt?: number;
+    sourceAt?: number;
+    collectedAt: number;
+    serverId: string;
+    confidence: 'reported_main';
+}
+
+export interface MyScheduleDayAnchor {
+    id: string;
+    kind: 'life_day_anchor';
+    dateKey: string;
+    startAt: number;
+    timezone: string;
+    source: 'sleep_end' | 'reported_wake' | 'fallback' | 'manual';
+    sourceRecordId?: string;
+    createdAt: number;
+}
+
+/** 现实生活提醒与监督模板共用 my_schedule store；仅旧备份兼容，公开版没有写入路径。 */
+export interface LifeReminderRecord {
+    id: string;
+    kind: 'life_reminder';
+    sourceId: string;
+    sourceRef?: string;
+    title: string;
+    message: string;
+    status: 'active' | 'paused' | 'completed' | 'cancelled' | 'error';
+    schedule: { type: 'once' | 'daily' | 'weekly' | 'monthly_last_days' | 'conditional'; at?: number; time?: string; lastDays?: number[] };
+    timezone: string;
+    startAt?: number;
+    endAt?: number;
+    suppressUntil?: number;
+    externalManaged: boolean;
+    externalChannel?: string;
+    ownerCharId?: string;
+    taskUuid?: string;
+    pendingTaskUuid?: string;
+    clientTaskId?: string;
+    scheduledFor?: number;
+    scheduleError?: string;
+    scheduleState?: 'scheduled' | 'triggered' | 'failed' | 'uncertain';
+    /** 最近一次成功向云端核对该 UUID 的时间；不能视为设备收件证明。 */
+    lastRemoteCheckedAt?: number;
+    pendingAction?: 'cancel' | 'reschedule' | 'complete' | 'pause';
+    operationLog?: { at: number; action: string; result: string }[];
+    pausedBySettings?: boolean;
+    /** 条件文本仅供展示；只有 condition schema 中已支持的规则可在前台执行。 */
+    ruleText?: string;
+    condition?: {
+        kind: 'phone_entertainment' | 'desktop_entertainment' | 'wake_study';
+        enabled: boolean;
+        thresholdMinutes: number;
+        cooldownMinutes: number;
+        exemptUntil?: number;
+        exemption?: string;
+        lastEvaluatedAt?: number;
+        lastResult?: string;
+        lastSatisfiedAt?: number;
+        lastScheduledAt?: number;
+        lastTriggerId?: string;
+        pendingTriggerId?: string;
+        lastTaskUuid?: string;
+        lastDeliveryState?: string;
+    };
+    priority?: number;
+    createdAt: number;
+    updatedAt: number;
+    version: number;
+}
+
+/** 只读原始活动事实；不含凭据，所有普通角色共享同一份。 */
+export interface MyScheduleActivity {
+    id: string;
+    kind: 'activity';
+    deviceId: string;
+    deviceName?: string;
+    app?: string;
+    label?: string;
+    windowTitle?: string;
+    startAt: number;
+    collectedAt: number;
+    source: string;
+    state?: string;
+    confidence: number;
+    evidence: 'observed' | 'inferred' | 'confirmed';
+    raw: Record<string, unknown>;
+}
+
+export interface MyScheduleArchive {
+    id: string;
+    kind: 'archive';
+    /** 归档只保存条目引用；原条目与已同步聊天卡保持不变。 */
+    entryIds: string[];
+    startedAt: number;
+    endedAt: number;
+    archivedAt: number;
+}
+
+export type MyScheduleRecord = MyScheduleEntry | MyScheduleSettings | MyScheduleArchive | MyScheduleActivity | LifeReminderRecord | MyScheduleSleepRecord | MyScheduleDayAnchor;
 
 export interface Toast {
     id: string;
@@ -3359,10 +4253,30 @@ export interface StickerData {
     scale?: number; 
 }
 
+export interface DiaryObservationEvent {
+    id: string;
+    title?: string;
+    body: string;
+}
+
+export interface DiaryObservations {
+    physical?: {
+        sleep?: string;
+        diet?: string;
+        exercise?: string;
+        body?: string;
+    };
+    emotional?: string;
+    cognitive?: string;
+    volitional?: string;
+    events?: DiaryObservationEvent[];
+}
+
 export interface DiaryPage {
     text: string;
     paperStyle: string;
     stickers: StickerData[];
+    observations?: DiaryObservations;
 }
 
 export interface DiaryEntry {
@@ -3723,6 +4637,22 @@ export interface Anniversary {
     lastThoughtGeneratedAt?: number;
 }
 
+export type SocialActorKind = 'user' | 'character' | 'npc' | 'passerby';
+
+/**
+ * Spark 使用的公开身份。identityId 是内容皮肤，characterId 才是永久角色主键。
+ * 路人和临时 NPC 永远不携带 characterId，避免昵称相同就被误认成神经链接角色。
+ */
+export interface SocialActorRef {
+    kind: SocialActorKind;
+    identityId: string;
+    displayName: string;
+    avatar?: string;
+    handle?: string;
+    badge?: string;
+    characterId?: string;
+}
+
 export interface SocialComment {
     id: string;
     authorName: string;
@@ -3774,6 +4704,8 @@ export interface StudyChapter {
     content?: string; 
 }
 
+export type StudyCourseKind = 'course' | 'knowledge';
+
 export interface StudyCourse {
     id: string;
     title: string;
@@ -3784,12 +4716,41 @@ export interface StudyCourse {
     coverStyle: string; 
     totalProgress: number; 
     preference?: string; 
+    /** 历史数据没有 kind 时仍按普通 PDF 课程处理。 */
+    kind?: StudyCourseKind;
+    /** 知识节点的直接上位知识；仅 kind === 'knowledge' 使用。 */
+    knowledgeParentIds?: string[];
 }
 
 export interface StudyTutorPreset {
     id: string;
     name: string;
     prompt: string;
+}
+
+export interface CharacterStudyTurn {
+    id: string;
+    userText: string;
+    charResponse: string;
+    /** 角色作为初学者、仅依据用户讲述形成的本回合理解过程。 */
+    beginnerThinking?: string;
+    question?: string;
+    questionAllowed: boolean;
+    notePatch: string;
+    createdAt: number;
+}
+
+export interface CharacterStudySession {
+    id: string;
+    charId: string;
+    topic: string;
+    rationale: string;
+    opening: string;
+    notesMarkdown: string;
+    turns: CharacterStudyTurn[];
+    status: 'active' | 'completed';
+    createdAt: number;
+    updatedAt: number;
 }
 
 // --- QUIZ / PRACTICE BOOK TYPES ---
@@ -3883,6 +4844,153 @@ export interface GameSession {
     lastPlayedAt: number;
 }
 
+export interface HealingSession {
+    id: string;
+    charId: string;
+    createdAt: number;
+    updatedAt: number;
+    endedAt?: number;
+    /** 已成功完成记忆抽取的最后一条 HealingMessage.id。 */
+    memoryProcessedThrough?: number;
+}
+
+export interface HealingMessage {
+    id: number;
+    sessionId: string;
+    charId: string;
+    role: 'user' | 'assistant';
+    type: 'text' | 'image';
+    /** 图片保存 blobref 令牌；文字保存原文。 */
+    content: string;
+    timestamp: number;
+    metadata?: Record<string, unknown>;
+}
+
+export type HealingMemoryOrigin = 'chat' | 'import';
+
+export interface HealingMemoryDraft {
+    content: string;
+    tags?: string[];
+    importance?: number;
+    mood?: string;
+    sourceMessageIds?: number[];
+}
+
+export interface HealingMemoryNode {
+    id: string;
+    content: string;
+    tags: string[];
+    importance: number;
+    mood?: string;
+    createdAt: number;
+    updatedAt: number;
+    lastAccessedAt: number;
+    accessCount: number;
+    embedded: boolean;
+    sourceSessionId?: string;
+    sourceMessageIds?: number[];
+    /** 仅记录记忆最初由谁陪伴产生，不构成记忆所有权。 */
+    sourceCharId?: string;
+    origin: HealingMemoryOrigin;
+}
+
+export interface HealingMemoryVector {
+    memoryId: string;
+    vector: Float32Array | Uint8Array | number[];
+    dimensions: number;
+    model?: string;
+}
+
+export type OneChangeStatus = 'draft' | 'active' | 'frozen' | 'archived';
+export type OneChangeResult = 'done' | 'not_done';
+export type OneChangeRecordMode = 'formal' | 'frozen';
+
+export interface OneChangeItem {
+    id: string;
+    name: string;
+    standard: string;
+    description: string;
+    stabilityTargetDays: number;
+    status: OneChangeStatus;
+    sortOrder: number;
+    totalSuccessDays: number;
+    currentStreak: number;
+    everStable: boolean;
+    currentStable: boolean;
+    createdAt: number;
+    updatedAt: number;
+    activatedAt?: number;
+    archivedAt?: number;
+}
+
+export interface OneChangeRecord {
+    /** `${changeId}:${date}`，同时保证正式与冻结记录每天至多一条。 */
+    id: string;
+    changeId: string;
+    date: string;
+    result: OneChangeResult;
+    feeling: string;
+    standardVersionId: string;
+    recordMode: OneChangeRecordMode;
+    submittedAt: number;
+    feelingUpdatedAt: number;
+}
+
+export interface OneChangeStandardVersion {
+    id: string;
+    changeId: string;
+    standard: string;
+    /** 本地自然日；正式改变的新版本固定从下一自然日生效。 */
+    effectiveDate: string;
+    createdAt: number;
+}
+
+export type OneChangeStateEventType =
+    | 'activated'
+    | 'resumed'
+    | 'frozen'
+    | 'archived'
+    | 'contraction_pending'
+    | 'contraction_resolved'
+    | 'focus_started'
+    | 'focus_completed'
+    | 'expansion_credit_earned'
+    | 'expansion_credit_used';
+
+export interface OneChangeStateEvent {
+    id: string;
+    type: OneChangeStateEventType;
+    changeId?: string;
+    /** 状态决定实际生效所在的本地自然日，不回写为补记事实日。 */
+    effectiveDate: string;
+    effectiveAt: number;
+    sourceDate?: string;
+    participantIds?: string[];
+}
+
+export interface OneChangeFocusObservation {
+    changeId: string;
+    targetDays: number;
+    streak: number;
+    startedAt: number;
+    startedDate: string;
+}
+
+export interface OneChangePendingContraction {
+    sourceDate: string;
+    participantIds: string[];
+    triggeredAt: number;
+}
+
+export interface OneChangeSettings {
+    id: 'main';
+    defaultStabilityDays: number;
+    expansionCredit: 0 | 1;
+    focusObservation?: OneChangeFocusObservation;
+    pendingContraction?: OneChangePendingContraction;
+    updatedAt: number;
+}
+
 export type MessageType = 'secret_note' | 'text' | 'image' | 'emoji' | 'voice' | 'collaboration_file' | 'interaction' | 'transfer' | 'system' | 'social_card' | 'chat_forward' | 'xhs_card' | 'score_card' | 'music_card' | 'mcd_card' | 'luckin_card' | 'html_card' | 'news_card' | 'vr_card' | 'trpg_card' | 'novel_card' | 'world_card' | 'sim_card' | 'phone_card' | 'webpage_card' | 'theater_card' | 'room_card' | 'life_card' | 'group_topic_card';
 
 export interface Message {
@@ -3911,7 +5019,8 @@ export interface EmojiCategory {
 export interface Emoji {
     name: string;
     url: string;
-    categoryId?: string; 
+    categoryId?: string;
+    lastUsedAt?: number;
 }
 
 export interface FullBackupData {
@@ -3921,6 +5030,8 @@ export interface FullBackupData {
     version: number;
     theme?: OSTheme;
     apiConfig?: APIConfig;
+    /** 文本副 API 各功能独立配置；仅完整/纯文字备份携带。 */
+    featureApiSettings?: import('./utils/featureApi').FeatureApiSettings;
     /** 查手机 App 独立 API；null/缺省时跟随聊天默认。 */
     checkPhoneApi?: APIConfig | null;
     pushVapid?: { vapidPublicKey: string; vapidPrivateKey: string; vapidEmail?: string; updatedAt?: number; };
@@ -3957,8 +5068,18 @@ export interface FullBackupData {
     roomNotes?: RoomNote[];
     socialPosts?: SocialPost[]; 
     courses?: StudyCourse[]; 
+    characterStudySessions?: CharacterStudySession[]; // 自习室·角色学生：费曼讲述、私有笔记与提问记录
     games?: GameSession[];
-    worldbooks?: Worldbook[]; 
+    healingSessions?: HealingSession[];         // 聊愈：按进入次数独立保存的会话
+    healingMessages?: HealingMessage[];         // 聊愈：完整原始文字与图片引用
+    healingMemoryNodes?: HealingMemoryNode[];   // 聊愈：跨角色共享、仅本 App 可读的用户记忆
+    healingMemoryVectors?: HealingMemoryVector[]; // 聊愈：用户记忆向量（无 charId owner）
+    oneChangeChanges?: OneChangeItem[];
+    oneChangeRecords?: OneChangeRecord[];
+    oneChangeStandardVersions?: OneChangeStandardVersion[];
+    oneChangeStateEvents?: OneChangeStateEvent[];
+    oneChangeSettings?: OneChangeSettings[];
+    worldbooks?: Worldbook[];
     roomCustomAssets?: { id?: string; name: string; image: string; defaultScale: number; description?: string; visibility?: 'public' | 'character'; assignedCharIds?: string[] }[]; 
     
     novels?: NovelBook[];
@@ -3972,6 +5093,17 @@ export interface FullBackupData {
     vrPresets?: { key: string; name: string; prompt: string; blurb?: string }[]; // 剧院·用户自定义写作风格预设
     vrLetters?: VRLetter[];                    // 邮局信件（本地存档+队列）
     vrSettings?: any[];                        // 彼方设置（独立 API + 调用记录）
+    heartSyncRecords?: HeartSyncRecord[];      // 心心相印：心理测试与问卷；旧伴侣记录导入时丢弃
+    debateSessions?: DebateSession[];          // 辩论赛：召回、阵容、逐轮发言与私密结果
+    boardGameSessions?: BoardGameSession[];    // 桌游：独立规则会话；首个游戏为骗子酒馆
+    murderMysteryScripts?: import('./utils/murderMystery/script').MurderMysteryScript[];
+    murderMysterySessions?: import('./utils/murderMystery/session').MurderMysterySession[];
+    murderMysteryEvents?: import('./utils/murderMystery/session').MurderMysteryEvent[];
+    lifeReplayRecords?: LifeReplayRecord[];    // 人生重映：私密事件预设、逐轮演绎与结果
+    communityCommitteeSessions?: CommunityCommitteeSession[]; // 居委会：现实两难、逐轮倾诉、总结与写回进度
+    taskWorkshopRecords?: TaskWorkshopRecord[]; // 任务工坊：任务盒、工具箱、来访便签与前台轮转设置
+    timeCapsuleRecords?: TimeCapsuleRecord[];    // 时间胶囊：用户/角色胶囊与前台轮转设置
+    myScheduleRecords?: MyScheduleRecord[];      // 我的日程：用户现实时间轴与角色收件设置
     worlds?: WorldProfile[];                   // 家园·世界定义
     worldEpisodes?: WorldEpisode[];            // 家园·演绎历史
     vrPostOffice?: Record<string, string>;     // 邮局本机配置：身份 deviceId / 后端地址（存 localStorage）
@@ -3992,7 +5124,10 @@ export interface FullBackupData {
     mcdLocal?: Record<string, string>;         // 麦当劳：token + 启用状态（存 localStorage）
     home3DLocal?: Record<string, string>;    // 3D 家园显示偏好与拍照滤镜收藏
     mcpLocal?: Record<string, string>;         // 通用 MCP：用户自配的服务器列表（存 localStorage）
+    /** 表情包视觉理解全局开关（存 localStorage `sully-sticker-vision-v1`）。旧备份没有该字段，完全兼容。 */
+    stickerVisionLocal?: Record<string, string>;
     chatInputPreferences?: import('./utils/chatInputPreferences').ChatInputPreferences;
+    chatActionOrders?: import('./utils/chatActionOrder').ChatActionOrders;
     beautyPreferences?: import('./utils/beautyPreferencesBackup').BeautyPreferencesBackup;
     beautyAuthorLocal?: import('./utils/beautyAuthorBackup').BeautyAuthorBackup; // 仅个人完整备份，公开美化包不携带
     desktopSkinLocal?: Record<string, string>; // 桌面皮肤偏好：电子宠物/手游风的界面配色 + 看板 banner（存 localStorage；看板图令牌导出时解析为 data URL）
@@ -4067,6 +5202,8 @@ export interface FullBackupData {
 
     // Character daily schedule (角色日程表 — daily_schedule store)
     dailySchedules?: DailySchedule[];
+    /** 仅旧备份导入导出；公开版不再运行自主生活调度。 */
+    characterLifeStates?: import('./utils/characterLife/engine').LifeState[];
 
     // 手账（跨角色聚合留痕本 — handbook store）
     handbooks?: HandbookEntry[];
@@ -4095,6 +5232,7 @@ export interface FullBackupData {
     chatTranslateEnabledByChar?: Record<string, boolean>;
     chatTranslateExpandedByChar?: Record<string, boolean>;
     chatArchivePrompts?: any;
+    journalDefaultTemplate?: { mode?: 'builtin' | 'custom' | 'blank'; customText?: string };
     chatActiveArchivePromptId?: string;
     characterRefinePrompts?: any;
     characterActiveRefinePromptId?: string;

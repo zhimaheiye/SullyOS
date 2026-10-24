@@ -5,17 +5,17 @@
  * 文档: https://open.mcd.cn/mcp/doc
  * Token: https://open.mcd.cn/mcp 申请, 每个用户独立, 存 localStorage
  *
- * 浏览器无法直连 mcd.cn (CORS), 走中心配置的 Cloudflare Worker 透传 (默认
- * https://proxy.friedsully.com, 用户可在「设置 → 自定义网络代理」里改):
+ * 浏览器无法直连 mcd.cn (CORS), 走玩家在「设置 → 网络代理」填写的地址透传。
+ * 公开版本没有默认公共地址，没填就不会请求:
  *   POST  <worker>/mcp/mcd
  *   Authorization: Bearer <user_mcp_token>
  *   body: 标准 JSON-RPC 2.0 报文
  */
 
-import { getProxyWorkerUrl } from './proxyWorker';
+import { requireProxyWorkerUrl } from './proxyWorker';
 
-// 走中心配置的主代理 worker（用户可在设置里换成自部署实例）
-const mcpProxyUrl = (): string => `${getProxyWorkerUrl()}/mcp/mcd`;
+// 走玩家自己在「设置 → 网络代理」填写的地址。没填时不会请求。
+const mcpProxyUrl = (): string => `${requireProxyWorkerUrl()}/mcp/mcd`;
 const MCP_TOKEN_KEY = 'aetheros.mcd.mcpToken';
 const MCP_ENABLED_KEY = 'aetheros.mcd.mcpEnabled';
 

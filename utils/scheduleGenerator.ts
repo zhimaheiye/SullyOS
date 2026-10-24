@@ -1,8 +1,12 @@
 
 import { CharacterProfile, UserProfile, DailySchedule, ScheduleSlot, Message, Emoji } from '../types';
 import { ContextBuilder } from './context';
+import { resolveFeatureApi } from './featureApi';
+import { canRunTextTask } from './textTaskRoutes';
+import { completeTextTask } from './textTaskCompletion';
+import { isManualRelayEnabled, isManualRelayReady } from './manualModelRelay';
 import { DB } from './db';
-import { safeResponseJson, extractContent, extractJson } from './safeApi';
+import { extractContent, extractJson } from './safeApi';
 import { injectMemoryPalace } from './memoryPalace/pipeline';
 import { getDailyScheduleForChar } from './dailySchedule';
 import { getScheduleDateKey, getScheduleWallClock } from './scheduleTime';
@@ -11,6 +15,7 @@ import { ChatPrompts } from './chatPrompts';
 import { cleanApiMessages, flattenImageContentParts } from './promptMessageCleanup';
 import { getFlowNarrativeKey, isScheduleFeatureOn } from './scheduleFeature';
 import {buildHomeSchedulePrompt, hasHomeSchedulePositions, parseHomePosition} from './homeSchedule';
+import { fixedSchedulePlaceForSlot, isSchedulePlaceSafetyCurrent, prepareSchedulePlaces, verifiedSchedulePlace } from './scheduleRealPlaces';
 
 export { getFlowNarrativeKey, isScheduleFeatureOn } from './scheduleFeature';
 
@@ -228,11 +233,15 @@ export async function generateDailyScheduleForChar(
     char: CharacterProfile,
     userProfile: UserProfile,
     apiConfig: ApiConfig,
-    forceRegenerate: boolean = false
+    forceRegenerate: boolean = false,
+    onPlaceFallback?: (message: string) => void,
+    relayPriority: 'user' | 'background' = 'user',
 ): Promise<DailySchedule | null> {
 
     // 总开关关闭时直接短路，避免副 API / 兜底调用
     if (!isScheduleFeatureOn(char)) return null;
+    // Automatic chat-load work must neither claim a manual action nor fall through to a paid request.
+    if (relayPriority === 'background' && isManualRelayEnabled()) return null;
 
     const baseNow = new Date();
     const now = getScheduleWallClock(char, baseNow);
@@ -279,48 +288,56 @@ export async function generateDailyScheduleForChar(
 
     const style = char.scheduleStyle || 'lifestyle';
     const homePrompt = buildHomeSchedulePrompt(char);
-    const prompt = (style === 'mindful'
+    let prompt = (style === 'mindful'
         ? buildMindfulPrompt('', char, userProfile, today, dayOfWeek, chatHistoryBlock)
         : buildLifestylePrompt('', char, userProfile, today, dayOfWeek, chatHistoryBlock)) + homePrompt;
+    const plainPrompt = prompt;
 
     try {
-        const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
-            body: JSON.stringify({
-                model: apiConfig.model,
-                messages: (await ContextBuilder.buildCharacterRequest(characterContextInput, [{ role: 'user', content: prompt }])),
-                temperature: 0.85,
-                max_tokens: 8000
-            }),
-            // API 调用记录标签（全局 fetch 拦截器读取）；不传会兜底成「用户当时打开的 App」，
-            // 后台任务被标成 Message/群聊 之类，用户看记录一头雾水。
-            __sullyMeta: { appName: '日程系统', charId: char.id, charName: char.name, purpose: '生成当日日程' },
-        } as RequestInit);
-
-        if (!response.ok) {
-            console.error('[Schedule] API error:', response.status);
-            return null;
+        const featureApi = resolveFeatureApi('characterSchedule', { mainApi: apiConfig }).api;
+        if (!isManualRelayReady() && !canRunTextTask('characterSchedule', featureApi)) return null;
+        const placeLookup = await prepareSchedulePlaces(char);
+        if (placeLookup.warning) onPlaceFallback?.(placeLookup.warning);
+        if (placeLookup.candidates.length) {
+            const candidates = placeLookup.candidates.map(({ id, name, city, district, category }) => ({ id, name, city, district, category }));
+            const anchors = char.realPlaceSchedule?.anchors;
+            const safeSchool = anchors?.school && placeLookup.candidates.find(place => place.id === anchors.school?.id && place.name === anchors.school?.name);
+            const safeWork = anchors?.work && placeLookup.candidates.find(place => place.id === anchors.work?.id && place.name === anchors.work?.name);
+            prompt += `\n### 可选真实地点（仅日程候选，不代表角色去过或在那里就读／任职）\n${JSON.stringify(candidates)}\n`;
+            prompt += `若某时段适合使用列表里的地点，可在该 slot 写 poiId 为对应 id，location 必须逐字写对应 name；不合适就不写 poiId，保留普通地点。学校、单位以角色已有人设和世界书事实为先，不可拿随机结果覆盖明确设定。${safeSchool ? `已由用户固定的学校：${safeSchool.name}（${safeSchool.id}）。` : ''}${safeWork ? `已由用户固定的工作点：${safeWork.name}（${safeWork.id}）。` : ''}同一固定地点应跨日沿用。餐饮、购物、公园只在符合活动和出行的时段自然使用，不要每段打卡。家园房间时不要选 POI。不要编造地点 ID、实际到访、营业状态、学籍或预约。`;
         }
-
-        const data = await safeResponseJson(response);
+        let messages = await ContextBuilder.buildCharacterRequest(characterContextInput, [{ role: 'user', content: prompt }]);
+        if (placeLookup.safetySnapshot && !isSchedulePlaceSafetyCurrent(placeLookup.safetySnapshot)) {
+            placeLookup.candidates = [];
+            onPlaceFallback?.('隐藏地点设置已变化，本次按普通日程生成');
+            messages = await ContextBuilder.buildCharacterRequest(characterContextInput, [{ role: 'user', content: plainPrompt }]);
+        }
+        // The mode may have been enabled while context / place lookup was in flight.
+        if (relayPriority === 'background' && isManualRelayEnabled()) return null;
+        const data = await completeTextTask({ id: 'characterSchedule', api: featureApi,
+            messages,
+            body: { temperature: 0.85, max_tokens: 8000 },
+            meta: { appName: '日程系统', charId: char.id, charName: char.name, purpose: '生成当日日程', relayPriority } });
         // 与主链路对齐：extractContent 会剥掉思维链模型(<think>...)并回落 reasoning_content，
         // extractJson 负责去围栏 / 从 prose 里抽 {...} / 修截断 + 尾逗号等多重兜底。
         // 之前这里手搓 JSON.parse，碰到推理模型的 <think> 前缀会在 "line 1 column 1" 直接炸。
         const content = extractContent(data);
         const parsed = extractJson(content);
         if (!parsed) {
-            console.error('[Schedule] Generation failed: 无法从模型输出解析出JSON:', content.slice(0, 200));
+            console.error('[Schedule] Generation failed: 无法从模型输出解析出JSON');
             return null;
         }
         const slots: ScheduleSlot[] = (parsed.slots || []).map((s: any) => {
             const homePosition = parseHomePosition(s.homePosition, char);
+            const realPlace = verifiedSchedulePlace(s.poiId, s.location, s.activity, s.description, homePosition, placeLookup.candidates)
+                || fixedSchedulePlaceForSlot(char, s.activity, s.location, homePosition, placeLookup.candidates);
             return {
             startTime: s.startTime || '00:00',
             activity: s.activity || '',
             description: s.description,
             emoji: s.emoji,
-            location: homePosition?.kind === 'home' ? char.home3D?.rooms.find(room => room.id === homePosition.roomId)?.name : typeof s.location === 'string' ? s.location : homePosition?.kind === 'away' ? '外出' : undefined,
+            location: homePosition?.kind === 'home' ? char.home3D?.rooms.find(room => room.id === homePosition.roomId)?.name : realPlace?.name || (typeof s.location === 'string' ? s.location : homePosition?.kind === 'away' ? '外出' : undefined),
+            ...(realPlace ? { realPlace } : {}),
             homePosition,
             innerThought: s.innerThought,
         };}).filter((s: ScheduleSlot) => s.activity);
@@ -357,6 +374,7 @@ export async function generateDailyScheduleForChar(
         await DB.saveDailySchedule(schedule);
         return schedule;
     } catch (e) {
+        if (e instanceof Error && e.name === 'AbortError') return null;
         console.error('[Schedule] Generation failed:', e);
         return null;
     }
@@ -430,24 +448,11 @@ ${chatSummary}
 直接输出独白文本，不要JSON，不要任何包裹。`;
 
     try {
-        const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
-            body: JSON.stringify({
-                model: apiConfig.model,
-                messages: [{ role: 'user', content: prompt }],
-                temperature: 0.85,
-                max_tokens: 500
-            }),
-            __sullyMeta: { appName: '日程系统', charId: char.id, charName: char.name, purpose: '进化意识流' },
-        } as RequestInit);
-
-        if (!response.ok) {
-            console.error('[Schedule/Evolve] API error:', response.status);
-            return null;
-        }
-
-        const data = await safeResponseJson(response);
+        const featureApi = resolveFeatureApi('characterSchedule', { mainApi: apiConfig }).api;
+        if (!canRunTextTask('characterSchedule', featureApi)) return null;
+        const data = await completeTextTask({ id: 'characterSchedule', api: featureApi,
+            messages: [{ role: 'user', content: prompt }], body: { temperature: 0.85, max_tokens: 500 },
+            meta: { appName: '日程系统', charId: char.id, charName: char.name, purpose: '进化意识流' } });
         // extractContent 已剥思维链 + 回落 reasoning_content + trim；这里只再去掉外层引号包裹
         let content = extractContent(data).replace(/^["']|["']$/g, '').trim();
 

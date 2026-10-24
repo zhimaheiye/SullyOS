@@ -112,6 +112,27 @@ describe('CompanionHome touch request boundaries', () => {
     expect(source).toContain('data-testid="companion-hud-schedule"');
   });
 
+  it('opens every character schedule slot through the shared theater and chat-card flow', () => {
+    const homeSource = readFileSync(path.resolve(__dirname, '../components/os/CompanionHome.tsx'), 'utf8');
+    const launcherSource = readFileSync(path.resolve(__dirname, '../apps/Launcher.tsx'), 'utf8');
+    const viewerSource = readFileSync(path.resolve(__dirname, '../components/schedule/ScheduleHomeWidget.tsx'), 'utf8');
+    const cardSource = readFileSync(path.resolve(__dirname, '../components/schedule/ScheduleCard.tsx'), 'utf8');
+
+    expect(viewerSource).toContain('onPlayTheater={onPlayTheater}');
+    expect(cardSource).toContain('data-testid={`schedule-theater-${idx}`}');
+    expect(cardSource).toContain('data-testid={`schedule-slot-${idx}`}');
+    expect(cardSource).toContain('onPlayTheater(idx)');
+    expect(homeSource).toContain('generateSlotTheater(character, userProfile, schedule, index, apiConfig, forceRegenerate)');
+    expect(homeSource).toContain('persistScheduleTheaterCard(activeSchedule, theaterSlotIdx, exposed)');
+    expect(homeSource).toContain("hudContent.schedule?.charId === character.id");
+    expect(homeSource).toContain('<TheaterPlayer');
+    expect(homeSource).toContain('openApp(AppID.Chat)');
+    expect(launcherSource).toContain('onPlayTheater={(index) => void openScheduleTheater(index)}');
+    expect(launcherSource).toContain('generateSlotTheater(scheduleChar, userProfile, schedule, index, apiConfig, forceRegenerate)');
+    expect(launcherSource).toContain('persistScheduleTheaterCard(activeSchedule, theaterSlotIdx, exposed)');
+    expect(launcherSource).toContain('<TheaterPlayer');
+  });
+
   it('keeps one stage layout and offers six frame languages in the right composition inspector', () => {
     const source = readFileSync(path.resolve(__dirname, '../components/os/CompanionHome.tsx'), 'utf8');
     const appearanceSource = readFileSync(path.resolve(__dirname, '../apps/Appearance.tsx'), 'utf8');
@@ -407,6 +428,7 @@ describe('CompanionHome touch request boundaries', () => {
     expect(source).not.toContain('data-testid="companion-generate-startup"');
     expect(source).toContain('中文原文（界面显示）');
     expect(source).toContain('语音译文（实际朗读）');
+    expect(source).toContain("label: '开场演出'");
     expect(source).toContain("label: '开场预演'");
     expect(source).toContain('onModelReady={handleStageModelReady}');
     expect(source).toContain('COMPANION_BOOT_LOCK_PERFORMANCE');

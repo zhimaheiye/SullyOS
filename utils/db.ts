@@ -1,3 +1,10 @@
+import type { MurderMysteryScript } from './murderMystery/script';
+import type { MurderMysterySession, MurderMysteryEvent } from './murderMystery/session';
+import { normalizeMurderMysterySession } from './murderMystery/session';
+import { buildMysteryRealitySummary } from './murderMystery/report';
+import { getLocalDateKey } from './localDate';
+import { planMurderMysteryCommand, type MurderMysteryCommand } from './murderMystery/rules';
+import type { LifeState } from './characterLife/engine';
 import { readLocalCursor } from './localRead';
 import { reportDatabaseFailure } from './databaseHealth';
 import { associateDatabaseOpen, beginDatabaseOpen, recordDatabaseOpen } from './databaseOpenDiagnostics';
@@ -16,24 +23,33 @@ import { orderWorldEpisodes } from './worldHome/episodeOrder';
 
 import {
     CharacterProfile, ChatTheme, Message, UserProfile,
+    MountedWorldbook,
     Task, Anniversary, DiaryEntry, RoomTodo, RoomNote, DailySchedule,
     GalleryImage, FullBackupData, GroupProfile, SocialPost, StudyCourse, GameSession, Worldbook, NovelBook, Emoji, EmojiCategory,
     BankTransaction, SavingsGoal, BankFullState, DollhouseState, XhsStockImage, XhsActivityRecord, XhsOwnedPost, SongSheet, QuizSession, GuidebookSession,
     LifeSimState, HandbookEntry, Tracker, TrackerEntry, HotNewsSnapshot,
     LifeRecord, MedPlan, LifeRecordSettings, CharacterGroup,
     VRWorldNovel, VRLibraryCategory, VRNovelAnnotation, CustomCreatorPart, VRMusicRoomState, VRGuestbookState, VRScript, VRStagedPlay, VRLetter,
-    WorldProfile, WorldEpisode, StoryTheaterEntry, StoryTheaterPreset, StoryTheaterMask
+    WorldProfile, WorldEpisode, StoryTheaterEntry, StoryTheaterPreset, StoryTheaterMask,
+    HeartSyncRecord, HeartSyncPsychQuestion, HeartSyncPsychSession, HeartSyncQuestionnaire, HeartSyncQuestionnaireSession,
+    DebateSession, BoardGameSession, CharacterStudySession, LifeReplayRecord, CommunityCommitteeSession, TaskWorkshopRecord, TaskWorkshopSettings,
+    TimeCapsuleRecord, TimeCapsuleSettings, MyScheduleRecord, MyScheduleSettings, MyScheduleEntry, MyScheduleArchive,
+    HealingSession, HealingMessage, HealingMemoryNode, HealingMemoryVector,
+    OneChangeItem, OneChangeRecord, OneChangeStandardVersion, OneChangeStateEvent, OneChangeSettings,
 } from '../types';
-import { exportPostOfficeLocal, importPostOfficeLocal } from './vrWorld/postOffice';
+import { exportPostOfficeLocal, forgetPublicPostOfficeBase, importPostOfficeLocal } from './vrWorld/postOffice';
 import { exportSignalLocal, importSignalLocal } from './vrWorld/signal';
 import { exportLuckinLocal, importLuckinLocal } from './luckinMcpClient';
 import { exportMcdLocal, importMcdLocal } from './mcdMcpClient';
 import { exportMcpLocal, importMcpLocal } from './mcpClient';
+import { exportStickerVisionLocal, importStickerVisionLocal } from './stickerVision';
 import { exportHome3DLocal, importHome3DLocal, HOME3D_LOCAL_KEYS } from './home3DBackup';
 import { exportAmsg2GlobalConfig, importAmsg2GlobalConfig } from './activeMsgStore';
 import { exportWorldHomeLocal, importWorldHomeLocal } from './worldHome/localBackup';
 import { exportDesktopSkinLocal, importDesktopSkinLocal } from './desktopSkinBackup';
+import { loadChatActionOrders, saveChatActionOrders } from './chatActionOrder';
 import { editLibrary, VR_LIBRARY_RECORD, type LibraryEdit } from './vrWorld/library';
+import type { HtmlRepairPlan } from './htmlFormatRepair';
 
 const DB_NAME = 'AetherOS_Data';
 // v67：两条并行线各自用掉了 v65/v66（A线: blob_assets + 生活记录；B线: room_plates 门牌 + digest_reports 消化日志），
@@ -41,11 +57,29 @@ const DB_NAME = 'AetherOS_Data';
 // v68：character_groups 角色分组（神经链接"文件夹"，见 types.ts CharacterGroup）。
 // v69：见面·剧情条目与糯米机原生预设。正文继续复用 messages 表，避免再造会话存储。
 // v70：剧场面具箱（原创人物面具）；角色面具仍只存 characterId，不复制神经链接资料。
-// v71：角色小红书伪主页；发帖归属与可删除的自由活动日志分离。
-// v72: home projection reads only home-source rows, never scans private-chat history.
-// v73: direct home-turn lookups for incremental journal writes.
-// v74: merge master delivery lookup with both home indexes, including existing v73 databases.
-const DB_VERSION = 74;
+// 上游与本地各占过 v71—v74：上游那几次只加只读游标 helper（readLocalCursor）与 messages 索引，
+// 没有新增 object store；本地线从 v71 起排的是自己的一串私密表，编号互不相通。
+// v71：心心相印私密测试记录与题库设置。
+// v72：辩论赛私密赛程、观点召回与结果记录。
+// v73：角色自习室私密课堂、Markdown 笔记与逐轮提问记录。
+// v74：人生重映私密事件预设、角色同行演绎与可续玩会话。
+// v75：任务工坊任务盒、工具箱、有限角色来访便签与前台轮转设置。
+// v78：时间胶囊本机胶囊、开启状态与前台角色来访设置。
+// v80：我的日程现实时间轴与角色收件设置。
+// v81：居委会现实两难、逐轮倾诉、议事总结与写回进度。
+// v82：小红书公开笔记、收藏索引与本机私密讨论。
+// v83：角色小红书伪主页；发帖归属与可删除的自由活动日志分离。
+// v86：聊愈独立会话、完整原文与仅聊愈可读的用户中心向量记忆。
+// v87：桌游独立会话；TRPG 的 games store 保持不变。
+// v88：「只做一个改变」独立改变、日记录、标准版本、状态事件与系统设置。
+// v90：曾建 online_prompt_presets（线上聊天输出风格预设）。该软件已删除。
+// 表仍创建，避免旧库缺表时 transaction() 抛 NotFoundError；打开时清空，不再导出或恢复。
+// v91：当时为补建碰撞旧库升过一版。不要为了删这张表再升 DB_VERSION。
+// v95：上游 3D 家园在 messages 上加 charId_source / charId_homeTurn 两条索引，家园投影与增量日记
+// 按 source、homeTurnId 直查，不再扫整段私聊。建索引本身是幂等的 contains 判断，但老库停在 v94
+// 时不会触发 upgrade，必须占一个版本号才真正建得出来。
+// v96: 每角色实际生活状态与自动回复 episode；习惯仍保存在角色资料。
+export const DB_VERSION = 98;
 
 const STORE_CHARACTERS = 'characters';
 const STORE_CHAR_GROUPS = 'character_groups'; // 角色分组定义（角色通过 groupId 指向；与群聊 groups 无关）
@@ -67,8 +101,10 @@ const STORE_GROUPS = 'groups';
 const STORE_JOURNAL_STICKERS = 'journal_stickers';
 const STORE_SOCIAL_POSTS = 'social_posts';
 const STORE_COURSES = 'courses';
+const STORE_CHARACTER_STUDY = 'character_study_sessions';
 const STORE_GAMES = 'games';
-const STORE_WORLDBOOKS = 'worldbooks'; 
+const STORE_WORLDBOOKS = 'worldbooks';
+const STORE_ONLINE_PROMPT_PRESETS = 'online_prompt_presets'; // v90：表保留并在打开时清空
 const STORE_NOVELS = 'novels'; 
 const STORE_BANK_TX = 'bank_transactions';
 const STORE_BANK_DATA = 'bank_data';
@@ -80,6 +116,7 @@ const STORE_QUIZZES = 'quizzes';
 const STORE_GUIDEBOOK = 'guidebook';
 const STORE_LIFE_SIM = 'life_sim';
 const STORE_DAILY_SCHEDULE = 'daily_schedule';
+const STORE_CHARACTER_LIFE = 'character_life';
 const STORE_HANDBOOK = 'handbook'; // 跨角色聚合手账，每天一条 entry，id = 'YYYY-MM-DD'
 const STORE_TRACKERS = 'trackers';                // 手账打卡 tracker 定义
 const STORE_TRACKER_ENTRIES = 'tracker_entries';  // tracker 每日打卡数据
@@ -103,6 +140,27 @@ const STORE_LIFE_SETTINGS = 'life_record_settings'; // 生活记录设置单例�
 const STORE_STORY_THEATERS = 'story_theaters';       // 见面·剧情条目（消息用 story-theater:${id}）
 const STORE_STORY_THEATER_PRESETS = 'story_theater_presets'; // 糯米机原生剧情预设
 const STORE_STORY_THEATER_MASKS = 'story_theater_masks'; // 剧场原创人物面具
+const STORE_HEART_SYNC = 'heart_sync';                   // 心心相印：心理测试与问卷；旧伴侣 settings/session 会清除且不再导出
+const STORE_DEBATE = 'debate_sessions';                  // 辩论赛：召回、阵容、发言与裁判结果
+const STORE_MURDER_MYSTERY_SCRIPTS = 'murder_mystery_scripts';
+const STORE_MURDER_MYSTERY_SESSIONS = 'murder_mystery_sessions';
+const STORE_MURDER_MYSTERY_EVENTS = 'murder_mystery_events';
+const STORE_BOARD_GAME_SESSIONS = 'board_game_sessions'; // 桌游：共享 session 外壳与各游戏独立状态
+const STORE_LIFE_REPLAY = 'life_replay';                 // 人生重映：私密事件预设 + 演绎 session
+const STORE_COMMUNITY_COMMITTEE = 'community_committee'; // 居委会：现实两难、倾诉 turns 与总结
+const STORE_TASK_WORKSHOP = 'task_workshop';             // 任务工坊：任务/工具/来访便签/设置
+const STORE_TIME_CAPSULE = 'time_capsule';               // 时间胶囊：用户/角色胶囊与前台来访设置
+const STORE_MY_SCHEDULE = 'my_schedule';                   // 我的日程：用户现实时间轴与角色收件设置
+const STORE_XIAOHONGSHU = 'xiaohongshu_library';            // 已停用的自建小红书库；保留空表，启动时清空且不再导出
+const STORE_HEALING_SESSIONS = 'healing_sessions';           // 聊愈：一次进入对应一段独立会话
+const STORE_HEALING_MESSAGES = 'healing_messages';           // 聊愈：完整原始文字/图片消息
+const STORE_HEALING_MEMORY_NODES = 'healing_memory_nodes';   // 聊愈：跨角色共享的用户中心记忆
+const STORE_HEALING_MEMORY_VECTORS = 'healing_memory_vectors'; // 聊愈：无 charId owner 的记忆向量
+const STORE_ONE_CHANGE_CHANGES = 'one_change_changes';
+const STORE_ONE_CHANGE_RECORDS = 'one_change_records';
+const STORE_ONE_CHANGE_STANDARD_VERSIONS = 'one_change_standard_versions';
+const STORE_ONE_CHANGE_STATE_EVENTS = 'one_change_state_events';
+const STORE_ONE_CHANGE_SETTINGS = 'one_change_settings';
 
 // API 调用记录：保留近 5 天，超期丢弃；再加一个硬上限防止异常情况撑爆
 const API_CALL_LOG_MAX_AGE_MS = 5 * 24 * 60 * 60 * 1000;
@@ -136,6 +194,65 @@ const SULLY_PRESET_EMOJIS = [
 // 改成复用同一条连接, 并在连接被外部失效 (另一 tab 升级版本 / 浏览器强制关闭) 时
 // 清掉缓存, 下次 openDB 自动重开 —— 一处改, 全部 ~165 个调用点受益。
 let dbPromise: Promise<IDBDatabase> | null = null;
+const REMOVED_XHS_CREDENTIAL_KEY = 'os_xiaohongshu_protected_bridge_v1';
+const REMOVED_ONLINE_PROMPT_ACTIVE_KEY = 'online_prompt_active_v1';
+let removedPrivateDataSweep: Promise<void> | null = null;
+
+function isRetiredHeartSyncRecord(record: { kind?: string } | null | undefined): boolean {
+    return record?.kind === 'settings' || record?.kind === 'session';
+}
+
+function clearStoreIfPresent(db: IDBDatabase, name: string): Promise<void> {
+    if (!db.objectStoreNames.contains(name)) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(name, 'readwrite');
+        tx.objectStore(name).clear();
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error);
+    });
+}
+
+function deleteRetiredHeartSyncRecords(db: IDBDatabase): Promise<void> {
+    if (!db.objectStoreNames.contains(STORE_HEART_SYNC)) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_HEART_SYNC, 'readwrite');
+        const request = tx.objectStore(STORE_HEART_SYNC).openCursor();
+        request.onsuccess = () => {
+            const cursor = request.result;
+            if (!cursor) return;
+            if (isRetiredHeartSyncRecord(cursor.value)) cursor.delete();
+            cursor.continue();
+        };
+        request.onerror = () => reject(request.error || tx.error);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error);
+    });
+}
+
+async function sweepRemovedPrivateData(db: IDBDatabase): Promise<void> {
+    try {
+        if (typeof localStorage !== 'undefined') {
+            localStorage.removeItem(REMOVED_XHS_CREDENTIAL_KEY);
+            localStorage.removeItem(REMOVED_ONLINE_PROMPT_ACTIVE_KEY);
+            forgetPublicPostOfficeBase();
+        }
+    } catch { /* 私密模式或无本地存储时忽略 */ }
+    await clearStoreIfPresent(db, STORE_XIAOHONGSHU);
+    await clearStoreIfPresent(db, STORE_ONLINE_PROMPT_PRESETS);
+    await deleteRetiredHeartSyncRecords(db);
+}
+
+async function finishDatabaseOpen(db: IDBDatabase): Promise<void> {
+    if (!removedPrivateDataSweep) {
+        removedPrivateDataSweep = sweepRemovedPrivateData(db).catch((error) => {
+            removedPrivateDataSweep = null;
+            console.warn('[DB] 清理已删除功能的本机数据失败', error);
+        });
+    }
+    await removedPrivateDataSweep;
+}
 
 /** 和新消息同事务失效镜像，防止后台把刚清掉的旧水位重新恢复。 */
 function clearStaleMemoryMirror(transaction: IDBTransaction, charId: string, newId: number): void {
@@ -201,7 +318,10 @@ export const openDB = (): Promise<IDBDatabase> => {
                     recordDatabaseOpen('connection-closed', { ...openVersions, actualVersion: db.version });
                     if (dbPromise === promise) dbPromise = null;
                 };
-                resolve(db);
+                void finishDatabaseOpen(db).finally(() => {
+                    if (settled) { try { db.close(); } catch { /* ignore */ } return; }
+                    resolve(db);
+                });
             };
             fb.onerror = () => {
                 if (settled) return;
@@ -254,7 +374,10 @@ export const openDB = (): Promise<IDBDatabase> => {
             recordDatabaseOpen('connection-closed', { ...openVersions, actualVersion: db.version });
             if (dbPromise === promise) dbPromise = null;
         };
-        resolve(db);
+        void finishDatabaseOpen(db).finally(() => {
+            if (settled) { try { db.close(); } catch { /* ignore */ } return; }
+            resolve(db);
+        });
     };
 
     request.onblocked = () => {
@@ -285,6 +408,7 @@ export const openDB = (): Promise<IDBDatabase> => {
       };
 
       createStore(STORE_CHARACTERS, { keyPath: 'id' });
+      createStore(STORE_CHARACTER_LIFE, { keyPath: 'charId' });
       createStore(STORE_CHAR_GROUPS, { keyPath: 'id' }); // v68: 角色分组
 
       if (!db.objectStoreNames.contains(STORE_MESSAGES)) {
@@ -363,8 +487,10 @@ export const openDB = (): Promise<IDBDatabase> => {
       createStore(STORE_JOURNAL_STICKERS, { keyPath: 'name' });
       createStore(STORE_SOCIAL_POSTS, { keyPath: 'id' });
       createStore(STORE_COURSES, { keyPath: 'id' });
+      createStore(STORE_CHARACTER_STUDY, { keyPath: 'id' });
       createStore(STORE_GAMES, { keyPath: 'id' }); 
-      createStore(STORE_WORLDBOOKS, { keyPath: 'id' }); 
+      createStore(STORE_WORLDBOOKS, { keyPath: 'id' });
+      createStore(STORE_ONLINE_PROMPT_PRESETS, { keyPath: 'id' }); // v90 新增；v91 为碰撞旧库补建
       createStore(STORE_NOVELS, { keyPath: 'id' });
 
       createStore(STORE_VR_NOVELS, { keyPath: 'id' });
@@ -386,6 +512,56 @@ export const openDB = (): Promise<IDBDatabase> => {
           ltStore.createIndex('box', 'box', { unique: false });
       }
       createStore(STORE_VR_SETTINGS, { keyPath: 'id' });
+      createStore(STORE_HEART_SYNC, { keyPath: 'id' });
+      createStore(STORE_DEBATE, { keyPath: 'id' });
+      createStore(STORE_BOARD_GAME_SESSIONS, { keyPath: 'id' });
+      createStore(STORE_MURDER_MYSTERY_SCRIPTS, { keyPath: 'id' });
+      createStore(STORE_MURDER_MYSTERY_SESSIONS, { keyPath: 'id' });
+      createStore(STORE_MURDER_MYSTERY_EVENTS, { keyPath: 'id' });
+      const mysteryEvents = upgradeTransaction.objectStore(STORE_MURDER_MYSTERY_EVENTS);
+      if (!mysteryEvents.indexNames.contains('sessionId')) mysteryEvents.createIndex('sessionId', 'sessionId', { unique: false });
+
+      createStore(STORE_LIFE_REPLAY, { keyPath: 'id' });
+      createStore(STORE_COMMUNITY_COMMITTEE, { keyPath: 'id' });
+      createStore(STORE_TASK_WORKSHOP, { keyPath: 'id' });
+      createStore(STORE_TIME_CAPSULE, { keyPath: 'id' });
+      createStore(STORE_MY_SCHEDULE, { keyPath: 'id' });
+      createStore(STORE_XIAOHONGSHU, { keyPath: 'id' });
+      if (!db.objectStoreNames.contains(STORE_HEALING_SESSIONS)) {
+          const store = db.createObjectStore(STORE_HEALING_SESSIONS, { keyPath: 'id' });
+          store.createIndex('charId', 'charId', { unique: false });
+          store.createIndex('createdAt', 'createdAt', { unique: false });
+      }
+      if (!db.objectStoreNames.contains(STORE_HEALING_MESSAGES)) {
+          const store = db.createObjectStore(STORE_HEALING_MESSAGES, { keyPath: 'id', autoIncrement: true });
+          store.createIndex('sessionId', 'sessionId', { unique: false });
+          store.createIndex('timestamp', 'timestamp', { unique: false });
+      }
+      if (!db.objectStoreNames.contains(STORE_HEALING_MEMORY_NODES)) {
+          const store = db.createObjectStore(STORE_HEALING_MEMORY_NODES, { keyPath: 'id' });
+          store.createIndex('createdAt', 'createdAt', { unique: false });
+          store.createIndex('sourceSessionId', 'sourceSessionId', { unique: false });
+      }
+      if (!db.objectStoreNames.contains(STORE_HEALING_MEMORY_VECTORS)) {
+          const store = db.createObjectStore(STORE_HEALING_MEMORY_VECTORS, { keyPath: 'memoryId' });
+          store.createIndex('memoryId', 'memoryId', { unique: true });
+      }
+      createStore(STORE_ONE_CHANGE_CHANGES, { keyPath: 'id' });
+      if (!db.objectStoreNames.contains(STORE_ONE_CHANGE_RECORDS)) {
+          const store = db.createObjectStore(STORE_ONE_CHANGE_RECORDS, { keyPath: 'id' });
+          store.createIndex('changeId', 'changeId', { unique: false });
+          store.createIndex('date', 'date', { unique: false });
+      }
+      if (!db.objectStoreNames.contains(STORE_ONE_CHANGE_STANDARD_VERSIONS)) {
+          const store = db.createObjectStore(STORE_ONE_CHANGE_STANDARD_VERSIONS, { keyPath: 'id' });
+          store.createIndex('changeId', 'changeId', { unique: false });
+      }
+      if (!db.objectStoreNames.contains(STORE_ONE_CHANGE_STATE_EVENTS)) {
+          const store = db.createObjectStore(STORE_ONE_CHANGE_STATE_EVENTS, { keyPath: 'id' });
+          store.createIndex('changeId', 'changeId', { unique: false });
+          store.createIndex('effectiveDate', 'effectiveDate', { unique: false });
+      }
+      createStore(STORE_ONE_CHANGE_SETTINGS, { keyPath: 'id' });
       createStore(STORE_API_CALL_LOG, { keyPath: 'id' });
 
       // v63: 家园（同世界观多角色大世界）
@@ -580,6 +756,17 @@ const normalizeWorldRelationships = (world: WorldProfile): WorldProfile => {
     return { ...world, relationships: out };
 };
 
+const idbRequest = <T,>(request: IDBRequest<T>): Promise<T> => new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+});
+
+const idbTransaction = (transaction: IDBTransaction): Promise<void> => new Promise((resolve, reject) => {
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error || new Error('IndexedDB transaction aborted'));
+});
+
 export const DB = {
   deleteDB: async (): Promise<void> => {
       // 删库前先关掉单例连接, 否则这条还开着的连接会 block 掉 deleteDatabase。
@@ -645,10 +832,32 @@ export const DB = {
     if (!migrated) await persistCharacterWithHomeMessages(db, charId, clearStaleMemoryMirror);
   },
 
+
   deleteCharacter: async (id: string): Promise<void> => {
     const db = await openDB();
-    const transaction = db.transaction(STORE_CHARACTERS, 'readwrite');
+    const transaction = db.transaction([STORE_CHARACTERS, STORE_CHARACTER_LIFE], 'readwrite');
     transaction.objectStore(STORE_CHARACTERS).delete(id);
+    transaction.objectStore(STORE_CHARACTER_LIFE).delete(id);
+  },
+
+  getCharacterLife: async (charId: string): Promise<LifeState | null> => {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const request = db.transaction(STORE_CHARACTER_LIFE, 'readonly').objectStore(STORE_CHARACTER_LIFE).get(charId);
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => reject(request.error);
+    });
+  },
+
+  saveCharacterLife: async (state: LifeState): Promise<void> => {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_CHARACTER_LIFE, 'readwrite');
+      tx.objectStore(STORE_CHARACTER_LIFE).put(state);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error('角色生活状态保存中止'));
+    });
   },
 
   // ---- 角色分组（神经链接"文件夹"，与群聊 groups 无关）----
@@ -732,6 +941,68 @@ export const DB = {
     });
   },
 
+  /** Strictly read-only private-chat snapshot for disposable generators. No timeline repair or sealing. */
+  peekMessagesByCharId: async (charId: string): Promise<Message[]> => {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_MESSAGES, 'readonly');
+      const request = transaction.objectStore(STORE_MESSAGES).index('charId').getAll(IDBKeyRange.only(charId));
+      request.onsuccess = () => resolve((request.result as Message[]).filter(message => !message.groupId));
+      request.onerror = () => reject(request.error);
+    });
+  },
+
+  /** Recheck every source inside the same transaction before replacing the anchor and deleting fragments. */
+  applyHtmlFormatRepair: async (plan: HtmlRepairPlan): Promise<Message> => {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_MESSAGES, 'readwrite');
+      const store = transaction.objectStore(STORE_MESSAGES);
+      const current: Message[] = [];
+      let updated: Message | undefined;
+      const fail = () => { try { transaction.abort(); } catch {} };
+      const readNext = (index: number) => {
+        if (index >= plan.sources.length) {
+          const anchor = current[0];
+          const pure = plan.segments.length === 1 && plan.segments[0].kind === 'html';
+          const card = pure ? plan.segments[0] : undefined;
+          updated = {
+            ...anchor,
+            type: 'html_card',
+            content: plan.content,
+            metadata: {
+              ...anchor.metadata,
+              ...(card?.kind === 'html' ? { htmlSource: card.html, htmlTextPreview: card.textPreview } : {}),
+              ...(pure ? {} : { htmlRepairSegments: plan.segments }),
+              htmlFormatRepair: {
+                version: 1, repairedAt: Date.now(),
+                sourceMessageIds: current.map(m => m.id),
+                originalContents: current.map(m => ({ id: m.id, content: m.content, timestamp: m.timestamp })),
+              },
+            },
+          };
+          store.put(updated);
+          for (const fragment of current.slice(1)) store.delete(fragment.id);
+          return;
+        }
+        const expected = plan.sources[index];
+        const request = store.get(expected.id);
+        request.onsuccess = () => {
+          const actual = request.result as Message | undefined;
+          if (!actual || actual.content !== expected.content || actual.type !== 'text' ||
+              actual.charId !== expected.charId || actual.role !== expected.role || actual.groupId ||
+              actual.metadata?.withdrawal || actual.metadata?.htmlRepairSegments) { fail(); return; }
+          current.push(actual);
+          readNext(index + 1);
+        };
+      };
+      readNext(0);
+      transaction.oncomplete = () => updated ? resolve(updated) : reject(new Error('HTML repair was not applied'));
+      transaction.onerror = () => reject(transaction.error || new Error('HTML repair failed'));
+      transaction.onabort = () => reject(transaction.error || new Error('HTML repair aborted'));
+    });
+  },
+
   /**
    * 某个角色的聊天条数。走 charId 索引的 count()，**一条消息都不会被读出来**，
    * IndexedDB 只回一个数字。使用统计的规模档位用它，别拿 getMessagesByCharId
@@ -762,16 +1033,33 @@ export const DB = {
       const cursorReq = index.openCursor(IDBKeyRange.only(charId), 'prev');
       cursorReq.onsuccess = () => {
           const cursor = cursorReq.result;
-          // Duplicate charId index keys are ordered by primary message ID. Once the reverse
-          // cursor reaches the archive boundary, every remaining row is archived too. Do not
-          // scan years of history just because the unarchived tail contains fewer than limit.
-          if (cursor && collected.length < limit && (includeProcessed || Number(cursor.primaryKey) > hwm)) {
+          if (cursor && collected.length < limit) {
               const m = cursor.value as Message;
               if (!m.groupId && (includeProcessed || m.id > hwm)) collected.push(m);
               cursor.continue();
           } else {
               resolve(collected.reverse());
           }
+      };
+      cursorReq.onerror = () => reject(cursorReq.error);
+    });
+  },
+
+  /** 倒序游标找到该角色最后一条符合会话列表口径的私聊消息；不会加载完整历史。 */
+  getLatestPrivateMessageByCharId: async (
+    charId: string,
+    accept?: (message: Message) => boolean,
+  ): Promise<Message | undefined> => {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_MESSAGES, 'readonly');
+      const cursorReq = transaction.objectStore(STORE_MESSAGES).index('charId').openCursor(IDBKeyRange.only(charId), 'prev');
+      cursorReq.onsuccess = () => {
+          const cursor = cursorReq.result;
+          if (!cursor) { resolve(undefined); return; }
+          const message = cursor.value as Message;
+          if (!message.groupId && (!accept || accept(message))) { resolve(message); return; }
+          cursor.continue();
       };
       cursorReq.onerror = () => reject(cursorReq.error);
     });
@@ -864,7 +1152,8 @@ export const DB = {
 
   // UI 读取不受记忆水位影响。先按展示范围筛选，再凑满 N 条，避免见面/通话占满窗口。
   // totalCount 仍是廉价的索引计数上限；游标已取尽时，调用方用实际展示条数替代它。
-  getRecentMessagesWithCount: async (charId: string, limit: number, accept?: (message: Message) => boolean): Promise<{ messages: Message[], totalCount: number }> => {
+  // keepFromId 保留正在阅读的起点，追加新消息不会把窗口顶部旧气泡裁掉。
+  getRecentMessagesWithCount: async (charId: string, limit: number, accept?: (message: Message) => boolean, keepFromId?: number): Promise<{ messages: Message[], totalCount: number }> => {
     const db = await openDB();
     return new Promise((resolve, reject) => {
       const transaction = db.transaction(STORE_MESSAGES, 'readonly');
@@ -878,7 +1167,7 @@ export const DB = {
           const cursorReq = index.openCursor(IDBKeyRange.only(charId), 'prev');
           cursorReq.onsuccess = () => {
               const cursor = cursorReq.result;
-              if (cursor && collected.length < limit) {
+              if (cursor && (collected.length < limit || (keepFromId !== undefined && Number(cursor.primaryKey) >= keepFromId))) {
                   const m = cursor.value as Message;
                   if (!m.groupId && (!accept || accept(m))) collected.push(m);
                   cursor.continue();
@@ -951,6 +1240,44 @@ export const DB = {
     });
   },
 
+  /** Commit a single character's messages together, or leave the conversation unchanged. */
+  saveMessagesAtomic: async (messages: Array<Omit<Message, 'id' | 'timestamp'> & { timestamp?: number }>): Promise<number[]> => {
+    if (!messages.length) return [];
+    const charId = messages[0].charId;
+    if (!charId || messages.some(message => message.charId !== charId || 'id' in message)) {
+      throw new Error('批量消息必须属于同一角色且不能复用旧 ID');
+    }
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction([STORE_MESSAGES, STORE_ASSETS], 'readwrite');
+      const store = transaction.objectStore(STORE_MESSAGES);
+      const ids: number[] = [];
+      try {
+        for (const message of messages) {
+          const request = store.add({ ...message, timestamp: message.timestamp ?? Date.now() });
+          request.onsuccess = () => {
+            const id = request.result as number;
+            ids.push(id);
+            clearStaleMemoryMirror(transaction, charId, id);
+          };
+        }
+      } catch (error) {
+        transaction.abort();
+        reject(error);
+        return;
+      }
+      transaction.oncomplete = () => {
+        try {
+          const key = `mp_lastMsgId_${charId}`;
+          if (parseInt(localStorage.getItem(key) || '0', 10) >= ids[0]) localStorage.removeItem(key);
+        } catch { /* localStorage may be unavailable */ }
+        resolve(ids);
+      };
+      transaction.onerror = () => reject(transaction.error || new Error('批量消息未能保存'));
+      transaction.onabort = () => reject(transaction.error || new Error('批量消息已回滚'));
+    });
+  },
+
   /** One persisted message per logical delivery, including retries after a tab closes. */
   saveMessageOnce: async (deliveryId: string, msg: Omit<Message, 'id' | 'timestamp'> & { timestamp?: number }): Promise<number> => {
     const db = await openDB();
@@ -1016,6 +1343,35 @@ export const DB = {
     });
   },
 
+  // 历史裸状态回填用：content 与 metadata 在同一消息事务内同时更新，不出现
+  // 「正文已剥、metadata 没写上」的半状态。不碰 id / timestamp / 其它字段。
+  updateMessageContentAndMetadata: async (
+    id: number,
+    content: string,
+    metadataUpdater: (prev: any) => any,
+  ): Promise<void> => {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_MESSAGES, 'readwrite');
+      const store = transaction.objectStore(STORE_MESSAGES);
+      const req = store.get(id);
+      req.onsuccess = () => {
+        const data = req.result as Message | undefined;
+        if (!data) {
+          reject(new Error('Message not found'));
+          return;
+        }
+        data.content = content;
+        (data as any).metadata = metadataUpdater((data as any).metadata);
+        store.put(data);
+      };
+      req.onerror = () => reject(req.error);
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error || new Error('消息更新失败'));
+      transaction.onabort = () => reject(transaction.error || new Error('消息更新已回滚'));
+    });
+  },
+
   getMessageById: async (id: number): Promise<Message | null> => {
     const db = await openDB();
     return new Promise((resolve, reject) => {
@@ -1048,7 +1404,7 @@ export const DB = {
     });
   },
 
-  updateMessageMetadata: async (id: number, updater: (prev: any) => any): Promise<void> => {
+  updateMessageMetadata: async (id: number, updater: (prev: any, message: Message) => any): Promise<void> => {
     const db = await openDB();
     const transaction = db.transaction(STORE_MESSAGES, 'readwrite');
     const store = transaction.objectStore(STORE_MESSAGES);
@@ -1058,14 +1414,16 @@ export const DB = {
         req.onsuccess = () => {
             const data = req.result as Message | undefined;
             if (data) {
-                (data as any).metadata = updater((data as any).metadata);
+                (data as any).metadata = updater((data as any).metadata, data);
                 store.put(data);
-                resolve();
             } else {
                 reject(new Error('Message not found'));
             }
         };
         req.onerror = () => reject(req.error);
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error || new Error('消息更新失败'));
+        transaction.onabort = () => reject(transaction.error || new Error('消息更新已回滚'));
     });
   },
 
@@ -1162,7 +1520,8 @@ export const DB = {
       });
   },
 
-  getRecentGroupMessagesWithCount: async (groupId: string, limit: number): Promise<{ messages: Message[], totalCount: number }> => {
+  // 阅读历史时允许窗口随新消息增长；未传 keepFromId 的调用继续只取最近 limit 条。
+  getRecentGroupMessagesWithCount: async (groupId: string, limit: number, keepFromId?: number): Promise<{ messages: Message[], totalCount: number }> => {
       const db = await openDB();
       return new Promise((resolve, reject) => {
           const transaction = db.transaction(STORE_MESSAGES, 'readonly');
@@ -1175,7 +1534,7 @@ export const DB = {
               const cursorReq = index.openCursor(IDBKeyRange.only(groupId), 'prev');
               cursorReq.onsuccess = () => {
                   const cursor = cursorReq.result;
-                  if (cursor && collected.length < limit) {
+                  if (cursor && (collected.length < limit || (keepFromId !== undefined && Number(cursor.primaryKey) >= keepFromId))) {
                       collected.push(cursor.value as Message);
                       cursor.continue();
                   } else {
@@ -1187,6 +1546,29 @@ export const DB = {
           countReq.onerror = () => reject(countReq.error);
       });
   },
+
+  /** 倒序游标读取群的最后一条消息；不会加载完整群史。 */
+  getLatestGroupMessageByGroupId: async (
+    groupId: string,
+    accept?: (message: Message) => boolean,
+  ): Promise<Message | undefined> => {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+          const transaction = db.transaction(STORE_MESSAGES, 'readonly');
+          const cursorReq = transaction.objectStore(STORE_MESSAGES).index('groupId').openCursor(IDBKeyRange.only(groupId), 'prev');
+          cursorReq.onsuccess = () => {
+              const cursor = cursorReq.result;
+              if (!cursor) { resolve(undefined); return; }
+              const message = cursor.value as Message;
+              if (!accept || accept(message)) { resolve(message); return; }
+              cursor.continue();
+          };
+          cursorReq.onerror = () => reject(cursorReq.error);
+      });
+  },
+
+  getLatestGroupMessageId: async (groupId: string): Promise<number> =>
+      (await DB.getLatestGroupMessageByGroupId(groupId))?.id || 0,
 
   getSocialPosts: async (): Promise<SocialPost[]> => {
       const db = await openDB();
@@ -1239,6 +1621,23 @@ export const DB = {
       transaction.oncomplete = () => resolve();
       transaction.onerror = () => reject(transaction.error);
       transaction.onabort = () => reject(transaction.error || new Error('saveEmoji transaction aborted'));
+    });
+  },
+
+  touchEmoji: async (name: string, lastUsedAt = Date.now()): Promise<void> => {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_EMOJIS, 'readwrite');
+      const store = transaction.objectStore(STORE_EMOJIS);
+      const request = store.get(name);
+      request.onsuccess = () => {
+        const emoji = request.result as Emoji | undefined;
+        if (emoji) store.put({ ...emoji, lastUsedAt });
+      };
+      request.onerror = () => reject(request.error);
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
     });
   },
 
@@ -2410,10 +2809,53 @@ export const DB = {
       transaction.objectStore(STORE_COURSES).put(course);
   },
 
+  saveCourses: async (courses: StudyCourse[]): Promise<void> => {
+      if (courses.length === 0) return;
+      const db = await openDB();
+      const transaction = db.transaction(STORE_COURSES, 'readwrite');
+      const store = transaction.objectStore(STORE_COURSES);
+      courses.forEach(course => store.put(course));
+      return new Promise((resolve, reject) => {
+          transaction.oncomplete = () => resolve();
+          transaction.onerror = () => reject(transaction.error);
+          transaction.onabort = () => reject(transaction.error);
+      });
+  },
+
   deleteCourse: async (id: string): Promise<void> => {
       const db = await openDB();
       const transaction = db.transaction(STORE_COURSES, 'readwrite');
       transaction.objectStore(STORE_COURSES).delete(id);
+  },
+
+  getCharacterStudySessions: async (): Promise<CharacterStudySession[]> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_CHARACTER_STUDY)) return [];
+      return new Promise((resolve, reject) => {
+          const request = db.transaction(STORE_CHARACTER_STUDY, 'readonly').objectStore(STORE_CHARACTER_STUDY).getAll();
+          request.onsuccess = () => resolve((request.result || []).sort((a: CharacterStudySession, b: CharacterStudySession) => b.updatedAt - a.updatedAt));
+          request.onerror = () => reject(request.error);
+      });
+  },
+
+  saveCharacterStudySession: async (session: CharacterStudySession): Promise<void> => {
+      const db = await openDB();
+      const transaction = db.transaction(STORE_CHARACTER_STUDY, 'readwrite');
+      transaction.objectStore(STORE_CHARACTER_STUDY).put(session);
+      return new Promise((resolve, reject) => {
+          transaction.oncomplete = () => resolve();
+          transaction.onerror = () => reject(transaction.error);
+      });
+  },
+
+  deleteCharacterStudySession: async (id: string): Promise<void> => {
+      const db = await openDB();
+      const transaction = db.transaction(STORE_CHARACTER_STUDY, 'readwrite');
+      transaction.objectStore(STORE_CHARACTER_STUDY).delete(id);
+      return new Promise((resolve, reject) => {
+          transaction.oncomplete = () => resolve();
+          transaction.onerror = () => reject(transaction.error);
+      });
   },
 
   // --- Quiz / Practice Book ---
@@ -2463,6 +2905,263 @@ export const DB = {
       const db = await openDB();
       const transaction = db.transaction(STORE_GAMES, 'readwrite');
       transaction.objectStore(STORE_GAMES).delete(id);
+  },
+
+  // --- 剧本杀模板与对局 ---
+  getMurderMysteryScripts: async (): Promise<MurderMysteryScript[]> => {
+      const db = await openDB();
+      return idbRequest(db.transaction(STORE_MURDER_MYSTERY_SCRIPTS, 'readonly').objectStore(STORE_MURDER_MYSTERY_SCRIPTS).getAll());
+  },
+  saveMurderMysteryScript: async (script: MurderMysteryScript): Promise<void> => {
+      const db = await openDB();
+      const tx = db.transaction(STORE_MURDER_MYSTERY_SCRIPTS, 'readwrite');
+      tx.objectStore(STORE_MURDER_MYSTERY_SCRIPTS).put(script);
+      await idbTransaction(tx);
+  },
+  deleteMurderMysteryScript: async (id: string): Promise<void> => {
+      const db = await openDB();
+      const tx = db.transaction(STORE_MURDER_MYSTERY_SCRIPTS, 'readwrite');
+      tx.objectStore(STORE_MURDER_MYSTERY_SCRIPTS).delete(id);
+      await idbTransaction(tx);
+  },
+  getMurderMysterySessions: async (): Promise<MurderMysterySession[]> => {
+      const db = await openDB();
+      return (await idbRequest<MurderMysterySession[]>(db.transaction(STORE_MURDER_MYSTERY_SESSIONS, 'readonly').objectStore(STORE_MURDER_MYSTERY_SESSIONS).getAll())).map(normalizeMurderMysterySession);
+  },
+  getMurderMysterySession: async (id: string): Promise<MurderMysterySession | undefined> => {
+      const db = await openDB();
+      const session = await idbRequest<MurderMysterySession | undefined>(db.transaction(STORE_MURDER_MYSTERY_SESSIONS, 'readonly').objectStore(STORE_MURDER_MYSTERY_SESSIONS).get(id));
+      return session ? normalizeMurderMysterySession(session) : undefined;
+  },
+  getMurderMysteryEvents: async (sessionId: string): Promise<MurderMysteryEvent[]> => {
+      const db = await openDB();
+      const events = await idbRequest<MurderMysteryEvent[]>(db.transaction(STORE_MURDER_MYSTERY_EVENTS, 'readonly').objectStore(STORE_MURDER_MYSTERY_EVENTS).index('sessionId').getAll(sessionId));
+      return events.sort((a, b) => a.revision - b.revision);
+  },
+  createMurderMysterySession: async (session: MurderMysterySession, initial: Array<Pick<MurderMysteryEvent, 'channel' | 'audienceIds' | 'speechMode' | 'content' | 'action' | 'grantId'>>): Promise<MurderMysterySession> => {
+      const db = await openDB();
+      const tx = db.transaction([STORE_MURDER_MYSTERY_SESSIONS, STORE_MURDER_MYSTERY_EVENTS], 'readwrite');
+      const events = tx.objectStore(STORE_MURDER_MYSTERY_EVENTS);
+      let revision = 0;
+      for (const grant of initial) events.add({ ...grant, id: crypto.randomUUID(), sessionId: session.id, revision: ++revision, timestamp: Date.now() } satisfies MurderMysteryEvent);
+      const saved = { ...session, revision, updatedAt: Date.now(),
+          grantedClueIds: initial.filter(item => item.action === 'grant_clue').map(item => item.grantId!),
+          grantedDeliverableIds: initial.filter(item => item.action === 'grant_deliverable').map(item => item.grantId!),
+          grantedAbilityIds: initial.filter(item => item.action === 'grant_ability').map(item => item.grantId!) };
+      tx.objectStore(STORE_MURDER_MYSTERY_SESSIONS).add(saved);
+      await idbTransaction(tx);
+      return saved;
+  },
+  appendMurderMysteryEvent: async (sessionId: string, expectedRevision: number, draft: Omit<MurderMysteryEvent, 'id' | 'sessionId' | 'revision' | 'timestamp'>, strategyNote?: { charId: string; text: string }): Promise<MurderMysterySession> => {
+      const db = await openDB();
+      const tx = db.transaction([STORE_MURDER_MYSTERY_SESSIONS, STORE_MURDER_MYSTERY_EVENTS], 'readwrite');
+      const sessions = tx.objectStore(STORE_MURDER_MYSTERY_SESSIONS);
+      const current = await idbRequest<MurderMysterySession | undefined>(sessions.get(sessionId));
+      if (!current || current.revision !== expectedRevision || current.status === 'ended' || (current.participation && current.status === 'preparation' && draft.channel === 'public_table')) { tx.abort(); throw new Error('对局已经变化、尚未正式开始或已结束，请刷新后重试'); }
+      const revision = current.revision + 1;
+      tx.objectStore(STORE_MURDER_MYSTERY_EVENTS).add({ ...draft, id: crypto.randomUUID(), sessionId, revision, timestamp: Date.now() } satisfies MurderMysteryEvent);
+      const next = { ...current, revision, updatedAt: Date.now(),
+          status: !current.participation && draft.channel === 'public_table' && current.status === 'preparation' ? 'playing' as const : current.status,
+          strategyNotes: strategyNote ? { ...current.strategyNotes, [strategyNote.charId]: strategyNote.text } : current.strategyNotes };
+      sessions.put(next);
+      await idbTransaction(tx);
+      return next;
+  },
+  applyMurderMysteryCommand: async (sessionId: string, expectedRevision: number, command: MurderMysteryCommand): Promise<MurderMysterySession> => {
+      const db = await openDB();
+      const tx = db.transaction([STORE_MURDER_MYSTERY_SESSIONS, STORE_MURDER_MYSTERY_EVENTS], 'readwrite');
+      const sessions = tx.objectStore(STORE_MURDER_MYSTERY_SESSIONS);
+      const current = await idbRequest<MurderMysterySession | undefined>(sessions.get(sessionId));
+      if (!current || current.revision !== expectedRevision) { tx.abort(); throw new Error('对局已经变化，请刷新后重试'); }
+      let planned: ReturnType<typeof planMurderMysteryCommand>;
+      const correctionTarget = command.type === 'correct_speech_mode'
+          ? await idbRequest<MurderMysteryEvent | undefined>(tx.objectStore(STORE_MURDER_MYSTERY_EVENTS).get(command.eventId)) : undefined;
+      try { planned = planMurderMysteryCommand(current, command, correctionTarget ? [correctionTarget] : []); }
+      catch (error) { tx.abort(); throw error; }
+      const store = tx.objectStore(STORE_MURDER_MYSTERY_EVENTS);
+      let revision = current.revision;
+      const now = Date.now();
+      for (const event of planned.events) store.add({ ...event, id: crypto.randomUUID(), sessionId, revision: ++revision, timestamp: now } satisfies MurderMysteryEvent);
+      const next = { ...planned.session, revision, updatedAt: now };
+      sessions.put(next);
+      await idbTransaction(tx);
+      return next;
+  },
+  writebackMurderMysteryReality: async (sessionId: string, charId: string): Promise<{ written: boolean; character: CharacterProfile }> => {
+      const db = await openDB();
+      const tx = db.transaction([STORE_MURDER_MYSTERY_SESSIONS, STORE_MURDER_MYSTERY_EVENTS, STORE_CHARACTERS, STORE_MESSAGES], 'readwrite');
+      const done = idbTransaction(tx);
+      const sessionStore = tx.objectStore(STORE_MURDER_MYSTERY_SESSIONS);
+      const characterStore = tx.objectStore(STORE_CHARACTERS);
+      const messageStore = tx.objectStore(STORE_MESSAGES);
+      const session = await idbRequest<MurderMysterySession | undefined>(sessionStore.get(sessionId));
+      const character = await idbRequest<CharacterProfile | undefined>(characterStore.get(charId));
+      if (!session || session.status !== 'ended' || ![...Object.values(session.seats), ...(session.participation?.investigatorCharId ? [session.participation.investigatorCharId] : [])].includes(charId) || !character) {
+          tx.abort(); void done.catch(() => undefined); throw new Error('仅已结算对局中的现有玩家可写回现实');
+      }
+      if (session.realityWritebackCharIds?.includes(charId)) { await done; return { written: false, character }; }
+      const summary = buildMysteryRealitySummary(session, charId);
+      const memoryId = `mem-murder-mystery-${sessionId}-${charId}`;
+      const memories = [...(character.memories || []).filter(memory => memory.id !== memoryId),
+          { id: memoryId, date: getLocalDateKey(new Date()), summary, mood: 'playful' }];
+      const existing = await idbRequest<Message[]>(messageStore.index('charId').getAll(charId));
+      if (!existing.some(message => message.metadata?.source === 'murder_mystery' && message.metadata?.murderMysterySessionId === sessionId)) {
+          messageStore.add({ charId, role: 'assistant', type: 'text', content: summary, timestamp: Date.now(),
+              metadata: { source: 'murder_mystery', murderMysterySessionId: sessionId } });
+      }
+      const updated = { ...character, memories };
+      characterStore.put(updated);
+      const revision = session.revision + 1;
+      sessionStore.put({ ...session, revision, updatedAt: Date.now(),
+          realityWritebackCharIds: [...(session.realityWritebackCharIds || []), charId] });
+      tx.objectStore(STORE_MURDER_MYSTERY_EVENTS).add({ id: crypto.randomUUID(), sessionId, revision,
+          timestamp: Date.now(), channel: 'host_system', audienceIds: [], speechMode: 'system',
+          content: `主持人已明确选择为玩家 ${charId} 写回共同游戏经历。`, action: 'reality_writeback' } satisfies MurderMysteryEvent);
+      await done;
+      return { written: true, character: updated };
+  },
+
+  // --- 聊愈：独立会话与用户中心共享记忆 ---
+  getHealingSessions: async (): Promise<HealingSession[]> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_HEALING_SESSIONS)) return [];
+      const rows = await idbRequest(db.transaction(STORE_HEALING_SESSIONS, 'readonly').objectStore(STORE_HEALING_SESSIONS).getAll()) as HealingSession[];
+      return rows.sort((a, b) => b.updatedAt - a.updatedAt);
+  },
+
+  getHealingSession: async (id: string): Promise<HealingSession | undefined> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_HEALING_SESSIONS)) return undefined;
+      return idbRequest(db.transaction(STORE_HEALING_SESSIONS, 'readonly').objectStore(STORE_HEALING_SESSIONS).get(id));
+  },
+
+  saveHealingSession: async (session: HealingSession): Promise<void> => {
+      const db = await openDB();
+      const tx = db.transaction(STORE_HEALING_SESSIONS, 'readwrite');
+      tx.objectStore(STORE_HEALING_SESSIONS).put(session);
+      await idbTransaction(tx);
+  },
+
+  saveHealingMessage: async (
+      message: Omit<HealingMessage, 'id' | 'timestamp'> & { id?: number; timestamp?: number },
+  ): Promise<number> => {
+      const db = await openDB();
+      const tx = db.transaction(STORE_HEALING_MESSAGES, 'readwrite');
+      const record = { ...message, timestamp: message.timestamp ?? Date.now() };
+      const request = message.id === undefined
+          ? tx.objectStore(STORE_HEALING_MESSAGES).add(record)
+          : tx.objectStore(STORE_HEALING_MESSAGES).put(record);
+      const done = idbTransaction(tx);
+      const id = Number(await idbRequest(request));
+      await done;
+      return id;
+  },
+
+  getHealingMessages: async (sessionId: string): Promise<HealingMessage[]> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_HEALING_MESSAGES)) return [];
+      const store = db.transaction(STORE_HEALING_MESSAGES, 'readonly').objectStore(STORE_HEALING_MESSAGES);
+      const rows = await idbRequest(store.index('sessionId').getAll(IDBKeyRange.only(sessionId))) as HealingMessage[];
+      return rows.sort((a, b) => a.timestamp - b.timestamp || a.id - b.id);
+  },
+
+  getHealingMemoryNodes: async (): Promise<HealingMemoryNode[]> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_HEALING_MEMORY_NODES)) return [];
+      return idbRequest(db.transaction(STORE_HEALING_MEMORY_NODES, 'readonly').objectStore(STORE_HEALING_MEMORY_NODES).getAll());
+  },
+
+  getHealingMemoryNode: async (id: string): Promise<HealingMemoryNode | undefined> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_HEALING_MEMORY_NODES)) return undefined;
+      return idbRequest(db.transaction(STORE_HEALING_MEMORY_NODES, 'readonly').objectStore(STORE_HEALING_MEMORY_NODES).get(id));
+  },
+
+  saveHealingMemoryNode: async (node: HealingMemoryNode): Promise<void> => {
+      const db = await openDB();
+      const tx = db.transaction(STORE_HEALING_MEMORY_NODES, 'readwrite');
+      tx.objectStore(STORE_HEALING_MEMORY_NODES).put(node);
+      await idbTransaction(tx);
+  },
+
+  getHealingMemoryVectors: async (): Promise<HealingMemoryVector[]> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_HEALING_MEMORY_VECTORS)) return [];
+      return idbRequest(db.transaction(STORE_HEALING_MEMORY_VECTORS, 'readonly').objectStore(STORE_HEALING_MEMORY_VECTORS).getAll());
+  },
+
+  saveHealingMemoryVector: async (row: HealingMemoryVector): Promise<void> => {
+      const db = await openDB();
+      const source = row.vector instanceof Float32Array
+          ? row.vector
+          : row.vector instanceof Uint8Array
+              ? new Float32Array(row.vector.buffer.slice(row.vector.byteOffset, row.vector.byteOffset + row.vector.byteLength))
+              : new Float32Array(row.vector);
+      const vector = new Uint8Array(source.buffer.slice(source.byteOffset, source.byteOffset + source.byteLength));
+      const tx = db.transaction(STORE_HEALING_MEMORY_VECTORS, 'readwrite');
+      tx.objectStore(STORE_HEALING_MEMORY_VECTORS).put({ ...row, dimensions: source.length, vector });
+      await idbTransaction(tx);
+  },
+
+  deleteHealingMemory: async (memoryId: string): Promise<void> => {
+      const db = await openDB();
+      const tx = db.transaction([STORE_HEALING_MEMORY_NODES, STORE_HEALING_MEMORY_VECTORS], 'readwrite');
+      tx.objectStore(STORE_HEALING_MEMORY_NODES).delete(memoryId);
+      tx.objectStore(STORE_HEALING_MEMORY_VECTORS).delete(memoryId);
+      await idbTransaction(tx);
+  },
+
+  // --- 只做一个改变：五表快照在同一个事务里读写 ---
+  getOneChangeSnapshotData: async (): Promise<{
+      changes: OneChangeItem[];
+      records: OneChangeRecord[];
+      standardVersions: OneChangeStandardVersion[];
+      stateEvents: OneChangeStateEvent[];
+      settings?: OneChangeSettings;
+  }> => {
+      const db = await openDB();
+      const names = [
+          STORE_ONE_CHANGE_CHANGES,
+          STORE_ONE_CHANGE_RECORDS,
+          STORE_ONE_CHANGE_STANDARD_VERSIONS,
+          STORE_ONE_CHANGE_STATE_EVENTS,
+          STORE_ONE_CHANGE_SETTINGS,
+      ].filter(name => db.objectStoreNames.contains(name));
+      if (names.length < 5) return { changes: [], records: [], standardVersions: [], stateEvents: [] };
+      const tx = db.transaction(names, 'readonly');
+      const [changes, records, standardVersions, stateEvents, settings] = await Promise.all([
+          idbRequest(tx.objectStore(STORE_ONE_CHANGE_CHANGES).getAll()) as Promise<OneChangeItem[]>,
+          idbRequest(tx.objectStore(STORE_ONE_CHANGE_RECORDS).getAll()) as Promise<OneChangeRecord[]>,
+          idbRequest(tx.objectStore(STORE_ONE_CHANGE_STANDARD_VERSIONS).getAll()) as Promise<OneChangeStandardVersion[]>,
+          idbRequest(tx.objectStore(STORE_ONE_CHANGE_STATE_EVENTS).getAll()) as Promise<OneChangeStateEvent[]>,
+          idbRequest(tx.objectStore(STORE_ONE_CHANGE_SETTINGS).get('main')) as Promise<OneChangeSettings | undefined>,
+      ]);
+      return { changes, records, standardVersions, stateEvents, settings };
+  },
+
+  saveOneChangeSnapshotData: async (snapshot: {
+      changes: OneChangeItem[];
+      records: OneChangeRecord[];
+      standardVersions: OneChangeStandardVersion[];
+      stateEvents: OneChangeStateEvent[];
+      settings: OneChangeSettings;
+  }): Promise<void> => {
+      const db = await openDB();
+      const names = [
+          STORE_ONE_CHANGE_CHANGES,
+          STORE_ONE_CHANGE_RECORDS,
+          STORE_ONE_CHANGE_STANDARD_VERSIONS,
+          STORE_ONE_CHANGE_STATE_EVENTS,
+          STORE_ONE_CHANGE_SETTINGS,
+      ];
+      const tx = db.transaction(names, 'readwrite');
+      for (const name of names) tx.objectStore(name).clear();
+      for (const row of snapshot.changes) tx.objectStore(STORE_ONE_CHANGE_CHANGES).put(row);
+      for (const row of snapshot.records) tx.objectStore(STORE_ONE_CHANGE_RECORDS).put(row);
+      for (const row of snapshot.standardVersions) tx.objectStore(STORE_ONE_CHANGE_STANDARD_VERSIONS).put(row);
+      for (const row of snapshot.stateEvents) tx.objectStore(STORE_ONE_CHANGE_STATE_EVENTS).put(row);
+      tx.objectStore(STORE_ONE_CHANGE_SETTINGS).put(snapshot.settings);
+      await idbTransaction(tx);
   },
 
   getAllWorldbooks: async (): Promise<Worldbook[]> => {
@@ -2519,7 +3218,10 @@ export const DB = {
                       if (!mounted.some(book => updates === null ? targets.has(book.id) : replacements.has(book.id))) continue;
                       const next = { ...char, mountedWorldbooks: updates === null
                           ? mounted.filter(book => !targets.has(book.id))
-                          : mounted.map(book => replacements.get(book.id) || book) };
+                          : mounted.map(book => {
+                              const replacement = replacements.get(book.id);
+                              return replacement ? { ...replacement, ...(book.mountPaused === true ? { mountPaused: true } : {}) } : book;
+                          }) };
                       changedCharacters.push(next);
                       charactersStore.put(next);
                   }
@@ -3292,6 +3994,368 @@ export const DB = {
       tx.objectStore(STORE_VR_SETTINGS).put(record);
   },
 
+  getHeartSyncRecords: async (): Promise<HeartSyncRecord[]> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_HEART_SYNC)) return [];
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_HEART_SYNC, 'readonly');
+          const request = tx.objectStore(STORE_HEART_SYNC).getAll();
+          request.onsuccess = () => resolve(request.result || []);
+          request.onerror = () => reject(request.error || tx.error);
+      });
+  },
+
+  saveHeartSyncRecord: async (record: HeartSyncRecord): Promise<void> => {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_HEART_SYNC, 'readwrite');
+          tx.objectStore(STORE_HEART_SYNC).put(record);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error);
+      });
+  },
+
+  getHeartSyncPsychQuestions: async (): Promise<HeartSyncPsychQuestion[]> =>
+      (await DB.getHeartSyncRecords()).filter((record): record is HeartSyncPsychQuestion => record.kind === 'psych_question'),
+
+  getHeartSyncPsychSessions: async (): Promise<HeartSyncPsychSession[]> =>
+      (await DB.getHeartSyncRecords()).filter((record): record is HeartSyncPsychSession => record.kind === 'psych_session'),
+
+  getHeartSyncQuestionnaires: async (): Promise<HeartSyncQuestionnaire[]> =>
+      (await DB.getHeartSyncRecords()).filter((record): record is HeartSyncQuestionnaire => record.kind === 'questionnaire'),
+
+  getHeartSyncQuestionnaireSessions: async (): Promise<HeartSyncQuestionnaireSession[]> =>
+      (await DB.getHeartSyncRecords()).filter((record): record is HeartSyncQuestionnaireSession => record.kind === 'questionnaire_session'),
+
+  deleteHeartSyncRecord: async (id: string): Promise<void> => {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_HEART_SYNC, 'readwrite');
+          tx.objectStore(STORE_HEART_SYNC).delete(id);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error);
+      });
+  },
+
+  getDebateSessions: async (): Promise<DebateSession[]> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_DEBATE)) return [];
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_DEBATE, 'readonly');
+          const request = tx.objectStore(STORE_DEBATE).getAll();
+          request.onsuccess = () => resolve(request.result || []);
+          request.onerror = () => reject(request.error || tx.error);
+      });
+  },
+
+  saveDebateSession: async (session: DebateSession): Promise<void> => {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_DEBATE, 'readwrite');
+          tx.objectStore(STORE_DEBATE).put(session);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error);
+      });
+  },
+
+  deleteDebateSession: async (id: string): Promise<void> => {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_DEBATE, 'readwrite');
+          tx.objectStore(STORE_DEBATE).delete(id);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error);
+      });
+  },
+
+  getBoardGameSessions: async (): Promise<BoardGameSession[]> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_BOARD_GAME_SESSIONS)) return [];
+      const rows = await idbRequest(db.transaction(STORE_BOARD_GAME_SESSIONS, 'readonly').objectStore(STORE_BOARD_GAME_SESSIONS).getAll()) as BoardGameSession[];
+      return rows.sort((a, b) => b.updatedAt - a.updatedAt);
+  },
+
+  getBoardGameSession: async (id: string): Promise<BoardGameSession | undefined> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_BOARD_GAME_SESSIONS)) return undefined;
+      return idbRequest(db.transaction(STORE_BOARD_GAME_SESSIONS, 'readonly').objectStore(STORE_BOARD_GAME_SESSIONS).get(id));
+  },
+
+  saveBoardGameSession: async (session: BoardGameSession): Promise<void> => {
+      const db = await openDB();
+      const tx = db.transaction(STORE_BOARD_GAME_SESSIONS, 'readwrite');
+      tx.objectStore(STORE_BOARD_GAME_SESSIONS).put(session);
+      await idbTransaction(tx);
+  },
+
+  deleteBoardGameSession: async (id: string): Promise<void> => {
+      const db = await openDB();
+      const tx = db.transaction(STORE_BOARD_GAME_SESSIONS, 'readwrite');
+      tx.objectStore(STORE_BOARD_GAME_SESSIONS).delete(id);
+      await idbTransaction(tx);
+  },
+
+  // Compare and write in one transaction: a late response cannot overwrite a newer turn.
+  saveBoardGameSessionIfCurrent: async (
+      session: BoardGameSession,
+      expected: { revision: number; actorId: string },
+      isActive: () => boolean = () => true,
+  ): Promise<boolean> => {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_BOARD_GAME_SESSIONS, 'readwrite');
+          const store = tx.objectStore(STORE_BOARD_GAME_SESSIONS);
+          let saved = false;
+          const request = store.get(session.id);
+          request.onsuccess = () => {
+              const latest = request.result as BoardGameSession | undefined;
+              if (!isActive() || !latest || latest.status !== 'in_progress'
+                  || latest.revision !== expected.revision
+                  || latest.round.currentActorId !== expected.actorId
+                  || session.revision <= latest.revision) return;
+              store.put(session);
+              saved = true;
+          };
+          tx.oncomplete = () => resolve(saved);
+          tx.onabort = () => reject(tx.error || new Error('桌游存档事务已中止'));
+          tx.onerror = () => reject(tx.error || new Error('桌游存档失败'));
+      });
+  },
+
+  getLifeReplayRecords: async (): Promise<LifeReplayRecord[]> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_LIFE_REPLAY)) return [];
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_LIFE_REPLAY, 'readonly');
+          const request = tx.objectStore(STORE_LIFE_REPLAY).getAll();
+          request.onsuccess = () => resolve(request.result || []);
+          request.onerror = () => reject(request.error || tx.error);
+      });
+  },
+
+  saveLifeReplayRecord: async (record: LifeReplayRecord): Promise<void> => {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_LIFE_REPLAY, 'readwrite');
+          tx.objectStore(STORE_LIFE_REPLAY).put(record);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error);
+      });
+  },
+
+  deleteLifeReplayRecord: async (id: string): Promise<void> => {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_LIFE_REPLAY, 'readwrite');
+          tx.objectStore(STORE_LIFE_REPLAY).delete(id);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error);
+      });
+  },
+
+  getCommunityCommitteeSessions: async (): Promise<CommunityCommitteeSession[]> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_COMMUNITY_COMMITTEE)) return [];
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_COMMUNITY_COMMITTEE, 'readonly');
+          const request = tx.objectStore(STORE_COMMUNITY_COMMITTEE).getAll();
+          request.onsuccess = () => resolve(request.result || []);
+          request.onerror = () => reject(request.error || tx.error);
+      });
+  },
+
+  saveCommunityCommitteeSession: async (session: CommunityCommitteeSession): Promise<void> => {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_COMMUNITY_COMMITTEE, 'readwrite');
+          tx.objectStore(STORE_COMMUNITY_COMMITTEE).put(session);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error);
+      });
+  },
+
+  deleteCommunityCommitteeSession: async (id: string): Promise<void> => {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_COMMUNITY_COMMITTEE, 'readwrite');
+          tx.objectStore(STORE_COMMUNITY_COMMITTEE).delete(id);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error);
+      });
+  },
+
+  getTaskWorkshopRecords: async (): Promise<TaskWorkshopRecord[]> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_TASK_WORKSHOP)) return [];
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_TASK_WORKSHOP, 'readonly');
+          const request = tx.objectStore(STORE_TASK_WORKSHOP).getAll();
+          request.onsuccess = () => resolve(request.result || []);
+          request.onerror = () => reject(request.error || tx.error);
+      });
+  },
+
+  getTaskWorkshopSettings: async (): Promise<TaskWorkshopSettings> => {
+      const fallback: TaskWorkshopSettings = {
+          id: 'settings', kind: 'settings', enabled: false, visitorCharIds: [], intervalMinutes: 60, nextVisitorIndex: 0,
+      };
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_TASK_WORKSHOP)) return fallback;
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_TASK_WORKSHOP, 'readonly');
+          const request = tx.objectStore(STORE_TASK_WORKSHOP).get('settings');
+          request.onsuccess = () => resolve({ ...fallback, ...(request.result || {}) });
+          request.onerror = () => reject(request.error || tx.error);
+      });
+  },
+
+  getTaskWorkshopRecord: async (id: string): Promise<TaskWorkshopRecord | null> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_TASK_WORKSHOP)) return null;
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_TASK_WORKSHOP, 'readonly');
+          const request = tx.objectStore(STORE_TASK_WORKSHOP).get(id);
+          request.onsuccess = () => resolve(request.result || null);
+          request.onerror = () => reject(request.error || tx.error);
+      });
+  },
+
+  saveTaskWorkshopRecord: async (record: TaskWorkshopRecord): Promise<void> => {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_TASK_WORKSHOP, 'readwrite');
+          tx.objectStore(STORE_TASK_WORKSHOP).put(record);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error);
+      });
+  },
+
+  deleteTaskWorkshopRecord: async (id: string): Promise<void> => {
+      if (id === 'settings') return;
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_TASK_WORKSHOP, 'readwrite');
+          tx.objectStore(STORE_TASK_WORKSHOP).delete(id);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error);
+      });
+  },
+
+  getTimeCapsuleRecords: async (): Promise<TimeCapsuleRecord[]> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_TIME_CAPSULE)) return [];
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_TIME_CAPSULE, 'readonly');
+          const request = tx.objectStore(STORE_TIME_CAPSULE).getAll();
+          request.onsuccess = () => resolve(request.result || []);
+          request.onerror = () => reject(request.error || tx.error);
+      });
+  },
+
+  getTimeCapsuleSettings: async (): Promise<TimeCapsuleSettings> => {
+      const fallback: TimeCapsuleSettings = {
+          id: 'settings', kind: 'settings', enabled: false, visitorCharIds: [], intervalMinutes: 1440, nextVisitorIndex: 0,
+      };
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_TIME_CAPSULE)) return fallback;
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_TIME_CAPSULE, 'readonly');
+          const request = tx.objectStore(STORE_TIME_CAPSULE).get('settings');
+          request.onsuccess = () => resolve({ ...fallback, ...(request.result || {}) });
+          request.onerror = () => reject(request.error || tx.error);
+      });
+  },
+
+  saveTimeCapsuleRecord: async (record: TimeCapsuleRecord): Promise<void> => {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_TIME_CAPSULE, 'readwrite');
+          tx.objectStore(STORE_TIME_CAPSULE).put(record);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error);
+      });
+  },
+
+  deleteTimeCapsuleRecord: async (id: string): Promise<void> => {
+      if (id === 'settings') return;
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_TIME_CAPSULE, 'readwrite');
+          tx.objectStore(STORE_TIME_CAPSULE).delete(id);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error);
+      });
+  },
+
+  getMyScheduleRecords: async (): Promise<MyScheduleRecord[]> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_MY_SCHEDULE)) return [];
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_MY_SCHEDULE, 'readonly');
+          const request = tx.objectStore(STORE_MY_SCHEDULE).getAll();
+          request.onsuccess = () => resolve(request.result || []);
+          request.onerror = () => reject(request.error || tx.error);
+      });
+  },
+
+  getMyScheduleSettings: async (): Promise<MyScheduleSettings> => {
+      const fallback: MyScheduleSettings = { id: 'settings', kind: 'settings', selectedCharIds: [] };
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_MY_SCHEDULE)) return fallback;
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_MY_SCHEDULE, 'readonly');
+          const request = tx.objectStore(STORE_MY_SCHEDULE).get('settings');
+          request.onsuccess = () => resolve({ ...fallback, ...(request.result || {}) });
+          request.onerror = () => reject(request.error || tx.error);
+      });
+  },
+
+  saveMyScheduleRecord: async (record: MyScheduleRecord): Promise<void> => {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_MY_SCHEDULE, 'readwrite');
+          tx.objectStore(STORE_MY_SCHEDULE).put(record);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error);
+      });
+  },
+  saveMyScheduleRecordsAtomically: async (records: MyScheduleRecord[]): Promise<void> => {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_MY_SCHEDULE, 'readwrite');
+          const store = tx.objectStore(STORE_MY_SCHEDULE);
+          for (const record of records) store.put(record);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error);
+      });
+  },
+
+  deleteMyScheduleEntry: async (id: string): Promise<void> => {
+      if (id === 'settings') return;
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_MY_SCHEDULE, 'readwrite');
+          tx.objectStore(STORE_MY_SCHEDULE).delete(id);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error);
+      });
+  },
+
   // --- BANK / PET APP LOGIC ---
   getBankState: async (): Promise<BankFullState | null> => {
       const db = await openDB();
@@ -3573,7 +4637,7 @@ export const DB = {
           });
       };
 
-      const [characters, characterGroups, messages, themes, emojis, emojiCategories, assets, galleryImages, userProfiles, diaries, tasks, anniversaries, roomTodos, roomNotes, groups, journalStickers, socialPosts, courses, games, worldbooks, storyTheaters, storyTheaterPresets, storyTheaterMasks, novels, bankTx, bankData, xhsActivities, xhsOwnedPosts, xhsStockImages, songs, quizzes, guidebookSessions, scheduledMessages, lifeSimStates, handbooks, trackers, trackerEntries, hotNewsSnapshots, vrNovels, vrAnnotations, customCreatorParts, vrMusic, vrGuestbook, vrScripts, vrStagedPlays, vrPresets, vrLetters, vrSettings, worlds, worldEpisodes, lifeRecords, medPlans, lifeRecordSettings] = await Promise.all([
+      const [characters, characterGroups, messages, themes, emojis, emojiCategories, assets, galleryImages, userProfiles, diaries, tasks, anniversaries, roomTodos, roomNotes, groups, journalStickers, socialPosts, courses, characterStudySessions, games, worldbooks, storyTheaters, storyTheaterPresets, storyTheaterMasks, novels, bankTx, bankData, xhsActivities, xhsOwnedPosts, xhsStockImages, songs, quizzes, guidebookSessions, scheduledMessages, lifeSimStates, handbooks, trackers, trackerEntries, hotNewsSnapshots, vrNovels, vrAnnotations, customCreatorParts, vrMusic, vrGuestbook, vrScripts, vrStagedPlays, vrPresets, vrLetters, vrSettings, heartSyncRecords, debateSessions, boardGameSessions, murderMysteryScripts, murderMysterySessions, murderMysteryEvents, lifeReplayRecords, communityCommitteeSessions, taskWorkshopRecords, timeCapsuleRecords, myScheduleRecords, worlds, worldEpisodes, lifeRecords, medPlans, lifeRecordSettings] = await Promise.all([
           getAllFromStore(STORE_CHARACTERS),
           getAllFromStore(STORE_CHAR_GROUPS),
           getAllFromStore(STORE_MESSAGES),
@@ -3592,6 +4656,7 @@ export const DB = {
           getAllFromStore(STORE_JOURNAL_STICKERS),
           getAllFromStore(STORE_SOCIAL_POSTS),
           getAllFromStore(STORE_COURSES),
+          getAllFromStore(STORE_CHARACTER_STUDY),
           getAllFromStore(STORE_GAMES),
           getAllFromStore(STORE_WORLDBOOKS),
           getAllFromStore(STORE_STORY_THEATERS),
@@ -3622,23 +4687,59 @@ export const DB = {
           getAllFromStore(STORE_VR_PRESETS),
           getAllFromStore(STORE_VR_LETTERS),
           getAllFromStore(STORE_VR_SETTINGS),
+          getAllFromStore(STORE_HEART_SYNC),
+          getAllFromStore(STORE_DEBATE),
+          getAllFromStore(STORE_BOARD_GAME_SESSIONS),
+          getAllFromStore(STORE_MURDER_MYSTERY_SCRIPTS),
+          getAllFromStore(STORE_MURDER_MYSTERY_SESSIONS),
+          getAllFromStore(STORE_MURDER_MYSTERY_EVENTS),
+          getAllFromStore(STORE_LIFE_REPLAY),
+          getAllFromStore(STORE_COMMUNITY_COMMITTEE),
+          getAllFromStore(STORE_TASK_WORKSHOP),
+          getAllFromStore(STORE_TIME_CAPSULE),
+          getAllFromStore(STORE_MY_SCHEDULE),
           getAllFromStore(STORE_WORLDS),
           getAllFromStore(STORE_WORLD_EPISODES),
           getAllFromStore(STORE_LIFE_RECORDS),
           getAllFromStore(STORE_MED_PLANS),
           getAllFromStore(STORE_LIFE_SETTINGS),
       ]);
+      const [healingSessions, healingMessages, healingMemoryNodes, healingMemoryVectorRows] = await Promise.all([
+          getAllFromStore(STORE_HEALING_SESSIONS),
+          getAllFromStore(STORE_HEALING_MESSAGES),
+          getAllFromStore(STORE_HEALING_MEMORY_NODES),
+          getAllFromStore(STORE_HEALING_MEMORY_VECTORS),
+      ]);
+      const [oneChangeChanges, oneChangeRecords, oneChangeStandardVersions, oneChangeStateEvents, oneChangeSettings] = await Promise.all([
+          getAllFromStore(STORE_ONE_CHANGE_CHANGES),
+          getAllFromStore(STORE_ONE_CHANGE_RECORDS),
+          getAllFromStore(STORE_ONE_CHANGE_STANDARD_VERSIONS),
+          getAllFromStore(STORE_ONE_CHANGE_STATE_EVENTS),
+          getAllFromStore(STORE_ONE_CHANGE_SETTINGS),
+      ]);
+      // exportFullData 仍可能被直接 JSON.stringify；把紧凑字节恢复成浮点数组，避免
+      // Uint8Array 被 JSON 序列化成带数字键的普通对象。OSContext v2 备份另走二进制旁路。
+      const healingMemoryVectors = (healingMemoryVectorRows as HealingMemoryVector[]).map(row => {
+          const vector = row.vector instanceof Uint8Array
+              ? new Float32Array(row.vector.buffer.slice(row.vector.byteOffset, row.vector.byteOffset + row.vector.byteLength))
+              : row.vector instanceof Float32Array ? row.vector : new Float32Array(row.vector);
+          return { ...row, dimensions: vector.length, vector: Array.from(vector) };
+      });
+      const characterLifeStates = await getAllFromStore(STORE_CHARACTER_LIFE) as LifeState[];
+      const dailySchedules = await getAllFromStore(STORE_DAILY_SCHEDULE) as DailySchedule[];
 
-      // Personal backups retain the whole profile, including Chibi/3D slots.
-      // Sharing-card privacy filtering must not be applied to a device backup.
-      const userProfile = userProfiles.length > 0 ? { ...userProfiles[0] } : undefined;
-      if (userProfile) delete userProfile.id;
+      // 单例资料新增字段也必须随旧式完整/文字备份走；只剥 IndexedDB 主键，不能白名单截断
+      // （上游 3D 家园的 chibiStudio / home3D 槽位同理，分享卡的隐私过滤不适用于本机设备备份）。
+      const userProfile = userProfiles.length > 0 ? (() => {
+          const { id: _id, ...profile } = userProfiles[0];
+          return profile as UserProfile;
+      })() : undefined;
 
       const mainState = bankData.find((d: any) => d.id === 'main_state');
       const dollhouseRecord = bankData.find((d: any) => d.id === 'dollhouse_state');
 
       return {
-          characters, characterGroups, messages, customThemes: themes, savedEmojis: emojis, emojiCategories, assets, galleryImages, userProfile, diaries, tasks, anniversaries, roomTodos, roomNotes, groups, savedJournalStickers: journalStickers, socialPosts, courses, games, worldbooks, storyTheaters, storyTheaterPresets, storyTheaterMasks, novels,
+          characters, characterGroups, messages, customThemes: themes, savedEmojis: emojis, emojiCategories, assets, galleryImages, userProfile, diaries, tasks, anniversaries, roomTodos, roomNotes, groups, savedJournalStickers: journalStickers, socialPosts, courses, characterStudySessions, games, boardGameSessions, murderMysteryScripts, murderMysterySessions, murderMysteryEvents, healingSessions, healingMessages, healingMemoryNodes, healingMemoryVectors, oneChangeChanges, oneChangeRecords, oneChangeStandardVersions, oneChangeStateEvents, oneChangeSettings, worldbooks, storyTheaters, storyTheaterPresets, storyTheaterMasks, novels,
           bankState: mainState ? { ...mainState, id: undefined } : undefined,
           bankDollhouse: dollhouseRecord?.data || undefined,
           bankTransactions: bankTx,
@@ -3650,6 +4751,8 @@ export const DB = {
           guidebookSessions,
           scheduledMessages,
           lifeSimState: lifeSimStates[0] || null,
+          characterLifeStates,
+          dailySchedules,
           handbooks,
           trackers,
           trackerEntries,
@@ -3667,6 +4770,13 @@ export const DB = {
           vrPresets,
           vrLetters,
           vrSettings,
+          heartSyncRecords: (heartSyncRecords || []).filter((record: HeartSyncRecord) => !isRetiredHeartSyncRecord(record)),
+          debateSessions,
+          lifeReplayRecords,
+          communityCommitteeSessions,
+          taskWorkshopRecords,
+          timeCapsuleRecords,
+          myScheduleRecords,
           vrPostOffice: exportPostOfficeLocal(), // 邮局本机配置（身份/后端地址，存 localStorage）
           vrSignal: exportSignalLocal(),         // 信号坠落处本机记录（句子归属「你·角色」+ 反复用清单，存 localStorage）
           worlds,
@@ -3676,6 +4786,8 @@ export const DB = {
           mcdLocal: exportMcdLocal(),             // 麦当劳 token + 启用状态（存 localStorage）
           home3DLocal: exportHome3DLocal(),
           mcpLocal: exportMcpLocal(),             // 通用 MCP 服务器配置（存 localStorage）
+          stickerVisionLocal: exportStickerVisionLocal(), // 表情包视觉理解全局开关（存 localStorage）
+          chatActionOrders: loadChatActionOrders(), // 私聊/群聊「＋」功能格的两套本机顺序
           amsg2GlobalConfig: await exportAmsg2GlobalConfig(options), // 主动消息 2.0 全局配置（存独立的 ActiveMsg 库；后端连接默认不带走）
           beautyAuthorLocal: exportBeautyAuthorBackup(),
           beautyPreferences: exportBeautyPreferences(),
@@ -3709,7 +4821,7 @@ export const DB = {
           STORE_CHARACTERS, STORE_CHAR_GROUPS, STORE_MESSAGES, STORE_THEMES, STORE_EMOJIS, STORE_EMOJI_CATEGORIES,
           STORE_ASSETS, STORE_GALLERY, STORE_USER, STORE_DIARIES,
           STORE_TASKS, STORE_ANNIVERSARIES, STORE_ROOM_TODOS, STORE_ROOM_NOTES,
-          STORE_GROUPS, STORE_JOURNAL_STICKERS, STORE_SOCIAL_POSTS, STORE_COURSES, STORE_GAMES, STORE_WORLDBOOKS, STORE_STORY_THEATERS, STORE_STORY_THEATER_PRESETS, STORE_STORY_THEATER_MASKS, STORE_NOVELS, STORE_SONGS,
+          STORE_GROUPS, STORE_JOURNAL_STICKERS, STORE_SOCIAL_POSTS, STORE_COURSES, STORE_CHARACTER_STUDY, STORE_GAMES, STORE_BOARD_GAME_SESSIONS, STORE_MURDER_MYSTERY_SCRIPTS, STORE_MURDER_MYSTERY_SESSIONS, STORE_MURDER_MYSTERY_EVENTS, STORE_HEALING_SESSIONS, STORE_HEALING_MESSAGES, STORE_HEALING_MEMORY_NODES, STORE_HEALING_MEMORY_VECTORS, STORE_ONE_CHANGE_CHANGES, STORE_ONE_CHANGE_RECORDS, STORE_ONE_CHANGE_STANDARD_VERSIONS, STORE_ONE_CHANGE_STATE_EVENTS, STORE_ONE_CHANGE_SETTINGS, STORE_WORLDBOOKS, STORE_STORY_THEATERS, STORE_STORY_THEATER_PRESETS, STORE_STORY_THEATER_MASKS, STORE_NOVELS, STORE_SONGS,
           STORE_BANK_TX, STORE_BANK_DATA,
           STORE_XHS_ACTIVITIES, STORE_XHS_OWNED_POSTS, STORE_XHS_STOCK,
           STORE_QUIZZES,
@@ -3717,6 +4829,7 @@ export const DB = {
           STORE_SCHEDULED,
           STORE_LIFE_SIM,
           STORE_DAILY_SCHEDULE,
+          STORE_CHARACTER_LIFE,
           STORE_HANDBOOK,
           STORE_TRACKERS,
           STORE_TRACKER_ENTRIES,
@@ -3724,7 +4837,7 @@ export const DB = {
           STORE_MED_PLANS,
           STORE_LIFE_SETTINGS,
           STORE_HOTNEWS,
-          STORE_VR_NOVELS, STORE_VR_ANNOTATIONS, STORE_CC_PARTS, STORE_VR_MUSIC, STORE_VR_GUESTBOOK, STORE_VR_SCRIPTS, STORE_VR_PLAYS, STORE_VR_PRESETS, STORE_VR_LETTERS, STORE_VR_SETTINGS,
+          STORE_VR_NOVELS, STORE_VR_ANNOTATIONS, STORE_CC_PARTS, STORE_VR_MUSIC, STORE_VR_GUESTBOOK, STORE_VR_SCRIPTS, STORE_VR_PLAYS, STORE_VR_PRESETS, STORE_VR_LETTERS, STORE_VR_SETTINGS, STORE_HEART_SYNC, STORE_DEBATE, STORE_BOARD_GAME_SESSIONS, STORE_MURDER_MYSTERY_SCRIPTS, STORE_MURDER_MYSTERY_SESSIONS, STORE_MURDER_MYSTERY_EVENTS, STORE_LIFE_REPLAY, STORE_COMMUNITY_COMMITTEE, STORE_TASK_WORKSHOP, STORE_TIME_CAPSULE, STORE_MY_SCHEDULE, STORE_XIAOHONGSHU,
           STORE_WORLDS, STORE_WORLD_EPISODES,
           'memory_nodes', 'memory_vectors', 'memory_links', 'topic_boxes', 'anticipations', 'event_boxes',
           'room_plates', 'digest_reports',
@@ -3781,7 +4894,17 @@ export const DB = {
           data.groups !== undefined,
           data.socialPosts !== undefined,
           data.courses !== undefined,
+          data.characterStudySessions !== undefined,
           data.games !== undefined,
+          data.healingSessions !== undefined,
+          data.healingMessages !== undefined,
+          data.healingMemoryNodes !== undefined,
+          data.healingMemoryVectors !== undefined,
+          data.oneChangeChanges !== undefined,
+          data.oneChangeRecords !== undefined,
+          data.oneChangeStandardVersions !== undefined,
+          data.oneChangeStateEvents !== undefined,
+          data.oneChangeSettings !== undefined,
           data.worldbooks !== undefined,
           data.storyTheaters !== undefined,
           data.storyTheaterPresets !== undefined,
@@ -3805,6 +4928,7 @@ export const DB = {
           data.digestReports !== undefined,
           data.memoryBatches !== undefined,
           data.dailySchedules !== undefined,
+          data.characterLifeStates !== undefined,
           data.handbooks !== undefined,
           data.trackers !== undefined,
           data.trackerEntries !== undefined,
@@ -3821,6 +4945,13 @@ export const DB = {
           data.vrStagedPlays !== undefined,
           data.vrPresets !== undefined,
           data.vrLetters !== undefined,
+          data.heartSyncRecords !== undefined,
+          data.debateSessions !== undefined,
+          data.lifeReplayRecords !== undefined,
+          data.communityCommitteeSessions !== undefined,
+          data.taskWorkshopRecords !== undefined,
+          data.timeCapsuleRecords !== undefined,
+          data.myScheduleRecords !== undefined,
           (data as any).vrPostOffice !== undefined,
           data.worlds !== undefined,
           data.worldEpisodes !== undefined,
@@ -4061,10 +5192,50 @@ export const DB = {
           await clearAndAdd(STORE_COURSES, data.courses, '学习课程', false);
           data.courses = undefined as any;
       }, data.courses?.length || 0);
+      await runSection('角色自习室', data.characterStudySessions !== undefined, async () => {
+          await clearAndAdd(STORE_CHARACTER_STUDY, data.characterStudySessions, '角色自习室', false);
+          data.characterStudySessions = undefined as any;
+      }, data.characterStudySessions?.length || 0);
       await runSection('游戏记录', data.games !== undefined, async () => {
           await clearAndAdd(STORE_GAMES, data.games, '游戏记录', false);
           data.games = undefined as any;
       }, data.games?.length || 0);
+      await runSection('聊愈会话', data.healingSessions !== undefined, async () => {
+          await clearAndAdd(STORE_HEALING_SESSIONS, data.healingSessions, '聊愈会话', false);
+          data.healingSessions = undefined as any;
+      }, data.healingSessions?.length || 0);
+      await runSection('聊愈原始记录', data.healingMessages !== undefined, async () => {
+          await clearAndAdd(STORE_HEALING_MESSAGES, data.healingMessages, '聊愈原始记录', true);
+          data.healingMessages = undefined as any;
+      }, data.healingMessages?.length || 0);
+      await runSection('聊愈共享记忆', data.healingMemoryNodes !== undefined, async () => {
+          await clearAndAdd(STORE_HEALING_MEMORY_NODES, data.healingMemoryNodes, '聊愈共享记忆', false);
+          data.healingMemoryNodes = undefined as any;
+      }, data.healingMemoryNodes?.length || 0);
+      await runSection('聊愈记忆向量', data.healingMemoryVectors !== undefined, async () => {
+          await clearAndAdd(STORE_HEALING_MEMORY_VECTORS, data.healingMemoryVectors, '聊愈记忆向量', false);
+          data.healingMemoryVectors = undefined as any;
+      }, data.healingMemoryVectors?.length || 0);
+      await runSection('只做一个改变 · 改变', data.oneChangeChanges !== undefined, async () => {
+          await clearAndAdd(STORE_ONE_CHANGE_CHANGES, data.oneChangeChanges, '只做一个改变 · 改变', false);
+          data.oneChangeChanges = undefined as any;
+      }, data.oneChangeChanges?.length || 0);
+      await runSection('只做一个改变 · 记录', data.oneChangeRecords !== undefined, async () => {
+          await clearAndAdd(STORE_ONE_CHANGE_RECORDS, data.oneChangeRecords, '只做一个改变 · 记录', false);
+          data.oneChangeRecords = undefined as any;
+      }, data.oneChangeRecords?.length || 0);
+      await runSection('只做一个改变 · 标准版本', data.oneChangeStandardVersions !== undefined, async () => {
+          await clearAndAdd(STORE_ONE_CHANGE_STANDARD_VERSIONS, data.oneChangeStandardVersions, '只做一个改变 · 标准版本', false);
+          data.oneChangeStandardVersions = undefined as any;
+      }, data.oneChangeStandardVersions?.length || 0);
+      await runSection('只做一个改变 · 状态事件', data.oneChangeStateEvents !== undefined, async () => {
+          await clearAndAdd(STORE_ONE_CHANGE_STATE_EVENTS, data.oneChangeStateEvents, '只做一个改变 · 状态事件', false);
+          data.oneChangeStateEvents = undefined as any;
+      }, data.oneChangeStateEvents?.length || 0);
+      await runSection('只做一个改变 · 设置', data.oneChangeSettings !== undefined, async () => {
+          await clearAndAdd(STORE_ONE_CHANGE_SETTINGS, data.oneChangeSettings, '只做一个改变 · 设置', false);
+          data.oneChangeSettings = undefined as any;
+      }, data.oneChangeSettings?.length || 0);
       await runSection('世界书', data.worldbooks !== undefined, async () => {
           await clearAndAdd(STORE_WORLDBOOKS, data.worldbooks, '世界书', false);
           data.worldbooks = undefined as any;
@@ -4129,6 +5300,51 @@ export const DB = {
           }
           data.vrSettings = undefined as any;
       }, data.vrSettings?.length || 0);
+      await runSection('心心相印', data.heartSyncRecords !== undefined, async () => {
+          const heartSyncRecords = (data.heartSyncRecords || []).filter((record: HeartSyncRecord) => !isRetiredHeartSyncRecord(record));
+          await clearAndAdd(STORE_HEART_SYNC, heartSyncRecords, '心心相印', false);
+          data.heartSyncRecords = undefined as any;
+      }, data.heartSyncRecords?.length || 0);
+      await runSection('辩论赛', data.debateSessions !== undefined, async () => {
+          await clearAndAdd(STORE_DEBATE, data.debateSessions, '辩论赛', false);
+          data.debateSessions = undefined as any;
+      }, data.debateSessions?.length || 0);
+      await runSection('剧本杀模板', data.murderMysteryScripts !== undefined, async () => {
+          await clearAndAdd(STORE_MURDER_MYSTERY_SCRIPTS, data.murderMysteryScripts, '剧本杀模板', false);
+          data.murderMysteryScripts = undefined as any;
+      }, data.murderMysteryScripts?.length || 0);
+      await runSection('剧本杀对局', data.murderMysterySessions !== undefined, async () => {
+          await clearAndAdd(STORE_MURDER_MYSTERY_SESSIONS, data.murderMysterySessions, '剧本杀对局', false);
+          data.murderMysterySessions = undefined as any;
+      }, data.murderMysterySessions?.length || 0);
+      await runSection('剧本杀事件', data.murderMysteryEvents !== undefined, async () => {
+          await clearAndAdd(STORE_MURDER_MYSTERY_EVENTS, data.murderMysteryEvents, '剧本杀事件', false);
+          data.murderMysteryEvents = undefined as any;
+      }, data.murderMysteryEvents?.length || 0);
+      await runSection('桌游', data.boardGameSessions !== undefined, async () => {
+          await clearAndAdd(STORE_BOARD_GAME_SESSIONS, data.boardGameSessions, '桌游', false);
+          data.boardGameSessions = undefined as any;
+      }, data.boardGameSessions?.length || 0);
+      await runSection('人生重映', data.lifeReplayRecords !== undefined, async () => {
+          await clearAndAdd(STORE_LIFE_REPLAY, data.lifeReplayRecords, '人生重映', false);
+          data.lifeReplayRecords = undefined as any;
+      }, data.lifeReplayRecords?.length || 0);
+      await runSection('居委会', data.communityCommitteeSessions !== undefined, async () => {
+          await clearAndAdd(STORE_COMMUNITY_COMMITTEE, data.communityCommitteeSessions, '居委会', false);
+          data.communityCommitteeSessions = undefined as any;
+      }, data.communityCommitteeSessions?.length || 0);
+      await runSection('任务工坊', data.taskWorkshopRecords !== undefined, async () => {
+          await clearAndAdd(STORE_TASK_WORKSHOP, data.taskWorkshopRecords, '任务工坊', false);
+          data.taskWorkshopRecords = undefined as any;
+      }, data.taskWorkshopRecords?.length || 0);
+      await runSection('时间胶囊', data.timeCapsuleRecords !== undefined, async () => {
+          await clearAndAdd(STORE_TIME_CAPSULE, data.timeCapsuleRecords, '时间胶囊', false);
+          data.timeCapsuleRecords = undefined as any;
+      }, data.timeCapsuleRecords?.length || 0);
+      await runSection('我的日程', data.myScheduleRecords !== undefined, async () => {
+          await clearAndAdd(STORE_MY_SCHEDULE, data.myScheduleRecords, '我的日程', false);
+          data.myScheduleRecords = undefined as any;
+      }, data.myScheduleRecords?.length || 0);
       await runSection('邮局身份', (data as any).vrPostOffice !== undefined, async () => {
           importPostOfficeLocal((data as any).vrPostOffice);
           (data as any).vrPostOffice = undefined;
@@ -4173,6 +5389,14 @@ export const DB = {
       await runSection('MCP 服务器配置', (data as any).mcpLocal !== undefined, async () => {
           importMcpLocal((data as any).mcpLocal); // 用户自配的 MCP 服务器列表
           (data as any).mcpLocal = undefined;
+      }, 1);
+      await runSection('表情包视觉理解开关', (data as any).stickerVisionLocal !== undefined, async () => {
+          importStickerVisionLocal((data as any).stickerVisionLocal); // 全局开关（存 localStorage）
+          (data as any).stickerVisionLocal = undefined;
+      }, 1);
+      await runSection('聊天功能顺序', data.chatActionOrders !== undefined, async () => {
+          saveChatActionOrders(data.chatActionOrders);
+          data.chatActionOrders = undefined;
       }, 1);
       await runSection('主动消息配置', (data as any).amsg2GlobalConfig !== undefined, async () => {
           // 必须在 OSContext 那段「导入后跟云端对一次账」之前落地：那段的第一道门是
@@ -4302,6 +5526,10 @@ export const DB = {
           await clearAndAdd(STORE_DAILY_SCHEDULE, data.dailySchedules, '每日程', false);
           data.dailySchedules = undefined as any;
       }, data.dailySchedules?.length || 0);
+      await runSection('角色生活状态', data.characterLifeStates !== undefined, async () => {
+          await clearAndAdd(STORE_CHARACTER_LIFE, data.characterLifeStates, '角色生活状态', false);
+          data.characterLifeStates = undefined as any;
+      }, data.characterLifeStates?.length || 0);
 
       // 手账（跨角色聚合留痕本）
       await runSection('手账', data.handbooks !== undefined, async () => {

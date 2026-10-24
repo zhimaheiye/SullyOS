@@ -6,7 +6,7 @@ vi.mock('@capacitor/filesystem', () => ({
     Directory: { Cache: 'CACHE' }, Encoding: { UTF8: 'utf8' },
 }));
 vi.mock('@capacitor/share', () => ({ Share: { share: mocks.share } }));
-import { shareOrDownloadBlob } from './shareExport';
+import { shareOrDownloadBlob, BROWSER_SHARE_FILE_LIMIT } from './shareExport';
 import { saveMemoryPalaceExport } from './memoryPalace/saveExport';
 
 beforeEach(() => {
@@ -50,6 +50,11 @@ describe('native binary share files', () => {
         const parts = [mocks.write.mock.calls[0][0].data, ...mocks.append.mock.calls.map(call => call[0].data)];
         expect(Buffer.concat(parts.map(part => Buffer.from(part, 'base64'))).equals(Buffer.from(bytes))).toBe(true);
         expect(mocks.rename.mock.calls[0][0].to).toBe('large.png');
+    });
+    it('超过浏览器 Web Share 上限的大文件在原生壳仍走系统分享面板', async () => {
+        const bytes = new Uint8Array(BROWSER_SHARE_FILE_LIMIT + 1);
+        expect(await shareOrDownloadBlob({ blob: new Blob([bytes]), fileName: '大包.zip' })).toBe('shared');
+        expect(mocks.share).toHaveBeenCalledTimes(1);
     });
     it('reports native failures instead of claiming a WebView downloaded the file', async () => {
         vi.spyOn(console, 'error').mockImplementation(() => {});

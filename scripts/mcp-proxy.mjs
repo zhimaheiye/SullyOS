@@ -16,6 +16,7 @@
  * 用法:
  *   node scripts/mcp-proxy.mjs                           # 默认: 代理 18061 → MCP 18060
  *   node scripts/mcp-proxy.mjs --port 19000              # 自定义代理端口
+ *   node scripts/mcp-proxy.mjs --host 127.0.0.1          # 仅本机浏览器可访问
  *   node scripts/mcp-proxy.mjs --target http://localhost:9090  # 自定义 MCP 地址
  *   node scripts/mcp-proxy.mjs --no-prewarm              # 禁用 SPA 预热
  *
@@ -37,14 +38,16 @@ const getArg = (name, fallback) => {
 };
 
 const PROXY_PORT = parseInt(getArg('--port', '18061'), 10);
+const PROXY_HOST = getArg('--host', '0.0.0.0');
 const TARGET = getArg('--target', 'http://localhost:18060');
 const PREWARM_ENABLED = !args.includes('--no-prewarm');
 
 const CORS_HEADERS = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'POST, GET, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Accept, Mcp-Session-Id, Authorization, MCP-Protocol-Version, Last-Event-ID, X-MCP-Forward-Headers',
+    'Access-Control-Allow-Headers': 'Content-Type, Accept, Mcp-Session-Id, Authorization, X-Auth-Token, MCP-Protocol-Version, Last-Event-ID, X-MCP-Forward-Headers',
     'Access-Control-Expose-Headers': 'Mcp-Session-Id',
+    'Access-Control-Allow-Private-Network': 'true',
     'Access-Control-Max-Age': '86400',
 };
 
@@ -228,7 +231,7 @@ createServer((req, res) => {
         if (body.length > 0) proxyReq.write(body);
         proxyReq.end();
     });
-}).listen(PROXY_PORT, () => {
+}).listen(PROXY_PORT, PROXY_HOST, () => {
     console.log(`MCP CORS Proxy started`);
     console.log(`  Proxy:  http://localhost:${PROXY_PORT}/mcp`);
     console.log(`  Target: ${TARGET}/mcp`);

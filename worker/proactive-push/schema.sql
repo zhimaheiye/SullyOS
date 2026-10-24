@@ -1,7 +1,8 @@
--- Proactive Push Accelerator — D1 schema
+-- Proactive Push Accelerator — D1 schema (v2: 24/7 server-side AI)
 --
--- 一张表够用。endpoint + char_id 作为联合主键：一个浏览器订阅对多
--- 个角色独立调度，互不影响。
+-- schedules 表：每个角色在每个浏览器端点上的独立调度。
+-- character_configs 表：每个角色的 systemPrompt 缓存，
+--   客户端注册时写入，Worker cron 调 LLM 时读取。
 
 CREATE TABLE IF NOT EXISTS schedules (
   endpoint        TEXT    NOT NULL,
@@ -9,11 +10,16 @@ CREATE TABLE IF NOT EXISTS schedules (
   p256dh          TEXT    NOT NULL,
   auth            TEXT    NOT NULL,
   interval_ms     INTEGER NOT NULL,
-  next_fire_at    INTEGER NOT NULL,    -- epoch ms，下次应当发 wake push 的时间
-  last_heartbeat  INTEGER NOT NULL,    -- epoch ms，客户端最近一次 heartbeat
+  next_fire_at    INTEGER NOT NULL,
   created_at      INTEGER NOT NULL,
   PRIMARY KEY (endpoint, char_id)
 );
 
--- cron 每次都按 next_fire_at 扫，单列索引足够。
 CREATE INDEX IF NOT EXISTS idx_schedules_next_fire ON schedules(next_fire_at);
+
+-- 角色人设缓存：subscribe 时写入，cron 调 LLM 时读取
+CREATE TABLE IF NOT EXISTS character_configs (
+  char_id       TEXT PRIMARY KEY,
+  system_prompt TEXT    NOT NULL,
+  updated_at    INTEGER NOT NULL
+);

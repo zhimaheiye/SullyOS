@@ -23,6 +23,12 @@ import { segmentTextWithProtectedBlocks } from '@rei-standard/amsg-instant';
 /** `\\n` 字面 → 真实换行. 必须先跑, 否则后续 ^ 行锚定失效. */
 const stripLiteralBackslashN = (t: string): string => t.replace(/\\n/g, '\n');
 
+/** 撤回块必须先于其它标签处理，通知只展示动作，绝不展示块内原文或表情名。 */
+const replaceWithdrawalsForNotification = (t: string): string =>
+  t
+    .replace(/\[\[WITHDRAW_TEXT\]\][\s\S]*?\[\[\/WITHDRAW_TEXT\]\]/gi, '对方撤回了一条消息')
+    .replace(/\[\[WITHDRAW_EMOJI\s*[:：]\s*[^\]\r\n]+?\s*\]\]/gi, '对方撤回了一个表情包');
+
 /**
  * 历史来源标签 → 换行（保留分隔语义）。
  *
@@ -378,6 +384,8 @@ export function sanitizeForNotification(text: string): string {
   let result = text;
   // 1. 字面 \n 还原 — 否则后续 ^ 锚定失效
   result = stripLiteralBackslashN(result);
+  // 1.5 撤回先转成终态提示；块内原文从此不再进入任何通知清洗分支。
+  result = replaceWithdrawalsForNotification(result);
   // 2. think 块最早剥 — 里面可能含其他 tag 影响后续匹配
   result = stripThinkBlocks(result);
   // 3. HTML 块替换 — 内部 markdown/tag 不应被处理

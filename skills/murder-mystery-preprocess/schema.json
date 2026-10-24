@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sullyos.local/schemas/murder-mystery-script-v1.json",
+  "title": "MurderMysteryScript V1",
+  "type": "object",
+  "required": ["schemaVersion", "id", "title", "publicBackground", "publicRules", "seats", "objectiveFacts", "clues", "phases", "deliverables", "abilities", "communicationRules", "victoryConditions", "endings"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "id": { "type": "string", "minLength": 1 },
+    "title": { "type": "string", "minLength": 1 },
+    "author": { "type": "string" },
+    "description": { "type": "string" },
+    "publicBackground": { "type": "string", "minLength": 1 },
+    "publicRules": { "type": "array", "items": { "type": "string" } },
+    "seats": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/seat" } },
+    "humanSeatIds": { "type": "array", "items": { "type": "string" } },
+    "investigator": { "type": "object", "required": ["id", "name"], "properties": { "id": { "type": "string", "minLength": 1 }, "name": { "type": "string", "minLength": 1 }, "openingStatements": { "type": "array", "items": { "type": "object", "required": ["seatId", "text"], "properties": { "seatId": { "type": "string", "minLength": 1 }, "text": { "type": "string", "minLength": 1 }, "source": { "$ref": "#/$defs/source" } }, "additionalProperties": false } } }, "additionalProperties": false },
+    "objectiveFacts": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/fact" } },
+    "clues": { "type": "array", "items": { "$ref": "#/$defs/clue" } },
+    "phases": { "type": "array", "items": { "$ref": "#/$defs/phase" } },
+    "deliverables": { "type": "array", "items": { "$ref": "#/$defs/deliverable" } },
+    "abilities": { "type": "array", "items": { "$ref": "#/$defs/ability" } },
+    "communicationRules": { "$ref": "#/$defs/communicationRules" },
+    "victoryConditions": { "type": "array", "items": { "$ref": "#/$defs/victory" } },
+    "endings": { "type": "array", "items": { "$ref": "#/$defs/ending" } },
+    "sourceNotes": { "type": "array", "items": { "type": "string" } },
+    "extensions": { "type": "object" }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "source": { "type": "object", "required": ["document", "excerpt"], "properties": { "document": { "type": "string" }, "excerpt": { "type": "string" }, "location": { "type": "string" } }, "additionalProperties": false },
+    "fact": { "type": "object", "required": ["id", "text"], "properties": { "id": { "type": "string", "minLength": 1 }, "text": { "type": "string", "minLength": 1 }, "source": { "$ref": "#/$defs/source" } }, "additionalProperties": false },
+    "seat": { "type": "object", "required": ["id", "name", "personalScript", "beliefs", "privateKnowledge"], "properties": { "id": { "type": "string", "minLength": 1 }, "name": { "type": "string", "minLength": 1 }, "title": { "type": "string" }, "personalScript": { "type": "string" }, "beliefs": { "type": "array", "items": { "$ref": "#/$defs/fact" } }, "privateKnowledge": { "type": "array", "items": { "$ref": "#/$defs/fact" } }, "objectives": { "type": "array", "items": { "type": "string" } }, "source": { "$ref": "#/$defs/source" } }, "additionalProperties": false },
+    "grant": { "type": "object", "required": ["kind"], "properties": { "kind": { "enum": ["initial", "phase", "event", "manual"] }, "phaseId": { "type": "string" }, "eventId": { "type": "string" }, "note": { "type": "string" } }, "additionalProperties": false },
+    "clue": { "type": "object", "required": ["id", "text", "audience", "grant"], "properties": { "id": { "type": "string", "minLength": 1 }, "text": { "type": "string", "minLength": 1 }, "audience": { "type": "array", "items": { "type": "string" } }, "grant": { "$ref": "#/$defs/grant" }, "initiallyPublic": { "type": "boolean" }, "source": { "$ref": "#/$defs/source" } }, "additionalProperties": false },
+    "phase": { "type": "object", "required": ["id", "title"], "properties": { "id": { "type": "string", "minLength": 1 }, "title": { "type": "string", "minLength": 1 }, "publicRules": { "type": "array", "items": { "type": "string" } }, "yesNoSeatIds": { "type": "array", "items": { "type": "string" } }, "fourChoiceSeatIds": { "type": "array", "items": { "type": "string" } }, "completionHint": { "type": "string" }, "completion": { "type": "object", "required": ["action", "acceptedSeatIds"], "properties": { "action": { "enum": ["accusation"] }, "acceptedSeatIds": { "type": "array", "items": { "type": "string" } } }, "additionalProperties": false }, "revealObjectiveFacts": { "type": "boolean" }, "source": { "$ref": "#/$defs/source" } }, "additionalProperties": false },
+    "deliverable": { "type": "object", "required": ["id", "title", "text", "audience", "grant"], "properties": { "id": { "type": "string", "minLength": 1 }, "title": { "type": "string", "minLength": 1 }, "text": { "type": "string", "minLength": 1 }, "audience": { "type": "array", "items": { "type": "string" } }, "grant": { "$ref": "#/$defs/grant" }, "source": { "$ref": "#/$defs/source" } }, "additionalProperties": false },
+    "ability": { "type": "object", "required": ["id", "name", "holderSeatIds", "grant", "uses", "effect"], "properties": { "id": { "type": "string", "minLength": 1 }, "name": { "type": "string", "minLength": 1 }, "holderSeatIds": { "type": "array", "items": { "type": "string" } }, "grant": { "$ref": "#/$defs/grant" }, "uses": { "type": "integer", "minimum": 0 }, "durationRounds": { "type": "integer", "minimum": 0 }, "effect": { "type": "string", "minLength": 1 }, "outcomes": { "type": "array", "items": { "type": "object", "required": ["targetSeatId", "label"], "properties": { "targetSeatId": { "type": "string" }, "label": { "type": "string" }, "blocksPublicSpeech": { "type": "boolean" } }, "additionalProperties": false } }, "conditions": { "type": "array", "items": { "type": "string" } }, "source": { "$ref": "#/$defs/source" } }, "additionalProperties": false },
+    "communicationRules": { "type": "object", "required": ["publicTable", "hostPlayerOoc", "hostPlayerGame", "playerPrivate"], "properties": { "publicTable": { "type": "boolean" }, "hostPlayerOoc": { "type": "boolean" }, "hostPlayerGame": { "type": "boolean" }, "playerPrivate": { "type": "boolean" }, "privateConditions": { "type": "array", "items": { "type": "string" } } }, "additionalProperties": false },
+    "victory": { "type": "object", "required": ["id", "description"], "properties": { "id": { "type": "string", "minLength": 1 }, "description": { "type": "string", "minLength": 1 }, "beneficiarySeatIds": { "type": "array", "items": { "type": "string" } }, "source": { "$ref": "#/$defs/source" } }, "additionalProperties": false },
+    "ending": { "type": "object", "required": ["id", "title", "description"], "properties": { "id": { "type": "string", "minLength": 1 }, "title": { "type": "string", "minLength": 1 }, "description": { "type": "string" }, "source": { "$ref": "#/$defs/source" } }, "additionalProperties": false }
+  }
+}

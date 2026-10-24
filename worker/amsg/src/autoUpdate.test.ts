@@ -70,6 +70,7 @@ const FULL_ENV = {
   CF_SCRIPT_NAME: 'sullyos-amsg',
   CF_ACCOUNT_ID: 'acc-1',
   AMSG_MASTER_KEY: 'mk',
+  AMSG_BUNDLE_URL: 'https://raw.githubusercontent.com/example/worker/main/worker.bundle.js',
   INSTANT_TICK: {},
 };
 
@@ -319,7 +320,7 @@ describe.skipIf(!sqlite)('recordManualSelfUpdate', () => {
     // 手动那次装的正是远端现在这份
     const calls0 = stubNetwork(bundleWith('a'));
     const { fetchLatestBundle } = await import('./selfUpdate');
-    const fetched = await fetchLatestBundle();
+    const fetched = await fetchLatestBundle(FULL_ENV);
     expect(fetched.ok).toBe(true);
     const hash = fetched.ok ? fetched.bundle.hash : '';
     expect(calls0).toHaveLength(1);

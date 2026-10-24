@@ -8,6 +8,30 @@
 
 const cleanArg = (value: string): string => value.trim().replace(/[|｜]/g, '／');
 
+const canonicalNewsCard = (body: string): string =>
+    `[[NEWS_CARD: ${body.trim().replace(/｜/g, '|')}]]`;
+
+/**
+ * 修复新闻卡片标签常见的全角标点、中文名和单层括号。
+ *
+ * 只认完整方括号 token，不从“我刷到一条新闻”之类正文猜卡片，避免把错误热点
+ * 写进聊天。浏览器聊天和 Instant Push classifier 共用这一层。
+ */
+export const normalizeNewsCardFormatting = (raw: string): string => {
+    let content = raw || '';
+
+    content = content.replace(
+        /\[\[\s*(?:NEWS_CARD|新闻卡片)\s*[:：]\s*([^\]\r\n]+?)\s*\]\]/gim,
+        (_all, body: string) => canonicalNewsCard(body),
+    );
+    content = content.replace(
+        /(^|[^\[])\[\s*(?:NEWS_CARD|新闻卡片)\s*[:：]\s*([^\]\r\n]+?)\s*\](?!\])/gim,
+        (_all, prefix: string, body: string) => `${prefix}${canonicalNewsCard(body)}`,
+    );
+
+    return content;
+};
+
 const normalizeExerciseSummary = (raw: string): string => {
     const value = raw.trim();
     // 展示摘要把 activity + duration 拼在一起。只在末尾明显像时长时才拆，
@@ -17,23 +41,25 @@ const normalizeExerciseSummary = (raw: string): string => {
     return `[[LIFE:EXERCISE|${cleanArg(match[1])}|${cleanArg(match[2])}]]`;
 };
 
+const INVALID_EMOJI_PRECEDING_CHARS = new Set(['[', '【', '［']);
+
 /** Only sticker syntax is shared with group chat; never enable transfer/LIFE actions there. */
 export const normalizeAssistantEmojiFormatting = (raw: string): string => {
     const closing: Record<string, string> = { '[[': ']]', '[': ']', '【': '】', '［［': '］］', '［': '］' };
     // Quoted examples are explanatory text. Do not repair deliberately separated spellings.
     return (raw || '').split(/(```[\s\S]*?```|`[^`\r\n]*`)/g).map((part, index) => index % 2 ? part : part.replace(
         /(\[\[|\[|【|［［|［)\s*(?:SEND_EMOJI|(?:[^\[\]【】［］\r\n:：]{1,40}?\s*)?发送了表情包|表情包|表情)\s*[:：]\s*([^\[\]【】［］\r\n]+?)\s*(\]\]|\]|】|］］|］)(?![\]】］])/gim,
-        (all, open: string, name: string, close: string, offset: number, source: string) => {
-            // iOS Safari <16.4 不支持后行断言。检查原文前一字符，不消耗相邻表情的边界。
-            if (offset > 0 && /[\[【［]/.test(source[offset - 1])) return all;
-            return closing[open] === close ? '[[SEND_EMOJI: ' + name.trim() + ']]' : all;
+        (all, open: string, name: string, close: string, offset: number, string: string) => {
+            if (closing[open] !== close) return all;
+            if (offset > 0 && INVALID_EMOJI_PRECEDING_CHARS.has(string[offset - 1])) return all;
+            return '[[SEND_EMOJI: ' + name.trim() + ']]';
         },
     )).join('');
 };
 
 /** 幂等：已经是 [[...]] 的规范标签不会再次包裹。 */
 export const normalizeAssistantActionFormatting = (raw: string): string => {
-    let content = raw || '';
+    let content = normalizeNewsCardFormatting(raw);
 
     content = normalizeAssistantEmojiFormatting(content);
 

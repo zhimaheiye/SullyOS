@@ -15,13 +15,13 @@
 import { SongSheet, SongLine, APIConfig, CharacterProfile } from '../types';
 import { SONG_GENRES, SONG_MOODS } from './songPrompts';
 import { DB } from './db';
-import { getProxyWorkerUrl } from './proxyWorker';
+import { requireProxyWorkerUrl } from './proxyWorker';
 
 // ── Endpoint config ──
 // Same Cloudflare Worker that hosts /netease, /xhs, /webdav etc. — address comes
 // from the central config (utils/proxyWorker.ts); users can point it at their own
 // self-hosted worker via 「设置 → 网络代理 (Worker)」.
-const workerBase = (): string => getProxyWorkerUrl();
+const workerBase = (): string => requireProxyWorkerUrl();
 // Replicate model slug. Using the model-prediction endpoint means we always
 // pick up the latest published version automatically — no manual pinning.
 const MODEL_OWNER = 'lucataco';

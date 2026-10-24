@@ -324,6 +324,20 @@ describe('classifyLLMOutput — LIFE / NEWS_CARD', () => {
       expect(r.directives).toEqual([{ type: 'news_card', body: '某某官宣' }]);
     }
   });
+
+  it('全角标点、中文名和单层括号也归一成新闻卡片', () => {
+    const r = classifyLLMOutput(
+      '第一条[[NEWS_CARD：微博｜某某官宣]]\n第二条[新闻卡片：知乎｜一个问题]',
+    );
+    expect(r.kind).toBe('finish');
+    if (r.kind === 'finish') {
+      expect(r.cleanedText).toBe('第一条\n第二条');
+      expect(r.directives).toEqual([
+        { type: 'news_card', body: '微博|某某官宣' },
+        { type: 'news_card', body: '知乎|一个问题' },
+      ]);
+    }
+  });
 });
 
 // 复述型模型经常把整条消息重写一遍 (先说一遍再"总结"一遍), 同一个标签就出现两次。

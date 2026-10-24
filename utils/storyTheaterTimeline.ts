@@ -1,6 +1,284 @@
-import type { Message } from '../types';
+import type {
+    Message,
+    StoryTheaterArchive,
+    StoryTheaterBranch,
+    StoryTheaterEntry,
+    StoryTheaterTimelineState,
+} from '../types';
 import { isVisibleChatMessage } from './chatMessageVisibility';
 
+export const STORY_PARENT_MESSAGE_ID = 'storyParentMessageId';
+export const STORY_BRANCH_ID = 'storyBranchId';
+
+export const storyTimelineRootBranchId = (entryId: string): string => `story-root:${entryId}`;
+export const storyTimelineVectorPartitionId = (entryId: string, archiveId: string): string => `story-theater:${entryId}:archive:${archiveId}`;
+
+const cleanBranchName = (value: string): string => value
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 28);
+
+export const defaultStoryBranchName = (message?: Message): string => {
+    const excerpt = cleanBranchName(message?.content || '');
+    return excerpt ? `从「${excerpt}」开始` : '新的可能';
+};
+
+export const storyMessageParentId = (message: Message): number | null | undefined => {
+    if (!Object.prototype.hasOwnProperty.call(message.metadata || {}, STORY_PARENT_MESSAGE_ID)) return undefined;
+    const value = message.metadata?.[STORY_PARENT_MESSAGE_ID];
+    if (value === null) return null;
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+};
+
+export const storyMessageBranchId = (message: Message): string | undefined => {
+    const value = message.metadata?.[STORY_BRANCH_ID];
+    return typeof value === 'string' && value.trim() ? value : undefined;
+};
+
+export interface StoryTimelineMigration {
+    entry: StoryTheaterEntry;
+    messages: Message[];
+    changed: boolean;
+}
+
+/**
+ * 把旧的线性虚构剧情映射为一条根路线。只使用旧楼层顺序做一次迁移，之后不再由 ID 推断拓扑。
+ * 真实陪伴明确跳过，保持原有线性合同。
+ */
+export function migrateStoryTimeline(
+    entry: StoryTheaterEntry,
+    sourceMessages: Message[],
+    now: number = Date.now(),
+): StoryTimelineMigration {
+    if (entry.writesToCharacterMemory) return { entry, messages: sourceMessages, changed: false };
+
+    const rows = [...sourceMessages].sort((a, b) => a.id - b.id);
+    const rootBranchId = entry.timeline?.rootBranchId || storyTimelineRootBranchId(entry.id);
+    const existingBranches = entry.timeline?.branches?.filter(branch => branch?.id) || [];
+    const rootBranch: StoryTheaterBranch = existingBranches.find(branch => branch.id === rootBranchId) || {
+        id: rootBranchId,
+        name: '原始路线',
+        forkMessageId: null,
+        createdAt: Number(entry.createdAt) || now,
+        updatedAt: now,
+    };
+    const branches = existingBranches.length > 0 ? existingBranches : [rootBranch];
+    let previousId: number | null = null;
+    let messageChanged = false;
+    const messages = rows.map(message => {
+        const existingParent = storyMessageParentId(message);
+        const existingBranch = storyMessageBranchId(message);
+        if (existingParent !== undefined && existingBranch) {
+            previousId = message.id;
+            return message;
+        }
+        messageChanged = true;
+        const migrated = {
+            ...message,
+            metadata: {
+                ...(message.metadata || {}),
+                [STORY_PARENT_MESSAGE_ID]: existingParent === undefined ? previousId : existingParent,
+                [STORY_BRANCH_ID]: existingBranch || rootBranchId,
+            },
+        };
+        previousId = message.id;
+        return migrated;
+    });
+
+    const messageIds = new Set(messages.map(message => message.id));
+    const migratedArchives = (entry.archives || []).map(archive => {
+        if (Array.isArray(archive.messageIds) && archive.messageIds.length > 0) return archive;
+        const ids = messages
+            .filter(message => message.id >= archive.fromMessageId && message.id <= archive.toMessageId)
+            .map(message => message.id);
+        return {
+            ...archive,
+            messageIds: ids,
+            branchId: archive.branchId || rootBranchId,
+        };
+    });
+    const archiveChanged = migratedArchives.some((archive, index) => archive !== entry.archives[index]);
+    const requestedCursor = entry.timeline?.activeCursorMessageId ?? (messages.at(-1)?.id ?? null);
+    const cursor = requestedCursor === null || messageIds.has(requestedCursor) ? requestedCursor : (messages.at(-1)?.id ?? null);
+    const cursorMessage = cursor === null ? undefined : messages.find(message => message.id === cursor);
+    const activeBranchId = branches.some(branch => branch.id === entry.timeline?.activeBranchId)
+        ? entry.timeline!.activeBranchId
+        : (cursorMessage ? storyMessageBranchId(cursorMessage) : undefined) || rootBranchId;
+    const timeline: StoryTheaterTimelineState = {
+        version: 1,
+        rootBranchId,
+        activeBranchId,
+        activeCursorMessageId: cursor,
+        branches,
+    };
+    const timelineChanged = !entry.timeline
+        || entry.timeline.version !== 1
+        || entry.timeline.activeCursorMessageId !== cursor
+        || entry.timeline.activeBranchId !== activeBranchId
+        || entry.timeline.branches.length !== branches.length;
+
+    return {
+        entry: { ...entry, archives: migratedArchives, timeline, updatedAt: timelineChanged || messageChanged || archiveChanged ? now : entry.updatedAt },
+        messages,
+        changed: timelineChanged || messageChanged || archiveChanged,
+    };
+}
+
+export function storyTimelineChildren(messages: Message[]): Map<number | null, Message[]> {
+    const result = new Map<number | null, Message[]>();
+    const knownIds = new Set(messages.map(message => message.id));
+    for (const message of messages) {
+        const declared = storyMessageParentId(message);
+        const parent = declared !== undefined && declared !== message.id && (declared === null || knownIds.has(declared)) ? declared : null;
+        const bucket = result.get(parent) || [];
+        bucket.push(message);
+        result.set(parent, bucket);
+    }
+    for (const bucket of result.values()) bucket.sort((a, b) => a.timestamp - b.timestamp || a.id - b.id);
+    return result;
+}
+
+export function storyPathToMessage(messages: Message[], targetId: number | null): Message[] {
+    if (targetId === null) return [];
+    const byId = new Map(messages.map(message => [message.id, message]));
+    const reversed: Message[] = [];
+    const seen = new Set<number>();
+    let current = byId.get(targetId);
+    while (current && !seen.has(current.id)) {
+        seen.add(current.id);
+        reversed.push(current);
+        const parent = storyMessageParentId(current);
+        current = typeof parent === 'number' ? byId.get(parent) : undefined;
+    }
+    return reversed.reverse();
+}
+
+export const activeStoryPath = (entry: StoryTheaterEntry, messages: Message[]): Message[] => (
+    entry.writesToCharacterMemory || !entry.timeline
+        ? [...messages].sort((a, b) => a.id - b.id)
+        : storyPathToMessage(messages, entry.timeline.activeCursorMessageId)
+);
+
+export const storyNodeHasChildren = (messages: Message[], messageId: number): boolean => (
+    messages.some(message => storyMessageParentId(message) === messageId)
+);
+
+export function canAppendToActiveStoryPath(entry: StoryTheaterEntry, messages: Message[]): boolean {
+    if (entry.writesToCharacterMemory || !entry.timeline) return true;
+    const { activeBranchId, activeCursorMessageId, branches } = entry.timeline;
+    const branch = branches.find(item => item.id === activeBranchId);
+    const branchHasOwnMessage = messages.some(message => storyMessageBranchId(message) === activeBranchId);
+    if (!branchHasOwnMessage && branch?.forkMessageId === activeCursorMessageId) return true;
+    if (activeCursorMessageId === null) return messages.length === 0;
+    return !storyNodeHasChildren(messages, activeCursorMessageId);
+}
+
+export function makeStoryBranch(
+    entry: StoryTheaterEntry,
+    forkMessage: Message,
+    now: number = Date.now(),
+): StoryTheaterEntry {
+    if (!entry.timeline || entry.writesToCharacterMemory) return entry;
+    const id = globalThis.crypto?.randomUUID?.() || `story-branch-${now}-${Math.random().toString(36).slice(2, 8)}`;
+    const parentBranchId = storyMessageBranchId(forkMessage) || entry.timeline.rootBranchId;
+    const branch: StoryTheaterBranch = {
+        id,
+        name: defaultStoryBranchName(forkMessage),
+        parentBranchId,
+        forkMessageId: forkMessage.id,
+        createdAt: now,
+        updatedAt: now,
+    };
+    return {
+        ...entry,
+        timeline: {
+            ...entry.timeline,
+            activeBranchId: id,
+            activeCursorMessageId: forkMessage.id,
+            branches: [...entry.timeline.branches, branch],
+        },
+        updatedAt: now,
+    };
+}
+
+export function switchStoryTimelineTo(entry: StoryTheaterEntry, message: Message, now: number = Date.now()): StoryTheaterEntry {
+    if (!entry.timeline || entry.writesToCharacterMemory) return entry;
+    const branchId = storyMessageBranchId(message) || entry.timeline.rootBranchId;
+    return {
+        ...entry,
+        timeline: { ...entry.timeline, activeBranchId: branchId, activeCursorMessageId: message.id },
+        updatedAt: now,
+    };
+}
+
+export function renameStoryBranch(entry: StoryTheaterEntry, branchId: string, name: string, now: number = Date.now()): StoryTheaterEntry {
+    if (!entry.timeline || entry.writesToCharacterMemory) return entry;
+    const trimmed = name.trim().slice(0, 40);
+    if (!trimmed) return entry;
+    return {
+        ...entry,
+        timeline: {
+            ...entry.timeline,
+            branches: entry.timeline.branches.map(branch => branch.id === branchId ? { ...branch, name: trimmed, updatedAt: now } : branch),
+        },
+        updatedAt: now,
+    };
+}
+
+export function storyDescendantIds(messages: Message[], rootId: number, includeRoot = true): number[] {
+    const children = storyTimelineChildren(messages);
+    const result: number[] = [];
+    const queue = includeRoot ? [rootId] : (children.get(rootId) || []).map(message => message.id);
+    const seen = new Set<number>();
+    while (queue.length > 0) {
+        const id = queue.shift()!;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        result.push(id);
+        for (const child of children.get(id) || []) queue.push(child.id);
+    }
+    return result;
+}
+
+export function storyBranchFamilyIds(timeline: StoryTheaterTimelineState, branchId: string): Set<string> {
+    const result = new Set([branchId]);
+    let changed = true;
+    while (changed) {
+        changed = false;
+        for (const branch of timeline.branches) {
+            if (branch.parentBranchId && result.has(branch.parentBranchId) && !result.has(branch.id)) {
+                result.add(branch.id);
+                changed = true;
+            }
+        }
+    }
+    return result;
+}
+
+export function archiveAppliesToStoryPath(archive: StoryTheaterArchive, path: Message[]): boolean {
+    const expected = archive.messageIds || [];
+    if (expected.length === 0) return false;
+    const ids = path.map(message => message.id);
+    outer: for (let start = 0; start <= ids.length - expected.length; start += 1) {
+        for (let offset = 0; offset < expected.length; offset += 1) {
+            if (ids[start + offset] !== expected[offset]) continue outer;
+        }
+        return true;
+    }
+    return false;
+}
+
+export const applicableStoryArchives = (entry: StoryTheaterEntry, path: Message[]): StoryTheaterArchive[] => (
+    entry.writesToCharacterMemory || !entry.timeline
+        ? entry.archives
+        : entry.archives.filter(archive => archiveAppliesToStoryPath(archive, path))
+);
+
+export const storyMessageArchivedOnPath = (messageId: number, archives: StoryTheaterArchive[]): boolean => (
+    archives.some(archive => archive.messageIds?.includes(messageId))
+);
 const TIMESTAMP_VERSION = 1;
 export interface StoryTimelineRepairResult {
     repairedCharacterIds: string[];

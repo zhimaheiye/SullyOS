@@ -24,6 +24,7 @@
 
 import { sanitizeForNotification } from '../../../utils/sanitize';
 import { extractTransferCommands, parseTransferAmount } from '../../../utils/transferFormat';
+import { normalizeNewsCardFormatting } from '../../../utils/assistantActionFormat';
 import { extractScheduleChangeDirectives } from '../../../utils/scheduleChangeParse';
 
 export type ToolCall = {
@@ -330,6 +331,8 @@ function parseDiaryShort(m: RegExpMatchArray, type: DiaryDirectiveType): Directi
  *              格式. 但保留兼容性: 空字符串 → finish + 空 cleanedText)
  */
 export function classifyLLMOutput(text: string): ClassificationResult {
+  text = normalizeNewsCardFormatting(text);
+
   // 1. 先扫数据标签. 任意一个命中就走 tool-request, 同一轮多个 SEARCH/RECALL 也一次性收集.
   const toolCalls: ToolCall[] = [];
   for (const spec of DATA_TAGS) {

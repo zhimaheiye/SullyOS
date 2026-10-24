@@ -1,9 +1,9 @@
 /**
- * 通用 MCP 客户端 (Model Context Protocol, Streamable HTTP)
+ * 通用 MCP 客户端 (Model Context Protocol, Streamable HTTP + 本机 stdio)
  *
  * 与 mcdMcpClient / luckinMcpClient 的「一家一个客户端」不同，这里是用户
- * 自配的任意远程 MCP 服务器：设置里填 URL（+ 可选 Bearer Token / 自定义头），发现工具后
- * 以 OpenAI function-calling 格式注入聊天请求，工具循环见 useChatAI。
+ * 自配的任意 HTTP / stdio MCP 服务器：设置里完成连接并发现工具后，以 OpenAI
+ * function-calling 格式注入聊天请求，工具循环见 useChatAI。
  *
  * 网络路径（用户三选一，见 docs/mcp-client.md）：
  * 1. 直连 —— MCP 服务器 CORS 配置正确时（能读到 Mcp-Session-Id 响应头）
@@ -52,10 +52,21 @@ export interface McpCustomHeader {
     value: string;
 }
 
+export interface McpEnvironmentVariable {
+    name: string;
+    value: string;
+}
+
 export interface McpServerConfig {
     id: string;
     name: string;
+    /** 老配置缺省即 Streamable HTTP。stdio 只在本机 Vite 开发服务中可用。 */
+    transport?: 'http' | 'stdio';
     url: string;
+    /** stdio 启动配置；由本机 Vite middleware 执行，浏览器本身不直接 spawn。 */
+    command?: string;
+    args?: string[];
+    env?: McpEnvironmentVariable[];
     /** Bearer Token，可选（Authorization: Bearer <token>） */
     token?: string;
     /** 额外请求头，可选（例如 X-API-Key / XBY-APIKEY） */
@@ -118,6 +129,13 @@ export const createMcpServer = (name: string, url: string): McpServerConfig => (
     updatedAt: Date.now(),
 });
 
+export const isStdioMcpServer = (server: Pick<McpServerConfig, 'transport'>): boolean =>
+    server.transport === 'stdio';
+
+export const hasMcpServerEndpoint = (
+    server: Pick<McpServerConfig, 'transport' | 'url' | 'command'>,
+): boolean => isStdioMcpServer(server) ? !!server.command?.trim() : !!server.url?.trim();
+
 /**
  * 启用且已发现工具、且对当前聊天可见的服务器。
  * charId 可传角色 ID 或群聊 ID；缺省时只返回通用服务器，保证没有聊天上下文
@@ -125,7 +143,7 @@ export const createMcpServer = (name: string, url: string): McpServerConfig => (
  */
 export const getEnabledMcpServers = (charId?: string): McpServerConfig[] =>
     loadMcpServers().filter(s =>
-        s.enabled && s.url && (s.tools?.length || 0) > 0 &&
+        s.enabled && hasMcpServerEndpoint(s) && (s.tools?.length || 0) > 0 &&
         (!s.charIds?.length || (charId != null && s.charIds.includes(charId))),
     );
 
@@ -148,7 +166,7 @@ export const isMcpChatAvailable = (charId?: string): boolean => getEnabledMcpSer
  * prompt 的是哪几台，就拿哪几台来判，别把别的角色绑定的服务器算进来。
  */
 export const hasWorkerUnreachableMcpServer = (charId?: string): boolean =>
-    getEnabledMcpServers(charId).some((s) => !isWorkerReachableUrl(s.url));
+    getEnabledMcpServers(charId).some((s) => isStdioMcpServer(s) || !isWorkerReachableUrl(s.url));
 
 /**
  * 上云给 amsg worker 用的服务器子集。注意不走 getEnabledMcpServers：
@@ -161,7 +179,7 @@ export const hasWorkerUnreachableMcpServer = (charId?: string): boolean =>
  */
 export const collectMcpFireServers = (): McpFireServer[] =>
     loadMcpServers()
-        .filter((s) => s.enabled && s.url && (s.tools?.length || 0) > 0 && isWorkerReachableUrl(s.url))
+        .filter((s) => !isStdioMcpServer(s) && s.enabled && s.url && (s.tools?.length || 0) > 0 && isWorkerReachableUrl(s.url))
         .map((s) => {
             // 无人值守的后台没有确认弹窗：服务端明确标成 destructive 的工具只留在
             // 前台并自动询问，不把提示词当权限系统，也不额外暴露用户配置项。
@@ -263,13 +281,43 @@ export const buildMcpRequestHeaders = (
 
 /** 一次请求的目标：代理包装和请求头都是浏览器侧独有的，在这里落地后交给 core。 */
 const targetFor = (server: McpServerConfig): McpTransportTarget => ({
-    url: buildMcpFetchUrl(server),
-    headers: (sessionId, protocolVersion) => buildMcpRequestHeaders(server, sessionId, protocolVersion),
+    url: isStdioMcpServer(server)
+        ? `/api/mcp-stdio/${encodeURIComponent(server.id)}/mcp`
+        : buildMcpFetchUrl(server),
+    headers: (sessionId, protocolVersion) => isStdioMcpServer(server)
+        ? buildMcpRequestHeaders({}, sessionId, protocolVersion)
+        : buildMcpRequestHeaders(server, sessionId, protocolVersion),
+    ...(isStdioMcpServer(server) ? { additionalProtocolVersions: ['2024-11-05'] } : {}),
     // 直连时 fetch 抛 TypeError 十有八九是 CORS，把排查方向直接告诉用户
-    fetchErrorHint: server.proxyUrl
+    fetchErrorHint: isStdioMcpServer(server)
+        ? '请确认当前页面由本机仓库的 run.bat / Vite 开发服务打开；静态部署和手机不能启动本机 stdio 进程。'
+        : server.proxyUrl
         ? '请检查代理 URL 是否可访问、代理密钥是否正确。'
         : '很可能是浏览器 CORS 限制。请在这个服务器的「代理 URL」里配置代理（本地 node scripts/mcp-proxy.mjs 或自部署 worker/mcp-proxy）。',
 });
+
+const stdioEnvObject = (server: McpServerConfig): Record<string, string> =>
+    Object.fromEntries((server.env || [])
+        .map(item => [String(item?.name || '').trim(), String(item?.value || '')] as const)
+        .filter(([name]) => !!name));
+
+const configureStdioServer = async (server: McpServerConfig): Promise<void> => {
+    if (!isStdioMcpServer(server)) return;
+    const response = await fetch(`/api/mcp-stdio/${encodeURIComponent(server.id)}/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command: server.command || '', args: server.args || [], env: stdioEnvObject(server) }),
+    });
+    if (response.ok) return;
+    const payload = await response.json().catch(() => ({})) as { error?: string };
+    throw new Error(payload.error || `本机 stdio MCP bridge 返回 HTTP ${response.status}`);
+};
+
+/** 设置删除或切回 HTTP 时尽力关掉对应本机进程；HTTP 服务器不受影响。 */
+export const stopLocalStdioMcpServer = async (server: Pick<McpServerConfig, 'id' | 'transport'>): Promise<void> => {
+    if (!isStdioMcpServer(server)) return;
+    await fetch(`/api/mcp-stdio/${encodeURIComponent(server.id)}`, { method: 'DELETE' }).catch(() => undefined);
+};
 
 // ========== 公开 API ==========
 
@@ -281,6 +329,7 @@ export const discoverMcpTools = async (
     onStage?: (stage: McpConnectionStage) => void,
 ): Promise<McpToolDef[]> => {
     resetMcpSession(server.id);
+    await configureStdioServer(server);
     return discoverMcpToolsCore(targetFor(server), getSession(server.id), MCP_REQUEST_TIMEOUT_MS, { onStage });
 };
 
@@ -305,6 +354,11 @@ export const callMcpTool = async (
             `${argsPreview || '这次调用没有参数。'}\n\n允许这一次吗？`,
         );
         if (!approved) return { success: false, error: '用户拒绝了这次 MCP 调用。' };
+    }
+    try {
+        await configureStdioServer(server);
+    } catch (e: any) {
+        return { success: false, error: e?.message || String(e) };
     }
     return callMcpToolCore(targetFor(server), getSession(server.id), toolName, args, {
         signal,

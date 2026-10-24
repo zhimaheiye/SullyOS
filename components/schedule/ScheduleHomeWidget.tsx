@@ -473,6 +473,7 @@ interface ScheduleFullscreenViewerProps {
     schedule: DailySchedule | null;
     activeCharacter: CharacterProfile | null;
     contentColor?: string;
+    onPlayTheater?: (index: number) => void;
 }
 
 export const ScheduleFullscreenViewer: React.FC<ScheduleFullscreenViewerProps> = ({
@@ -484,6 +485,7 @@ export const ScheduleFullscreenViewer: React.FC<ScheduleFullscreenViewerProps> =
     schedule,
     activeCharacter,
     contentColor = '#ffffff',
+    onPlayTheater,
 }) => {
     // Lock scroll of background
     useEffect(() => {
@@ -600,6 +602,7 @@ export const ScheduleFullscreenViewer: React.FC<ScheduleFullscreenViewerProps> =
                     character={activeCharacter}
                     contentColor={contentColor}
                     compact={true}
+                    onPlayTheater={onPlayTheater}
                 />
                 <div className="text-[10px] text-center opacity-40 mt-4 tracking-widest">
                     TAP OUTSIDE TO CLOSE · 点空白处关闭

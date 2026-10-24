@@ -92,7 +92,7 @@ async function callPlateLLM(
                 stream: false,
             }),
         },
-        2, PLATE_LLM_TIMEOUT_MS, { appName: '记忆宫殿', purpose: '门牌整理' }
+        2, PLATE_LLM_TIMEOUT_MS, { appName: '记忆宫殿', featureId: 'memoryLight', purpose: '门牌整理' }
     );
 
     return parsePlateLlmReply(data.choices?.[0]?.message?.content || '');

@@ -23,10 +23,10 @@ it('blocked positions can be previewed in red but cannot be confirmed',()=>{
  expect(placementError(s,d)).toContain('恐龙太近');expect(previewGardenPlacement(s,d).dinosaurGarden!.maps[0].props).toHaveLength(1);expect(()=>confirmGardenPlacement(s,user,d)).toThrow();
 });
 it('rejects concurrent edits, deleted props, changed map and changed catch owner',()=>{
- let s=state();const id=gardenResidents(s)[0].catchId,d=beginGardenPlacement(s,'dino',id);
+ let s: any = state();const id=gardenResidents(s)[0].catchId,d=beginGardenPlacement(s,'dino',id);
  expect(()=>confirmGardenPlacement(editDino(s,user,id,{stage:{text:'新的便签'}}),user,d)).toThrow('新变化');
  expect(()=>confirmGardenPlacement(setGardenMap(s,'coast'),user,d)).toThrow('新变化');
- expect(()=>confirmGardenPlacement({...s,inventory:s.inventory.map(c=>c.id===id?{...c,ownerId:'other'}:c)},user,d)).toThrow('收藏状态');
+ expect(()=>confirmGardenPlacement({...s,inventory:s.inventory.map((c: any)=>c.id===id?{...c,ownerId:'other'}:c)},user,d)).toThrow('收藏状态');
  s=editGardenProp(s,user,{kind:'puddle',pose:{x:0,z:3.15,rotation:0}});const p=s.dinosaurGarden!.maps[0].props[0],pd=beginGardenPlacement(s,'prop',p.id);
  expect(()=>confirmGardenPlacement(editGardenProp(s,user,{id:p.id,remove:true}),user,pd)).toThrow();
 });

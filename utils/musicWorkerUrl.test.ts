@@ -16,7 +16,7 @@ import {
   musicApi,
   resolveMusicWorkerUrl,
 } from '../context/MusicContext';
-import { DEFAULT_PROXY_WORKER, setProxyWorkerUrl } from './proxyWorker';
+import { PUBLISHER_PUBLIC_PROXY_URL, setBuiltInPublicProxyUrl, setProxyWorkerUrl } from './proxyWorker';
 
 const LS_CFG_KEY = 'sully_music_cfg_v1';
 
@@ -35,14 +35,14 @@ describe('音乐服务地址：跟随中心代理', () => {
     vi.unstubAllGlobals();
   });
 
-  it('没单独设过 → 用中心地址，中心改了立刻跟上', () => {
-    expect(resolveMusicWorkerUrl(loadMusicCfgStandalone())).toBe(DEFAULT_PROXY_WORKER);
+  it('没单独设过 → 用中心地址，中心改了立刻跟上；清空后回到发行方公共代理', () => {
+    expect(resolveMusicWorkerUrl(loadMusicCfgStandalone())).toBe(PUBLISHER_PUBLIC_PROXY_URL);
 
     setProxyWorkerUrl('https://my-proxy.example.com');
     expect(resolveMusicWorkerUrl(loadMusicCfgStandalone())).toBe('https://my-proxy.example.com');
 
     setProxyWorkerUrl('');
-    expect(resolveMusicWorkerUrl(loadMusicCfgStandalone())).toBe(DEFAULT_PROXY_WORKER);
+    expect(resolveMusicWorkerUrl(loadMusicCfgStandalone())).toBe(PUBLISHER_PUBLIC_PROXY_URL);
   });
 
   it('存量地址跟当前中心一样 → 收敛成「跟随」，中心改回默认后跟着回默认', () => {
@@ -54,12 +54,12 @@ describe('音乐服务地址：跟随中心代理', () => {
     expect(loadMusicCfgStandalone().workerUrl).toBe('');
 
     setProxyWorkerUrl('');
-    expect(resolveMusicWorkerUrl(loadMusicCfgStandalone())).toBe(DEFAULT_PROXY_WORKER);
+    expect(resolveMusicWorkerUrl(loadMusicCfgStandalone())).toBe(PUBLISHER_PUBLIC_PROXY_URL);
   });
 
-  it('存量地址是公共默认实例 / 已死的历史实例 → 都当成跟随中心', () => {
+  it('存量地址是作者公共实例 / 已死的历史实例 → 都当成未配置，不再跟随作者', () => {
     for (const stale of [
-      DEFAULT_PROXY_WORKER,
+      'https://proxy.friedsully.com',
       'https://sully-n.qegj567.workers.dev',
       'https://sullymeow.ccwu213.cc',
       'https://sullymeow.ccwu.cc',
@@ -95,15 +95,19 @@ describe('音乐服务地址：跟随中心代理', () => {
       return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
     }));
 
-    // 组件挂载时快照进 state 的那份 cfg（跟随中心），中途不会重新构造
     const cfg = loadMusicCfgStandalone();
-    await musicApi._raw(cfg, '/login/qr/key');
+    setBuiltInPublicProxyUrl('');
+    await expect(musicApi._raw(cfg, '/login/qr/key')).rejects.toThrow('公共网络代理地址还没有填进这个版本');
+    expect(hit).toEqual([]);
+    setBuiltInPublicProxyUrl(PUBLISHER_PUBLIC_PROXY_URL);
 
+    setProxyWorkerUrl('https://first.example.com');
+    await musicApi._raw(cfg, '/login/qr/key');
     setProxyWorkerUrl('https://my-proxy.example.com');
     await musicApi._raw(cfg, '/login/qr/key');
 
     expect(hit).toEqual([
-      `${DEFAULT_PROXY_WORKER}/netease/login/qr/key`,
+      'https://first.example.com/netease/login/qr/key',
       'https://my-proxy.example.com/netease/login/qr/key',
     ]);
   });

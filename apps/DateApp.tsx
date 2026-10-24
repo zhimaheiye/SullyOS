@@ -65,7 +65,7 @@ const DateApp: React.FC = () => {
     // 直接闭包里的 charForHook 是回复开始时捕获的，会读到 stale memoryPalaceEnabled=true。
     const charactersRef = useRef(characters);
     charactersRef.current = characters;
-    
+
     // Modes: 'select' -> 'peek' -> 'session' | 'settings' | 'history'
     const [mode, setMode] = useState<'select' | 'entry' | 'peek' | 'session' | 'settings' | 'history'>('select');
     // Track previous mode for Settings back navigation
@@ -88,7 +88,6 @@ const DateApp: React.FC = () => {
 
     // 选择页分页（6 个角色一页，横向翻页）
     const SELECT_PAGE_SIZE = 6;
-    const DATE_SESSION_MESSAGE_LIMIT = 50;
     const DATE_HISTORY_MESSAGE_LIMIT = 500;
     const pagerRef = useRef<HTMLDivElement>(null);
     const [selectPage, setSelectPage] = useState(0);
@@ -160,11 +159,6 @@ const DateApp: React.FC = () => {
     const markDateTurnDirty = (target = char) => {
         if (!target) return;
         markAmsgStateDirty({ char: target, userProfile, groups, realtimeConfig });
-    };
-
-    const loadRecentDateMessages = async (charId: string, limit = DATE_SESSION_MESSAGE_LIMIT) => {
-        return (await DB.getRecentMessagesByCharIdAndSource(charId, 'date', limit))
-            .sort((a, b) => a.timestamp - b.timestamp);
     };
 
     useEffect(() => () => { peekRequestRef.current++; }, []);
@@ -293,7 +287,8 @@ const DateApp: React.FC = () => {
         trackEvent('进入见面感知页');
 
         try {
-            const msgs = await loadCharacterContextMessages(c);
+            // 场景图消息（blobref content）剥掉，不能进感知 prompt。
+            const msgs = (await loadCharacterContextMessages(c)).filter(message => !message.metadata?.sceneImage);
             const preparedMsgs = await materializeVisionDescriptions(msgs, apiConfig.visionApi);
             const emojis = await DB.getEmojis();
             const { messages } = (await DatePrompts.buildPeekPayload({
@@ -402,7 +397,8 @@ const DateApp: React.FC = () => {
         // 2. Prepare Context
         // Re-fetch messages. Since we saved the opening in handleEnterSession,
         // 'allMsgs' will now correctly contain: [History..., Opening, UserMsg]
-        const allMsgs = await loadCharacterContextMessages(char);
+        // 场景图消息（content 是 blobref）必须剥掉，绝不能进下一轮 LLM 上下文。
+        const allMsgs = (await loadCharacterContextMessages(char)).filter(message => !message.metadata?.sceneImage);
         const preparedAllMsgs = await materializeVisionDescriptions(allMsgs, apiConfig.visionApi);
 
         // Update local state for display
@@ -465,11 +461,13 @@ const DateApp: React.FC = () => {
         const currentEncounterId = encounterIdRef.current;
         if (!char || dateMessages.length === 0) throw new Error("No context");
 
-        const lastMsg = dateMessages[dateMessages.length - 1];
-        if (lastMsg.role !== 'assistant' || lastMsg.metadata?.dateEncounterId !== currentEncounterId) throw new Error("Cannot reroll user message");
+        // 场景图消息是本轮的附属产物：重掷时跳过它定位真正的文本回复
+        const lastMsg = [...dateMessages].reverse().find(message => message.type === 'text');
+        if (!lastMsg || lastMsg.role !== 'assistant' || lastMsg.type !== 'text' || lastMsg.metadata?.dateEncounterId !== currentEncounterId) throw new Error("Cannot reroll user message");
 
         // Keep the old reply until the replacement request succeeds.
-        const allMsgs = await loadCharacterContextMessages(char);
+        // 场景图消息（blobref content）剥掉，不能进下一轮 LLM 上下文。
+        const allMsgs = (await loadCharacterContextMessages(char)).filter(message => !message.metadata?.sceneImage);
         const validMsgs = allMsgs.filter(m => m.id !== lastMsg.id);
         const preparedValidMsgs = await materializeVisionDescriptions(validMsgs, apiConfig.visionApi);
         const emojis = await DB.getEmojis();
@@ -539,7 +537,7 @@ const DateApp: React.FC = () => {
             ? createSARModuleSurfaceMeta(sarPlan.character, parsed.assistantSurface)
             : undefined;
 
-        // 生成成功后才删旧回复：以前先删后调 API，请求一失败上一条剧情就永久消失
+        // 生成成功后才删旧回复：以前先删后调 API，请求一失败上一条剧情就永久消失。
         await DB.deleteMessage(lastMsg.id);
         await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'text', content: parsed.canonical, metadata: { source: 'date', dateEncounterId: currentEncounterId, ...(assistantSurface ? { sarModuleSurface: assistantSurface } : {}) } });
         markDateTurnDirty(char);

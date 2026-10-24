@@ -2,8 +2,9 @@
 import React, { useRef, useState } from 'react';
 import Modal from '../os/Modal';
 import TokenImg from '../os/TokenImg';
-import { CharacterProfile, Message, EmojiCategory, DailySchedule, ScheduleSlot, ApiPreset, APIConfig } from '../../types';
+import { CharacterProfile, Message, EmojiCategory, DailySchedule, ScheduleSlot, ApiPreset, APIConfig, CharacterRealPlaceSchedule } from '../../types';
 import ScheduleCard from '../schedule/ScheduleCard';
+import RealPlaceScheduleSettings from '../schedule/RealPlaceScheduleSettings';
 import EmotionSettingsPanel from './EmotionSettingsPanel';
 import ChatInputSettings from './ChatInputSettings';
 import ChatSettingsSection from './ChatSettingsSection';
@@ -12,8 +13,10 @@ import type { ChatInputPreferences } from '../../utils/chatInputPreferences';
 import { isTranslationLangPreset, normalizeTranslationLangLabel, TRANSLATION_LANG_MAX_LENGTH, TRANSLATION_LANG_PRESETS } from '../../utils/translationLang';
 import type { ContextRangeMode, ContextRangeSnapshot } from '../../utils/chatContextRange';
 import { trackEvent } from '../../utils/analytics';
+import { isWithdrawnMessage } from '../../utils/messageWithdrawal';
 import { CANTONESE_VOICE_SUPPORT_NOTE, VOICE_LANGUAGE_OPTIONS } from '../../utils/voiceLanguage';
 import { chatMessageFuzzyMatchesKeyword } from '../../utils/chatMessageSearch';
+import { loadGlobalStickerVisionEnabled, resolveStickerVisionEnabled, type StickerVisionMode } from '../../utils/stickerVision';
 
 interface ChatModalsProps {
     compactHome?: boolean;
@@ -87,6 +90,7 @@ interface ChatModalsProps {
     onConfirmEditMessage: () => void;
     onDeleteMessage: () => void;
     onCopyMessage: () => void;
+    onQuickRepairHtml: () => void;
     onToggleMessageFavorite?: () => void;
     messageFavorited?: boolean;
     onDeleteEmoji: () => void;
@@ -113,6 +117,9 @@ interface ChatModalsProps {
     onToggleHtmlMode?: () => void;
     htmlModeCustomPrompt?: string;
     setHtmlModeCustomPrompt?: (v: string) => void;
+    // 表情包视觉理解三态（undefined = inherit 跟随全局）
+    stickerVisionMode?: StickerVisionMode;
+    onSetStickerVisionMode?: (mode: StickerVisionMode) => void;
     // Voice TTS
     chatVoiceEnabled?: boolean;
     onToggleChatVoice?: () => void;
@@ -136,6 +143,7 @@ interface ChatModalsProps {
     onScheduleReroll?: () => void;
     onScheduleCoverChange?: (dataUrl: string) => void;
     onScheduleStyleChange?: (style: 'lifestyle' | 'mindful') => void;
+    onRealPlaceScheduleChange?: (config: CharacterRealPlaceSchedule) => void;
     onPlayTheater?: (index: number) => void;
     // Schedule master toggle
     isScheduleFeatureEnabled?: boolean;
@@ -262,20 +270,22 @@ const ChatModals: React.FC<ChatModalsProps> = ({
     onTransfer, onImportEmoji, onSaveSettings,
     onOpenHistoryCleanup,
     onArchive, onCreatePrompt, onEditPrompt, onSavePrompt, onDeletePrompt,
-    onSetHistoryStart, onRestoreAdaptiveContext, onJumpToMessageInChat, onEnterSelectionMode, onReplyMessage, onEditMessageStart, onConfirmEditMessage, onDeleteMessage, onCopyMessage, onToggleMessageFavorite, messageFavorited, onDeleteEmoji, onDeleteCategory, onRenameCategory, onDownloadCategory,
+    onSetHistoryStart, onRestoreAdaptiveContext, onJumpToMessageInChat, onEnterSelectionMode, onReplyMessage, onEditMessageStart, onConfirmEditMessage, onDeleteMessage, onCopyMessage, onQuickRepairHtml, onToggleMessageFavorite, messageFavorited, onDeleteEmoji, onDeleteCategory, onRenameCategory, onDownloadCategory,
     allCharacters = [], onSaveCategoryVisibility,
     translationEnabled, onToggleTranslation, translationExpanded, onToggleTranslationExpanded, translateSourceLang, translateTargetLang, onSetTranslateSourceLang, onSetTranslateLang,
     xhsEnabled, onToggleXhs,
     htmlModeEnabled, onToggleHtmlMode, htmlModeCustomPrompt, setHtmlModeCustomPrompt,
+    stickerVisionMode, onSetStickerVisionMode,
     chatVoiceEnabled, onToggleChatVoice, chatVoiceAutoPlay, onToggleChatVoiceAutoPlay, chatVoiceLang, onSetChatVoiceLang,
     onGenerateVoice, voiceAvailable, onDownloadVoice, voiceDownloadable, voiceCollectable, onToggleVoiceFavorite, voiceFavorited,
     scheduleData, isScheduleGenerating, onScheduleEdit, onScheduleDelete, onScheduleReroll, onScheduleCoverChange,
-    onScheduleStyleChange, onPlayTheater,
+    onScheduleStyleChange, onRealPlaceScheduleChange, onPlayTheater,
     isScheduleFeatureEnabled, onToggleScheduleFeature,
     isMemoryPalaceEnabled, isVectorizing, vectorizePendingCount, vectorizeProgress,
     retainRecentForVectorize, setRetainRecentForVectorize, vectorizeResult, onForceVectorize,
     apiPresets, onAddApiPreset, onSaveEmotion, onClearBuffs,
 }) => {
+    const bgInputRef = useRef<HTMLInputElement>(null);
     const [visibilitySelection, setVisibilitySelection] = useState<Set<string>>(new Set());
     const [historyPage, setHistoryPage] = useState(0);
     const [historySearch, setHistorySearch] = useState('');
@@ -497,7 +507,7 @@ const ChatModals: React.FC<ChatModalsProps> = ({
                                         step="10"
                                         value={settingsContextLimit}
                                         onChange={e => {
-                                            setSettingsContextRangeMode('manual');
+                                             setSettingsContextRangeMode('manual');
                                             setSettingsContextLimit(parseInt(e.target.value));
                                         }}
                                         className="w-full h-2 bg-slate-200 rounded-full appearance-none accent-primary"
@@ -686,6 +696,31 @@ const ChatModals: React.FC<ChatModalsProps> = ({
                                     <p className="text-[10px] text-slate-400 mt-1">留空则只使用内置提示词。</p>
                                 </div>
                             )}
+                        </div>
+
+                        {/* 表情包视觉理解（三态：跟随全局 / 强制开启 / 强制关闭） */}
+                        <div className="pt-2 border-t border-slate-100">
+                            <label className="text-xs font-bold text-slate-400 uppercase">表情包视觉理解</label>
+                            <p className="text-[10px] text-slate-400 mt-2 leading-relaxed">
+                                开启后，角色可以结合表情包真实图片理解其中的文字、动作和 meme 含义。只对开启之后新发送的表情生效，旧表情不会补识别；已获得的视觉语义不会因关闭而消失。
+                            </p>
+                            <div className="flex flex-wrap gap-1.5 mt-2.5">
+                                {([['inherit', '跟随全局'], ['on', '强制开启'], ['off', '强制关闭']] as const).map(([value, label]) => (
+                                    <button key={value} type="button" onClick={() => onSetStickerVisionMode?.(value as StickerVisionMode)}
+                                        className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-all ${(stickerVisionMode || 'inherit') === value ? 'bg-fuchsia-500 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                                        {label}
+                                    </button>
+                                ))}
+                            </div>
+                            {(() => {
+                                const mode = stickerVisionMode || 'inherit';
+                                const effective = resolveStickerVisionEnabled(loadGlobalStickerVisionEnabled(), mode);
+                                return (
+                                    <p className="text-[10px] text-fuchsia-600/80 mt-1.5">
+                                        当前实际：{effective ? '开启' : '关闭'}{mode === 'inherit' ? '（全局默认）' : '（本角色强制）'}
+                                    </p>
+                                );
+                            })()}
                         </div>
                     </ChatSettingsSection>
                     <ChatSettingsSection title="聊天记录" summary="按范围清理或保留最近消息">
@@ -974,6 +1009,10 @@ const ChatModals: React.FC<ChatModalsProps> = ({
 
             <Modal isOpen={modalType === 'message-options'} title="消息操作" onClose={() => setModalType('none')}>
                 <div className="space-y-3">{compactHome?<button className="w-full py-3 rounded-2xl bg-amber-50 text-amber-800" onClick={()=>{onToggleMessageFavorite?.();setModalType('none');}}>{messageFavorited?'取消收藏':'收藏这条消息'}</button>:<>
+                    <button onClick={onQuickRepairHtml} className="w-full py-3 bg-fuchsia-50 text-fuchsia-700 font-medium rounded-2xl active:bg-fuchsia-100 transition-colors">
+                        快速修复格式
+                    </button>
+                    {!isWithdrawnMessage(selectedMessage) && <>
                     <button onClick={onEnterSelectionMode} className="w-full py-3 bg-slate-50 text-slate-700 font-medium rounded-2xl active:bg-slate-100 transition-colors flex items-center justify-center gap-2">
                         多选 / 批量删除
                     </button>
@@ -1016,6 +1055,7 @@ const ChatModals: React.FC<ChatModalsProps> = ({
                             {voiceFavorited ? '取消收藏语音' : '收藏语音'}
                         </button>
                     )}
+                    </>}
                     <button onClick={onDeleteMessage} className="w-full py-3 bg-red-50 text-red-500 font-medium rounded-2xl active:bg-red-100 transition-colors flex items-center justify-center gap-2">
                         删除消息
                     </button>
@@ -1191,6 +1231,7 @@ const ChatModals: React.FC<ChatModalsProps> = ({
                                 </div>
                                 <button
                                     onClick={onToggleScheduleFeature}
+                                    data-manual-relay-action={isScheduleFeatureEnabled ? undefined : true}
                                     aria-label="切换日程与情绪总开关"
                                     className={`w-10 h-6 rounded-full p-1 transition-colors flex items-center flex-shrink-0 ${isScheduleFeatureEnabled ? 'bg-primary' : 'bg-slate-300'}`}
                                 >
@@ -1216,6 +1257,7 @@ const ChatModals: React.FC<ChatModalsProps> = ({
                                     <div className="flex gap-2">
                                         <button
                                             onClick={() => onScheduleStyleChange('lifestyle')}
+                                            data-manual-relay-action
                                             disabled={isScheduleGenerating}
                                             className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition-all border ${
                                                 (activeCharacter?.scheduleStyle || 'lifestyle') === 'lifestyle'
@@ -1228,6 +1270,7 @@ const ChatModals: React.FC<ChatModalsProps> = ({
                                         </button>
                                         <button
                                             onClick={() => onScheduleStyleChange('mindful')}
+                                            data-manual-relay-action
                                             disabled={isScheduleGenerating}
                                             className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition-all border ${
                                                 activeCharacter?.scheduleStyle === 'mindful'
@@ -1240,6 +1283,10 @@ const ChatModals: React.FC<ChatModalsProps> = ({
                                         </button>
                                     </div>
                                 </div>
+                            )}
+
+                            {activeCharacter && onRealPlaceScheduleChange && activeCharacter.scheduleStyle !== 'mindful' && (
+                                <RealPlaceScheduleSettings key={activeCharacter.id} character={activeCharacter} onChange={onRealPlaceScheduleChange} />
                             )}
 
                             <ScheduleCard

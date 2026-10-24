@@ -1,4 +1,6 @@
-# 通用 MCP 客户端（用户自配的远程工具服务器）
+# 通用 MCP 客户端（远程 HTTP + 本机 stdio）
+
+2026-10-20 待公开版本已撤下「我的日程」里的 Veglia 活动读取和睡眠 MCP 入口。通用 MCP 仍只服务用户自己配置的工具，不内置活动采集或健康数据读取。
 
 > 改 MCP 接入路径、排查「工具连不上 / 角色不调工具」前必读。
 > 这份文档讲的是**通用** MCP 客户端；小红书/麦当劳/瑞幸那三个写死的客户端不归这里管
@@ -11,8 +13,8 @@
 
 设置 →「MCP」→「管理」：
 
-1. 「添加服务器」→ 填名称和服务器 URL（如 `https://mcp.example.com/mcp`）
-2. 服务器要鉴权就填 Bearer Token，或按服务商说明添加自定义请求头（如 `XBY-APIKEY`）
+1. 「添加服务器」→ 选择 Streamable HTTP 或本机 stdio
+2. HTTP 填 URL/鉴权；stdio 填启动命令、每行一个参数和可选环境变量
 3. 点「测试连接」→ 客户端走 MCP 握手 + `tools/list`，工具清单持久化到本机
 4. 打开开关 → 私聊、群聊或当前角色的协同工作里就能调这些工具
 5. 「适用聊天」默认通用（所有私聊和群聊）；可把服务器绑定给指定角色或群聊
@@ -21,6 +23,38 @@
 「聊天模型支持工具调用」默认开启。若你明确知道当前模型或中转不支持 OpenAI
 function calling（例如携带 `tools` 就报 401），关闭它后首轮会直接走文字兼容模式，
 不再先发送一次 `tools` 探测请求；即使保持开启，遇到常见 4xx 仍会自动降级一次。
+
+## 设计意图与 fork 边界
+
+这套通用 MCP 能力的产品目标是“让 SullyOS 接任意兼容服务器”，而不是按
+filesystem / GitHub / 游戏工具等类别逐个写客户端。因此工具业务类型不应进入 transport
+层；现有小红书、麦当劳、瑞幸专用客户端继续保留，stdio 扩展也不以“顺手重构旧客户端”
+为目标。需要迁移时应单独验证，避免影响已经稳定使用的旧链路。
+
+Claude Code / Claude Desktop / Cursor 在这里是**配置生态与验收参照**，不是 SullyOS 的
+运行时依赖。用户可以先在这些客户端或终端确认某个 `command + args + env` 能正常启动，
+再把同一组配置填进 SullyOS；SullyOS 不通过 Claude Code CLI 转发 MCP，也不依赖它的
+agent loop。SullyOS 只负责启动已配置的进程与走 MCP 协议，**不会自动安装** Node.js、
+Python、`npx` / `uvx` 或具体 MCP Server 包。
+
+本 fork 的 stdio 需求边界明确是**电脑本机能力**：不要求 Android、手机、静态部署或
+远程浏览器取得本机进程权限。当前实现因此放在 Vite 开发服务器的同源 middleware，
+而没有把 SullyOS 整体改造成 Electron/Tauri 桌面程序，也没有额外依赖常驻 Claude Code。
+
+### 与上游同步时保护这项差异
+
+截至 2026-10-08 核验，`qegj567-cloud/SullyOS` 当前对应实现仍是 HTTP-only；
+本 fork 的 stdio 支持由提交 `0d7915ce72c5cd014f85c26f0a477dfe0515a100`
+（`feat: add local stdio MCP transport`）引入。同步上游时至少要保护并复核：
+
+- `server/mcp-stdio-middleware.ts` 及其测试；
+- `vite.config.ts` 的 `/api/mcp-stdio` middleware 注册与退出清理；
+- `utils/mcpClient.ts` 的 `transport / command / args / env`、stdio 配置与停止逻辑；
+- `components/settings/McpConnectionConsole.tsx` 的 HTTP / stdio 双模式 UI；
+- 本文与 `docs/mcp-user-guide.md` 中的 stdio 使用和安全边界。
+
+如果上游以后独立加入 stdio，先比较生命周期、Windows shim、进程树终止和本机访问限制，
+确认语义等价后再去重，不能仅因为文件名/功能名相似就覆盖 fork 实现。
 
 ### 连不上？三种网络路径
 
@@ -32,6 +66,10 @@ function calling（例如携带 `tools` 就报 401），关闭它后首轮会直
 | **直连**（代理 URL 留空） | 服务器 CORS 配置正确 | 什么都不用做 |
 | **本地代理** | 本地 MCP（如 xiaohongshu-mcp）、或临时试用 | `node scripts/mcp-proxy.mjs`，代理 URL 填 `http://localhost:18061` |
 | **自己的 Cloudflare Worker** | 云端 MCP + 手机/不想在电脑跑东西 | 部署 [`worker/mcp-proxy/`](../worker/mcp-proxy/README.md) 到**自己的** CF 账号，代理 URL 填 Worker 地址，建议设 `PROXY_KEY` 防白嫖 |
+
+stdio 不走这三种网络路径。它只在本机 `run.bat` / `pnpm dev` 启动的 Vite 服务中，
+由同源 `/api/mcp-stdio/<serverId>` 中间件启动子进程并转发 JSON-RPC。局域网客户端、
+手机和静态部署都会被拒绝，避免网页远程取得本机进程权限。
 
 代理约定统一为 `<代理URL>?target=<url-encoded 服务器URL>`（可选 `X-Proxy-Key` 头）。
 **刻意不走中心 sfworker**：MCP 流量含用户的 Bearer Token / 自定义鉴权头，不应该经过项目方服务器。
@@ -50,6 +88,7 @@ function calling（例如携带 `tools` 就报 401），关闭它后首轮会直
 | 协同工作 tools 注入、结果回传与停止 | `features/collaboration/engine.ts`、`features/collaboration/mcp.ts` |
 | 备份导出/导入 | `utils/db.ts`（`mcpLocal` 段）+ `types.ts` `FullBackupData.mcpLocal` |
 | 本地 CORS 代理（支持 `?target=` 通用模式） | `scripts/mcp-proxy.mjs` |
+| 本机 stdio 进程与 JSON-RPC 桥 | `server/mcp-stdio-middleware.ts` + `vite.config.ts` |
 | 用户自部署 Worker 代理 | `worker/mcp-proxy/` |
 
 ## 设计要点（改之前必看）
@@ -68,6 +107,15 @@ function calling（例如携带 `tools` 就报 401），关闭它后首轮会直
   否则开 stream 的用户工具调用会被静默吞掉（症状就是"角色说要查但没动静"）。
 - **工具清单读持久化结果，不在聊天路径发网络请求**。`tools/list` 只在设置里
   点「测试连接」时跑；服务器更新了工具需要用户重新点一次。
+- **stdio 复用现有协议客户端，不另建工具循环**。浏览器先把 `command/args/env` 交给
+  本机 Vite middleware，再把同一套 `initialize` / `notifications/initialized` /
+  `tools/list` / `tools/call` 请求发到同源桥。桥按行收发 JSON-RPC，浏览器侧的工具名映射、
+  危险操作确认、私聊/群聊调用和会话重连全部沿用 HTTP 路径。
+  Windows 启动无扩展名命令或 `.cmd` / `.bat` shim 时会回退 shell；终止时必须结束整棵进程树
+  （`taskkill /PID <pid> /T /F`），否则只退出 `npx.cmd` 等外壳可能留下真正的 MCP Server 子进程。
+- **stdio 是本机前台能力**。配置和环境变量保存在现有 localStorage/备份中，但不会进入
+  `collectMcpFireServers()`，因此不会把本机命令或密钥上传给 amsg worker；含 stdio 工具的
+  即时对话会留在浏览器本地执行。
 - **暴露名 ≠ 真实工具名**。OpenAI 工具名只许 `[A-Za-z0-9_-]{1,64}`，MCP 工具
   名可能带点号；跨服务器还会重名。`buildMcpOpenAITools()` 返回
   `resolve: Map<暴露名, {server, toolName}>`，执行时必须经它换回真实名。
@@ -99,6 +147,12 @@ function calling（例如携带 `tools` 就报 401），关闭它后首轮会直
    假调用会被代执行 + 二次生成，用户最终看不到乱码。若还是漏，通常是模型
    编了不存在的工具名（只认已启用服务器的真实工具名，不认幻觉名）。
 
+### 2026-10-14 · 任务调用后的「502 / 磷光后台」台词
+
+- 用户提供的 DevDebug 导出记录了三次聊天模型请求：第一次 HTTP **503**，后两次 HTTP **200**。第二次响应请求调用 `create_task`，第三次响应才生成「502」「磷光后台」「任务回头再挂」等台词。导出中没有 MCP `tools/call` 的 HTTP 状态记录，不能把模型台词里的 **502** 当作已核实的工具错误，也不能据此断言任务已经创建或一定失败。
+- 本轮请求的工具描述包含 `[phosphene]` 来源前缀；这是多台 MCP 服务器同时可见时 `buildToolDescription()` 加上的服务器名，system block 也会列服务器名。仓库未定义「磷光后台」这一服务名；这句话是模型把 `phosphene` 来源标签自行中文化并带进了角色台词，不能作为真实后端名称。
+- 工具循环在 `hooks/useChatAI.ts` 中把 `callMcpTool()` 的成功结果或失败原因写成 `role: 'tool'` 再发给模型。导出默认把整个 `messages` 数组折叠；两次成功请求的消息数从 **280** 增至 **282**，符合工具调用及结果回填的路径，但折叠后看不到实际工具结果。要确认是否真有 MCP 502、具体错误和任务最终状态，需在复现前开启 DevDebug「记录完整内容」，只核对相关 `role: 'tool'` 项，并向任务服务读取该任务状态；注意完整日志可能含私密对话和鉴权信息，勿直接存入仓库。
+
 ## 协同工作
 
 沉浸式与中度协同均按当前角色 ID 读取最新启用服务器，复用已有绑定、代理、鉴权、工具名映射和危险操作确认。窗口显示真实调用阶段；工具草稿不流入交付正文，只有工具处理完成后的最终回答参与文件解析与保存。无可用工具时保留普通流式与思考设置，有工具时不附加 thinking 参数。
@@ -109,8 +163,9 @@ function calling（例如携带 `tools` 就报 401），关闭它后首轮会直
 
 ## 已知边界
 
-- 只支持 Streamable HTTP（含 SSE 响应体解析）；不支持旧版 HTTP+SSE 双端点
-  传输，也不支持本地 stdio 服务器（那种请套 mcp-proxy 或自行起 HTTP 端）。
+- 支持 handshake era Streamable HTTP（含 SSE 响应体解析）与本机 stdio；不支持旧版
+  HTTP+SSE 双端点传输。`2024-11-05` 只对 stdio 放行，不能用于单端点 HTTP；stdio
+  仅随本机 Vite 开发服务提供，不进入静态构建或手机端。
 - 只用了 MCP 的 tools 能力；resources / prompts / OAuth 授权流未实现
   （静态 Bearer Token 与自定义 Header 均支持；OAuth 登录流仍未实现）。
 - 当前完整支持的是 MCP handshake era 的 Streamable HTTP（2025-03-26 至
@@ -153,5 +208,3 @@ function calling（例如携带 `tools` 就报 401），关闭它后首轮会直
 聊天生成入口在执行工具时也可以停止。前台和主动消息 2.0 的 instant 路径都把本轮 `AbortSignal` 传入 MCP 的握手与 `tools/call` 请求；停止后取消网络等待，不再把取消当作工具失败送回模型继续生成。后台执行链通过任务租约心跳收到取消，本应用的检测间隔为 1 秒。
 
 停止不能撤回工具服务端已经完成的操作；远端服务是否能停止自身执行取决于其实现。本应用会中断连接并阻止这一轮的后续调用。已经显示的聊天内容保留，尚未显示的结果不再写入聊天。
-
-MCP 管理列表按本机独立键 `sully-mcp-expanded-server` 记住展开项；主动收起会保存空值，关闭后重新打开仍保持收起。删除展开项不会自动展开其他服务器；新增服务器仍直接展开便于填写。此偏好不包含凭据，也不改变服务器启用和绑定状态。

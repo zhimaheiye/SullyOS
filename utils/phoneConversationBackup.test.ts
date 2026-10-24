@@ -4,7 +4,7 @@ import { DB } from './db';
 import { applyRealConversationToPhoneState, upsertContact } from './relationshipChat';
 import { stripBackupImages } from './backupExport';
 import { assembleV2Backup, createV2ArrayFieldWriter, writeV2Backup } from './backupFormat';
-import type { CharacterProfile } from '../types';
+import type { CharacterProfile, UserProfile } from '../types';
 
 const result = {
     partnerName: '乙', partnerCharId: 'b', detail: '我: 晚上见。\n对方: 好呀。', delta: 5,
@@ -12,6 +12,16 @@ const result = {
 };
 
 describe('查手机对话保存与备份', () => {
+    it('旧式完整导出也保留全局自建身份，不再把 userProfile 截成三字段', async () => {
+        const profile = {
+            name: '芝麻', avatar: '', bio: '',
+            operatorIdentities: [{ id: 'mask-1', name: '林弥', description: '', createdAt: 1 }],
+        } as UserProfile;
+        await DB.saveUserProfile(profile);
+        const exported = await DB.exportFullData();
+        expect(exported.userProfile?.operatorIdentities).toEqual(profile.operatorIdentities);
+    });
+
     it('异步结果基于最新状态合并，保留期间新加的联系人、记录、备注和话题盒', () => {
         const old = applyRealConversationToPhoneState(undefined, result).phoneState;
         const live = {
@@ -39,6 +49,10 @@ describe('查手机对话保存与备份', () => {
         phoneState.contacts[0].archivedThru = 100;
         phoneState.contacts[0].avatar = 'data:image/png;base64,AAAA';
         phoneState.records[0].detail = Array.from({ length: 110 }, (_, i) => `${i % 2 ? '对方' : '我'}: 消息 ${i}`).join('\n');
+        phoneState.records[0].conversationTurns = [{
+            id: 'forged-turn', side: 'contact', text: '代发但不能丢', author: 'operator',
+            claimedSpeaker: { kind: 'character', charId: 'b' }, impersonated: true, source: 'check-phone-impersonation',
+        }];
         phoneState.records.push({ id: 'npc', contactId: phoneState.contacts[1].id, type: 'chat', title: '丙', detail: '我: 你好\n对方: 在呢', timestamp: 2 });
         const char = { id: 'a', name: '甲', phoneState } as CharacterProfile;
         await DB.importFullData({ characters: [char], messages: [] } as any);

@@ -13,7 +13,9 @@ import { buildScheduleInjection as buildScheduleInjectionText } from './schedule
 import { TIME_FRAMING_CONVERSATIONAL } from './timeFramingNote';
 import { resolveCharTimeZone, nowInTimeZone, tzAwarenessNote, interactionGapNote } from './timezone';
 import {
+    expandPromptMacros,
     isWorldbookEntryActive,
+    isMountedWorldbookUsable,
     expandWorldbookMacros,
     formatWorldbookSection,
     injectWorldbookDepthEntries,
@@ -24,6 +26,13 @@ import {
     type WorldbookScanMessage,
 } from './worldbook';
 import { buildSARModulePrompt } from './vrWorld/sarModuleRuntime';
+
+// Determine ownership without sampling; the final resolver samples once.
+const isGroupWorldbookEligible = (book: MountedWorldbook, messages: WorldbookScanMessage[]): boolean =>
+    isMountedWorldbookUsable(book)
+    && Boolean(book.content?.trim())
+    && isWorldbookEntryActive({ ...book, useProbability: false }, messages)
+    && (!book.useProbability || (Number.isFinite(Number(book.probability)) ? Number(book.probability) : 100) > 0);
 
 /**
  * Memory Central
@@ -55,7 +64,7 @@ export const ContextBuilder = {
             const n = Number(book.probability);
             const probability = book.useProbability ? (Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 100) : 100;
             const matches = isWorldbookEntryActive({ ...book, useProbability: false }, history);
-            const status = book.disable ? 'disabled' : !content.trim() ? 'empty' : probability === 0 ? 'zero'
+            const status = !isMountedWorldbookUsable(book) ? 'paused' : book.disable ? 'disabled' : !content.trim() ? 'empty' : probability === 0 ? 'zero'
                 : !matches ? 'waiting' : probability < 100 ? 'probability' : 'readable';
             return { book, content, probability, status };
         }).sort((a, b) => (Number.isFinite(a.book.order) ? Number(a.book.order) : 100) - (Number.isFinite(b.book.order) ? Number(b.book.order) : 100)),
@@ -76,17 +85,20 @@ export const ContextBuilder = {
      * 用于情绪评估，不包含世界书、印象、用户画像等重型数据，不截断
      *
      * @param options.skipMemories 跳过月度总结和日度记录（开启记忆宫殿时用向量记忆替代）
+     * @param options.userName 当前用户名；传入时 {{user}} 一并展开。没有用户语境的后台
+     *   调用方不传，{{user}} 保留原文，不编造用户名。
      */
-    buildRoleSettingsContext: async (char: CharacterProfile, options?: { skipMemories?: boolean }): Promise<string> => {
+    buildRoleSettingsContext: async (char: CharacterProfile, options?: { skipMemories?: boolean; userName?: string }): Promise<string> => {
+        const userName = options?.userName ?? '';
         let context = `[System: Character Role Settings]\n\n`;
 
         // 1. 角色名
         context += `### 角色名\n`;
         context += `${char.name}\n\n`;
 
-        // 2. 核心指令（完整，不截断）
+        // 2. 核心指令（完整，不截断；Tavern 导入卡里的 {{char}}/{{user}} 宏在出 prompt 前展开）
         context += `### 核心指令\n`;
-        context += `${char.systemPrompt || '你是一个温柔、拟人化的AI伴侣。'}\n\n`;
+        context += `${expandPromptMacros(char.systemPrompt || '你是一个温柔、拟人化的AI伴侣。', char.name, userName)}\n\n`;
 
         // 2b. 自我领悟词条（常驻自我认知，影响情绪评估）
         if (char.selfInsights && char.selfInsights.length > 0) {
@@ -99,7 +111,7 @@ export const ContextBuilder = {
 
         // 3. 世界观（完整，不截断，不含世界书）
         if (char.worldview && char.worldview.trim()) {
-            context += `### 世界观与设定\n${char.worldview}\n\n`;
+            context += `### 世界观与设定\n${expandPromptMacros(char.worldview, char.name, userName)}\n\n`;
         }
 
         // 4. 记忆摘要（月度总结 + 当月日度总结）
@@ -234,6 +246,8 @@ export const ContextBuilder = {
             scheduleDelivery?: 'worker';
             /** 仅本次请求共用的读取结果；不缓存到下一轮，null 也不重复查询。 */
             scheduleSnapshot?: Promise<DailySchedule | null>;
+            /** Text-only relay can read the day without offering an executable change tag. */
+            allowScheduleChange?: boolean;
             memoryPalaceContext?: string;
             timeOptions?: { lastInteractionTs?: number; skipTimeAwareness?: boolean; conversational?: boolean };
         },
@@ -249,7 +263,7 @@ export const ContextBuilder = {
 
         context += ContextBuilder.buildEmotionContext(char, options?.emotion);
 
-        if (options?.scheduleDelivery !== 'worker') context += await ContextBuilder.buildCurrentScheduleContext(char, options?.emotion?.surface === 'chat', options?.scheduleSnapshot);
+        if (options?.scheduleDelivery !== 'worker') context += await ContextBuilder.buildCurrentScheduleContext(char, options?.emotion?.surface === 'chat' && options?.allowScheduleChange !== false, options?.scheduleSnapshot);
         return context;
     },
 
@@ -289,7 +303,7 @@ export const ContextBuilder = {
         // 1. 找出共享的世界书（被 2+ 角色挂载，按 id 计），顺带记下是谁挂的
         const wbMounts = new Map<string, { memberNames: string[]; entry: MountedWorldbook }>();
         for (const m of members) {
-            for (const wb of (m.mountedWorldbooks || [])) {
+            for (const wb of (m.mountedWorldbooks || []).filter(book => isGroupWorldbookEligible(book, worldbookMessages))) {
                 if (!wb.id) continue;
                 const existing = wbMounts.get(wb.id);
                 if (existing) existing.memberNames.push(m.name);
@@ -321,7 +335,8 @@ export const ContextBuilder = {
         text += `- 设定/备注: ${user.bio || '无'}\n\n`;
 
         if (worldviewIsShared) {
-            text += `### 共有世界观 (Shared World Settings)\n${members[0].worldview!.trim()}\n\n`;
+            // 共享块没有唯一的 {{char}}（各成员名字不同），只展开 {{user}}；{{char}} 原样保留。
+            text += `### 共有世界观 (Shared World Settings)\n${expandPromptMacros(members[0].worldview!.trim(), '', user.name)}\n\n`;
         }
 
         // 共有条目只写一次，{{char}} 换成挂了这条的几位成员（「阿澈、小白」）
@@ -566,7 +581,7 @@ const renderCoreContext = async (
         // Change: Explicitly label description as User Note to avoid literal interpretation
         context += `- 用户备注/爱称 (User Note/Nickname): ${char.description || '无'}\n`;
         context += `  (注意: 这个备注是用户对你的称呼或印象，可能包含比喻。如果备注内容（如“快乐小狗”）与你的核心设定冲突，请以核心设定为准，不要真的扮演成动物，除非核心设定里写了你是动物。)\n`;
-        context += `- 核心性格/指令:\n${char.systemPrompt || '你是一个温柔、拟人化的AI伴侣。'}\n\n`;
+        context += `- 核心性格/指令:\n${expandPromptMacros(char.systemPrompt || '你是一个温柔、拟人化的AI伴侣。', char.name, user.name)}\n\n`;
 
         // 1a. 真实时间感知 (Time Awareness) — 跟随 timeAwarenessEnabled 设置，默认开启。
         // 统一在 buildCoreContext 注入，让所有调用方（私聊/查手机/人际关系/通话/约会…）都知道"现在"。
@@ -589,7 +604,7 @@ const renderCoreContext = async (
 
         // 2. 世界观 (Worldview) - New Centralized Logic
         if (char.worldview && char.worldview.trim() && !groupOptions?.skipWorldview) {
-            context += `### 世界观与设定 (World Settings)\n${char.worldview}\n\n`;
+            context += `### 世界观与设定 (World Settings)\n${expandPromptMacros(char.worldview, char.name, user.name)}\n\n`;
         }
 
         context += formatWorldbookSection(worldbookSections.afterCharacter, '扩展设定集 (Worldbooks)');
@@ -728,6 +743,8 @@ export interface CharacterContextInput {
     instructions?: string | ((coreContext: string) => string);
     includeDetailedMemories?: boolean;
     memoryPalaceContext?: string;
+    /** Skip shared life/reminder preparation for strictly read-only draft generators. */
+    includeLifeContext?: boolean;
     groupOptions?: CoreContextArgs[4];
     timeOptions?: CoreContextArgs[5];
     layout?: CoreContextArgs[6];
@@ -736,7 +753,7 @@ export interface CharacterContextInput {
 async function resolveCharacterContext(input: CharacterContextInput) {
     const { char, user, history, groupOptions, timeOptions } = input;
     const entries = resolveWorldbookEntries(
-        (char.mountedWorldbooks || []).filter(book => !groupOptions?.skipWorldbookIds?.has(book.id)),
+        (char.mountedWorldbooks || []).filter(book => isMountedWorldbookUsable(book) && !groupOptions?.skipWorldbookIds?.has(book.id)),
         history ?? timeOptions?.worldbookMessages ?? [], char.name, user.name,
     );
     const sections = splitWorldbookSections(entries);
@@ -830,7 +847,7 @@ function buildGroupWorldbookRequest<T extends ContextMessage>(input: {
 }) {
     const books = new Map<string, { book: MountedWorldbook; owners: CharacterProfile[] }>();
     for (const member of input.members) {
-        for (const book of member.mountedWorldbooks || []) {
+        for (const book of (member.mountedWorldbooks || []).filter(book => isGroupWorldbookEligible(book, input.scanMessages ?? input.history))) {
             const existing = books.get(book.id);
             if (existing) {
                 if (!existing.owners.some(owner => owner.id === member.id)) existing.owners.push(member);

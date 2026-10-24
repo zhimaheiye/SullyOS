@@ -16,9 +16,8 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-const modelPicker = readFileSync(fileURLToPath(new URL('../components/settings/ModelPicker.tsx', import.meta.url)), 'utf8');
-const stateSync = readFileSync(fileURLToPath(new URL('./amsgStateSync.ts', import.meta.url)), 'utf8');
 const settings = readFileSync(fileURLToPath(new URL('../apps/Settings.tsx', import.meta.url)), 'utf8');
+const commitHelper = readFileSync(fileURLToPath(new URL('./apiConfigCommit.ts', import.meta.url)), 'utf8');
 
 /** 截出某个顶层箭头函数的函数体（这些函数在文件里都是两空格缩进 + `};` 收尾）。 */
 const bodyOf = (name: string): string => {
@@ -115,18 +114,27 @@ describe('保存配置不反写预设', () => {
 });
 
 describe('换 API 一定连着换云端凭据', () => {
-  it('commitApiConfig 里三件事齐全', () => {
+  it('Settings 通过共享 helper 提交', () => {
     const commitApiConfig = bodyOf('commitApiConfig');
-    expect(commitApiConfig).toMatch(/updateApiConfig\(patch\)/);
-    expect(commitApiConfig).toMatch(/syncAmsgLlmCredentials\(\{ \.\.\.apiConfig, \.\.\.patch \}\)/);
-    expect(stateSync).toMatch(/refreshApiCredentialsForPendingTasks\(snapshot\)/);
+    expect(settings).toMatch(/commitApiConfig as commitSharedApiConfig/);
+    expect(commitApiConfig).toMatch(/commitSharedApiConfig\(\{/);
+  });
+
+  it('共享 helper 里三件事和失败提示齐全', () => {
+    expect(commitHelper).toMatch(/updateApiConfig\(patch\)/);
+    expect(commitHelper).toMatch(/syncAmsgLlmCredentials\(nextConfig\)/);
+    expect(commitHelper).toMatch(/refreshApiCredentialsForPendingTasks\(nextConfig\)/);
+    expect(commitHelper).toMatch(/result\.status === 'partial'/);
+    expect(commitHelper).toMatch(/\.catch\(\(error\) =>/);
   });
 });
 
 describe('模型弹窗选定即生效', () => {
   it('「确定」和点列表项都走 confirmModelPicker，它会直接保存', () => {
+    // 上游把弹窗里的列表抽成了 components/settings/ModelPicker.tsx（原来内联在 Settings.tsx），
+    // 断言跟着挪到组件文件上；两个入口仍必须直接回调 confirmModelPicker 而不是只关弹窗。
+    const modelPicker = readFileSync(fileURLToPath(new URL('../components/settings/ModelPicker.tsx', import.meta.url)), 'utf8');
     expect(bodyOf('confirmModelPicker')).toMatch(/handleSaveApi\(model\)/);
-    expect(settings).toMatch(/confirmModelPicker=\{confirmModelPicker\}/);
     expect(modelPicker).toMatch(/onClick=\{\(\) => confirmModelPicker\(localModel\)\}/);
     expect(modelPicker).toMatch(/onClick=\{\(\) => confirmModelPicker\(m\)\}/);
   });

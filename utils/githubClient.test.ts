@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 
+import { setBuiltInPublicProxyUrl } from './proxyWorker';
 import {
     describeGithubUploadTransportFailure,
     downloadBackup,
@@ -56,14 +58,27 @@ describe('GitHub 备份代理安全默认', () => {
     });
 
     it('中转失败时说明当前走的是独立 Worker 线路', () => {
+        setBuiltInPublicProxyUrl('');
         const message = describeGithubUploadTransportFailure({
             ...base,
             githubUseProxy: true,
             githubProxyConsentVersion: 1,
         });
-        expect(message).toContain('应用内 Cloudflare 中转');
-        expect(message).toContain('proxy.friedsully.com');
-        expect(message).toContain('自定义网络代理 (Worker)');
+        expect(message).toContain('应用内中转');
+        expect(message).toContain('公共网络代理还没有就绪');
+        expect(message).toContain('设置 → 网络代理');
+        setBuiltInPublicProxyUrl('https://zhima-public-proxy.sullyos-sxy10.workers.dev');
+    });
+});
+
+describe('GitHub 备份代理设置接线', () => {
+    it('已连接后切换中转会立即保存，不要求重新测试连接', () => {
+        const settings = readFileSync(new URL('../apps/Settings.tsx', import.meta.url), 'utf8');
+        expect(settings).toContain('onChange={(e) => handleGithubProxyToggle(e.target.checked)}');
+        const start = settings.indexOf('const handleGithubProxyToggle = (enabled: boolean) =>');
+        const handler = settings.slice(start, settings.indexOf('\n  };', start));
+        expect(handler).toContain('updateCloudBackupConfig({');
+        expect(handler).toContain('githubProxyConsentVersion: enabled ? 1 : undefined');
     });
 });
 
@@ -124,6 +139,44 @@ describe('GitHub 备份下载错误', () => {
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('', { status: 403 })));
 
         await expect(downloadBackup(config, file)).rejects.toThrow('HTTP 403');
+    });
+});
+
+describe('GitHub 备份上传失败清理', () => {
+    it('附件上传失败时删除刚创建的 release 和标签', async () => {
+        const fetchMock = vi.fn()
+            .mockResolvedValueOnce(new Response(JSON.stringify({ id: 321 }), {
+                status: 201,
+                headers: { 'Content-Type': 'application/json' },
+            }))
+            .mockResolvedValue(new Response(null, { status: 204 }));
+        vi.stubGlobal('fetch', fetchMock);
+        vi.stubGlobal('XMLHttpRequest', class {
+            upload = {};
+            status = 0;
+            responseText = '';
+            onerror?: () => void;
+            open() {}
+            setRequestHeader() {}
+            send() { this.onerror?.(); }
+        });
+
+        const result = await uploadBackup({
+            enabled: true,
+            provider: 'github',
+            webdavUrl: '', username: '', password: '', remotePath: '/',
+            githubToken: 'github_pat_test', githubOwner: 'owner', githubRepo: 'sully-backup',
+            githubUseProxy: false,
+        }, new Blob(['backup']), 'Sully_Backup_full.zip');
+
+        expect(result.ok).toBe(false);
+        const cleanupCalls = fetchMock.mock.calls
+            .map(call => [String(call[0]), call[1]?.method])
+            .filter(([, method]) => method === 'DELETE');
+        expect(cleanupCalls).toEqual([
+            ['https://api.github.com/repos/owner/sully-backup/releases/321', 'DELETE'],
+            [expect.stringMatching(/git\/refs\/tags\/sully-backup-/), 'DELETE'],
+        ]);
     });
 });
 

@@ -1,8 +1,8 @@
 // 群聊提示词构建 —— 从 GroupChat.tsx 抽出的纯函数，导演模式模板"搬家不改字"，
 // 供导演模式与轮询模式（每成员一次调用）共用。
 import { Message, CharacterProfile, EmojiCategory } from '../../types';
-import { stickerNameFromUrl } from '../messageFormat';
 import { isBlobRef } from '../blobRef';
+import { isStickerVisionEligible, readStickerVisionDescription, readStickerVisionName } from '../stickerVision';
 import { packetHistoryLine } from './redpacket';
 import { formatRelativeAge } from './relativeTime';
 
@@ -107,6 +107,13 @@ export function buildGroupHistoryBlock(
             const url = typeof m.content === 'string' ? m.content.trim() : '';
             // 认不出令牌 = 这张图永远进不了附带名单，模型看不到图却又毫无报错
             if (/^(data:|https?:\/\/)/i.test(url) || isBlobRef(url)) validImageWindowIdx.push(i);
+        } else if (m.type === 'emoji'
+            && isStickerVisionEligible(m)
+            && !readStickerVisionDescription(m)
+            && !options?.useVisionDescriptions) {
+            // 有资格且无描述的表情在"主模型直接读图"模式下也进附带窗口，与普通图片竞争同一配额
+            const url = typeof m.content === 'string' ? m.content.trim() : '';
+            if (/^(data:|https?:\/\/)/i.test(url) || isBlobRef(url)) validImageWindowIdx.push(i);
         }
     });
     const attachedSet = new Set(validImageWindowIdx.slice(-maxAttachedImages));
@@ -146,7 +153,21 @@ export function buildGroupHistoryBlock(
                 content = '[图片]';
             }
         } else if (m.type === 'emoji') {
-            content = `[表情包: ${stickerNameFromUrl(emojis, rawText.trim())}]`;
+            // 表情包视觉三态（资格看消息自己的 metadata.stickerVision，不看当前群开关）：
+            // 有描述 → 名称+画面内容；有资格无描述且主模型直接读图 → 进附带窗口带真实图；
+            // 其余（旧消息/识别失败降级）→ 只报名称。
+            const stickerName = readStickerVisionName(m, emojis);
+            const stickerDescription = readStickerVisionDescription(m);
+            // 描述是发送时已冻结的语义，与识图 API 现在开不开无关（场景 D：关闭不删历史语义）
+            if (isStickerVisionEligible(m) && stickerDescription) {
+                content = `[表情包: ${stickerName}。画面内容：${stickerDescription}]`;
+            } else if (isStickerVisionEligible(m) && !stickerDescription && !options?.useVisionDescriptions && attachedSet.has(i)) {
+                const tag = attachedImages.length + 1;
+                attachedImages.push({ tag, url: rawText.trim() });
+                content = `[表情包: ${stickerName}，真实图片见随附图片#${tag}]`;
+            } else {
+                content = `[表情包: ${stickerName}]`;
+            }
         } else if (m.type === 'transfer') {
             // 回执行自带完整句子（[系统: X 领取了 Y 的红包]），不加名字前缀
             if (m.metadata?.packetReceipt) { lines.push(`${timePrefix}${packetHistoryLine(m, nameOf, now)}`); return; }
@@ -189,7 +210,7 @@ export function buildDirectorInstruction(
 ): string {
     return `### 【AI 导演任务指令 (Director Mode)】
 当前场景：大家正在群里聊天。
-最近聊天记录：
+导演私有全局记录（仅供导演维持场面连续性，任何角色都不得直接读取）：
 ${history.text}
 ${history.attachedImagesNote}
 
@@ -197,6 +218,11 @@ ${history.attachedImagesNote}
 请作为导演，接管所有角色，让群聊**自然地流动起来**。
 
 ### 核心规则 (Strict Rules)
+
+#### 零、成员知识隔离（最高优先级）
+- 全局记录只属于导演。每个角色只能依据其角色档案中的「该角色可见群史」与可见话题盒发言。
+- 加入前、离群期间的消息，即使导演在全局记录里看见，也严禁通过该角色的台词、反应、暗示、共同回忆或世界书联想泄漏。
+- 同一事件对不同角色可见性不同时，分别遵守各自可见块；不得让知道的人替不知道的人补课，除非当前可见群聊里真的有人重新说出来。
 
 #### 一、群聊的乐子是多元的（最重要！请先读这一条再写）
 **群聊不是修罗场**。

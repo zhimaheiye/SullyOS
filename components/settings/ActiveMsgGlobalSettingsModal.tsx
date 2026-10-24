@@ -24,6 +24,7 @@ import { loadPushVapid, savePushVapid } from '../../utils/pushVapid';
 import {
   attachUpdateCapability,
   provisionAmsgBackend,
+  publicSelfUpdateBundleUrl,
   waitForWorkerReady,
   type CfAccount,
   type ProvisionProgress,
@@ -145,8 +146,8 @@ const REQUIRED_WORKER_VERSION = '2.6.0-next.33';
 // 协议门槛仍是 next.33，bundle 日期照常提示更新，旧 Worker 的清单摘要仍有兼容回退。
 const WORKER_VERSION_LAG_ACK = '2.6.0-next.36';
 
-/** 装着打包好的 worker 代码的部署仓库：fork 它 → 在 Cloudflare 连上 → 以后点 Sync fork 更新。 */
-const WORKERS_REPO_URL = 'https://github.com/Tosd0/sullyos-workers';
+/** 公开仓库：fork 它 → 在 Cloudflare 连上 → 以后点 Sync fork 更新到审核过的版本。 */
+const PROJECT_REPO_URL = 'https://github.com/zhimaheeye/SullyOS';
 const SETUP_WALKTHROUGH_URL = 'https://github.com/qegj567-cloud/SullyOS/blob/master/docs/amsg2-setup-walkthrough.md';
 /** 一键部署要的那枚 API Token 在这里建。 */
 const CF_TOKEN_URL = 'https://dash.cloudflare.com/profile/api-tokens';
@@ -580,6 +581,7 @@ const ActiveMsgGlobalSettingsModal: React.FC<ActiveMsgGlobalSettingsModalProps> 
           VAPID_EMAIL: vapid.vapidEmail || undefined,
           AMSG_SERVER_TOKEN: config?.serverToken || undefined,
         },
+        selfUpdateBundleUrl: publicSelfUpdateBundleUrl() || undefined,
         onProgress: (p: ProvisionProgress) => setProvisionStep(p.message),
       });
 
@@ -807,6 +809,7 @@ const ActiveMsgGlobalSettingsModal: React.FC<ActiveMsgGlobalSettingsModalProps> 
         workerUrl: config.workerUrl,
         scriptName: attachScriptName.trim() || undefined,
         accountId,
+        bundleUrl: publicSelfUpdateBundleUrl() || undefined,
       });
 
       if (!result.ok) {
@@ -841,7 +844,7 @@ const ActiveMsgGlobalSettingsModal: React.FC<ActiveMsgGlobalSettingsModalProps> 
     }
   };
 
-  // 手动粘贴部署用。主流程是 fork sullyos-workers + 在 CF 连 Git，这条是给没有 GitHub
+  // 手动粘贴部署用。主流程是 fork 本项目 + 在 CF 连 Git，这条是给没有 GitHub
   // 账号的人留的退路，所以在面板里收在折叠区里。
   const handleCopyWorkerBundle = async () => {
     try {
@@ -1211,8 +1214,8 @@ const ActiveMsgGlobalSettingsModal: React.FC<ActiveMsgGlobalSettingsModalProps> 
 
               <ol className="text-xs leading-relaxed text-slate-500 space-y-1.5 list-decimal list-outside pl-4">
                 <li>
-                  Fork 后端仓库 <code className="font-mono">sullyos-workers</code>
-                  （页面右上角 Fork → Create fork）。
+                  Fork 本项目的公开仓库（页面右上角 Fork → Create fork）。后端代码与配置都在
+                  <code className="font-mono"> worker/amsg/ </code>，不要从其他第三方仓库取。
                 </li>
                 <li>
                   CF 后台 Storage &amp; databases → <strong>D1 SQLite Database</strong> 建一个库，
@@ -1223,7 +1226,7 @@ const ActiveMsgGlobalSettingsModal: React.FC<ActiveMsgGlobalSettingsModalProps> 
                   <strong> Continue with GitHub</strong>，选中你 fork 的仓库，然后填：
                   <ul className="mt-1 space-y-0.5 list-disc list-outside pl-4">
                     <li>Build command：<code className="font-mono">sh ./deploy-prepare.sh</code></li>
-                    <li>Advanced settings → Path：<code className="font-mono">/amsg</code></li>
+                    <li>Advanced settings → Path：<code className="font-mono">/worker/amsg</code></li>
                     <li>
                       Advanced settings 里加一个构建变量
                       <code className="font-mono"> D1_DATABASE_ID </code>
@@ -1236,20 +1239,20 @@ const ActiveMsgGlobalSettingsModal: React.FC<ActiveMsgGlobalSettingsModalProps> 
 
               <p className="text-[11px] leading-relaxed text-slate-400">
                 D1 绑定和「每分钟检查一次」的定时触发器都写在仓库里，会自动带上，不用手动加。
-                以后想更新，回你 fork 的仓库点一下 <strong>Sync fork</strong> 就行，CF 会自动重新部署。
+                以后想更新，回你 fork 的仓库点一下 <strong>Sync fork</strong>，拉取本项目的审核版本，CF 会自动重新部署。
               </p>
 
               <div className="grid grid-cols-3 gap-2">
                 {/* 三个出口合成一个事件带 target 枚举：它们是部署流程同一步的三条岔路，
                     拆成三个事件名只是多占清单行数，看漏斗时还得自己加回去。 */}
                 <a
-                  href={WORKERS_REPO_URL}
+                  href={PROJECT_REPO_URL}
                   target="_blank"
                   rel="noreferrer"
                   onClick={() => trackEvent('打开 2.0 部署外链', { target: 'fork仓库' })}
                   className="py-2.5 rounded-xl text-xs font-bold bg-violet-500 text-white text-center active:scale-95 transition-transform"
                 >
-                  ↗ Fork 仓库
+                  ↗ Fork 项目
                 </a>
                 <a
                   href={SETUP_WALKTHROUGH_URL}
@@ -1385,9 +1388,9 @@ const ActiveMsgGlobalSettingsModal: React.FC<ActiveMsgGlobalSettingsModalProps> 
           {workerOutdated ? (
             <div className="bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3 text-xs leading-relaxed text-amber-700">
               Worker 上跑的还是旧版代码，缺少新特性（大上下文云端存储、服务端工具循环等）。
-              回你 fork 的 <code className="font-mono">sullyos-workers</code> 仓库点一下
-              <strong> Sync fork</strong>，CF 会自动重新部署（当初是手动粘贴部署的话，
-              去下方「部署 Worker」里重新复制一次代码粘贴覆盖）。已有数据和任务不受影响。
+              回你 fork 的本项目仓库点一下 <strong>Sync fork</strong>，CF 会自动重新部署
+              （当初是手动粘贴部署的话，去下方「部署 Worker」里重新复制一次代码粘贴覆盖）。
+              已有数据和任务不受影响。
             </div>
           ) : null}
 

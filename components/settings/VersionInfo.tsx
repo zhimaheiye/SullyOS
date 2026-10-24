@@ -5,6 +5,7 @@ import { isDevDebugAvailable, subscribeDevDebugAvailability, unlockDevDebug } fr
 import { trackEvent } from '../../utils/analytics';
 import AndroidUpdateControl from './AndroidUpdateControl';
 import DatabaseDiagnosticDetails from '../DatabaseDiagnosticDetails';
+import { armManualRelay, disarmManualRelay, getManualRelayState, subscribeManualRelay } from '../../utils/manualModelRelay';
 
 /**
  * Settings 底部的版本信息脚注。
@@ -36,6 +37,7 @@ const VersionInfo: React.FC = () => {
     // available = 面板当前是否可用（非 prod 默认 true；prod 解锁后 true；强制关闭后 false）。
     const [available, setAvailable] = useState<boolean>(() => isDevDebugAvailable());
     const [hint, setHint] = useState<string | null>(null);
+    const [relayState, setRelayState] = useState(getManualRelayState);
     const tapCountRef = useRef(0);
     const tapTimerRef = useRef<number | null>(null);
     const hintTimerRef = useRef<number | null>(null);
@@ -55,6 +57,7 @@ const VersionInfo: React.FC = () => {
     }, []);
 
     useEffect(() => subscribeDevDebugAvailability(setAvailable), []);
+    useEffect(() => subscribeManualRelay(setRelayState), []);
 
     // 卸载时清掉计时器，避免内存泄漏 / 卸载后 setState。
     useEffect(() => () => {
@@ -114,6 +117,12 @@ const VersionInfo: React.FC = () => {
                 </div>
             )}
             <AndroidUpdateControl />
+            <button type="button" data-manual-relay-control onClick={() => {
+                if (relayState.status === 'off') { armManualRelay(); showHint('外部模型接力已持续开启', 2600); }
+                else { disarmManualRelay(); showHint('外部模型接力已关闭', 2600); }
+            }} className="mt-3 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs text-emerald-900">
+                {relayState.status === 'off' ? '开启外部模型接力' : '关闭外部模型接力（已开启）'}
+            </button>
             <div className="mt-3 w-full max-w-md text-xs text-slate-500">
                 <DatabaseDiagnosticDetails />
             </div>

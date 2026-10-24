@@ -28,6 +28,7 @@
     "@capacitor/push-notifications": "^6.0.0",
     "@capacitor/share": "^6.0.0",
     "@capacitor/status-bar": "^6.0.0",
+    "@dagrejs/dagre": "^3.1.1",
     "@mediapipe/tasks-vision": "1.0.1",
     "@neondatabase/serverless": "^1.0.2",
     "@netlify/blobs": "^10.7.4",
@@ -40,6 +41,7 @@
     "@rei-standard/amsg-shared": "0.4.0-next.11",
     "@rei-standard/amsg-sw": "2.4.0-next.6",
     "@rei-standard/blob-store": "0.1.0-next.2",
+    "@xyflow/react": "^12.11.5",
     "@zip.js/zip.js": "^2.8.43",
     "ag-psd": "^31.0.2",
     "animal-island-ui": "2.1.0",
@@ -76,5 +78,6 @@
     "typescript": "^5.3.3",
     "vite": "^5.0.10",
     "vitest": "^2.1.9"
-  }
+  },
+  "packageManager": "pnpm@11.20.0+sha512.9a6f330a95b66446ea088faf1521405a8a01f07fde7124cc9958dfed52d4bb436737e65b08f85f37b46fcba375092558ac51262b816844b22f63406ed166bfee"
 }

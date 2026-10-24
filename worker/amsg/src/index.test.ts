@@ -311,6 +311,16 @@ describe('Worker 入口的具名导出', () => {
 });
 
 describe('onBeforeFire 四道门', () => {
+  it('旧作息快照不再阻止普通定时生成', async () => {
+    const { ctx } = makeCtx({ charRows: [
+      { key: AMSG_FIRE_PACK_KEY, value: firePackValue() },
+      { key: AMSG_TOOL_PACK_KEY, value: toolPackValue },
+      { key: 'character_life_v1', value: JSON.stringify({ enabled: true, state: null }) },
+    ] });
+    const result = await amsgHooks.onBeforeFire(ctx);
+    expect(fired(result).messages).toHaveLength(1);
+  });
+
   it('正常路径：填好槽返回 prompt，并把工具状态挂上 scratch', async () => {
     const { ctx, scratch } = makeCtx({});
     const result = await amsgHooks.onBeforeFire(ctx);
@@ -4200,9 +4210,12 @@ describe('onBeforeFire — 即时对话分支', () => {
     expect(scheduleTask).not.toHaveBeenCalled();
 
     const tool = result.tools?.find((t) => t.function.name === AMSG_FIRE_SCHEDULE_TOOL);
+    // 工具描述在当前 amsg-server 类型里不是稳定字段（有的构建只声明 name/parameters），
+    // 断言的是运行期真实下发的 function description，所以这里取一份带类型的视图。
+    const toolFunction = tool?.function as { description?: string } | undefined;
     if (native) {
-      expect(tool?.function.description).toContain('惦记');
-      expect(tool?.function.description).not.toContain('你现在正在发一条主动消息');
+      expect(toolFunction?.description).toContain('惦记');
+      expect(toolFunction?.description).not.toContain('你现在正在发一条主动消息');
       expect(text).not.toContain('({"send_at"');
     } else {
       expect(tool).toBeUndefined();

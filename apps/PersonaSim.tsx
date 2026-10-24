@@ -9,7 +9,7 @@ import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
 import { isScheduleFeatureOn } from '../utils/scheduleGenerator';
 import { safeResponseJson } from '../utils/safeApi';
 import { parsePersonaScriptApiResponse } from '../utils/personaSimParser';
-import { buildMemoryText, canResumePersonaSim, getPersonaSimBeatIndex, hasCompletedPersonaSim } from '../utils/personaSimLog';
+import { acquaintanceDays, buildMemoryText, canResumePersonaSim, firstChatTimestamp, getPersonaSimBeatIndex, hasCompletedPersonaSim } from '../utils/personaSimLog';
 import { trackEvent } from '../utils/analytics';
 import { useBlobRefUrl } from '../utils/blobRef';
 import {
@@ -101,7 +101,7 @@ export async function generatePersonaScript(opts: {
         const c = m.type === 'text' ? m.content : `[${m.type}]`;
         return `${who}: ${c}`;
     }).join('\n');
-    const firstTs = msgs.find(m => typeof m.timestamp === 'number')?.timestamp;
+    const firstTs = firstChatTimestamp(msgs);
     const acquaintance = describeAcquaintance(firstTs, userProfile.name, char.name);
     const prompt = buildDirectorPrompt('', recent, mode, theme, char.name, acquaintance, userProfile.name, userPresence, tone);
     const res = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
@@ -247,7 +247,7 @@ const PersonaSim: React.FC<Props> = ({ targetChar, onExit, openLifeLog, sim, onS
                 simLogs: (cur.phoneState?.simLogs || []).map(log => log.id === logId ? {
                     ...log,
                     completedAt: log.completedAt ?? (hasCompletedPersonaSim(log) ? log.timestamp : Date.now()),
-                    playback: { beatIndex: idx, status: 'completed' },
+                    playback: { beatIndex: idx, status: 'completed' as const },
                     ...(applyBuff && newBuff ? { buff: { label: newBuff.label, emoji: newBuff.emoji, color: newBuff.color } } : {}),
                 } : log),
             };
@@ -1121,7 +1121,7 @@ function describeAcquaintance(firstTs: number | undefined, userName: string, cha
     if (!firstTs) {
         return `${charName} 与 ${userName} 还没有可考的相处记录（可能是初次接触）。`;
     }
-    const days = Math.floor((Date.now() - firstTs) / 86400000);
+    const days = acquaintanceDays(firstTs);
     let span: string;
     if (days <= 1) span = '不到一天';
     else if (days < 30) span = `约 ${days} 天`;
@@ -1130,8 +1130,59 @@ function describeAcquaintance(firstTs: number | undefined, userName: string, cha
     return `${charName} 与 ${userName} 自首次接触至今${span}（${days} 天）。`;
 }
 
-// 「本场变奏」——每次随机抽几根轴当硬约束，打破固定的起床→刷手机→睡觉流水账
+// 「本场变奏」——每次随机抽几根轴作为可选灵感，避免固定的起床→刷手机→睡觉流水账
 const vPick = <T,>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
+const LIFE_NOISE_POOL = [
+    '系统提示某个 App 刚完成后台更新',
+    '输入法弹出一次剪贴板读取授权',
+    '勿扰模式按原有设置自动开启或结束',
+    'Wi-Fi 从熟悉的网络切换到移动数据',
+    '日历提醒一项普通安排',
+    '一个很久没联系的人发来表情',
+    '群聊里有人撤回一条消息',
+    '群聊未读数字悄悄增加',
+    '一件快递的状态刚刚更新',
+    '购物车里某件商品出现降价提示',
+    '外卖订单弹出评价提醒',
+    '支付 App 留下一笔小额消费记录',
+    '会员服务发来续费前提醒',
+    '银行 App 生成本月账单',
+    '浏览器恢复上次关闭时留下的标签页',
+    '搜索联想露出最近查过的词',
+    '阅读 App 停在一本没读完的书中间',
+    '音乐随机切到一首很久没听的歌',
+    '视频 App 记住了上次暂停的位置',
+    '播客进度停在几分钟前',
+    '相册弹出一条往年今日回忆',
+    '截图文件夹多了一张没整理的图',
+    '云盘提示某个文件同步完成',
+    '下载列表里有一个文件等待重试',
+    '待办里留着一项过期未勾选的事',
+    '备忘录里有一段没写完标题的文字',
+    '常用 App 忽然要求重新登录',
+    '某个应用角标一直没有点开',
+    '误触语音助手后又立刻关掉',
+    '地图里还保留着一个常去地点',
+    '闹钟列表里躺着一个早已不用的闹钟',
+    '小程序保留着上次没有完成的页面',
+] as const;
+
+function sampleDistinct<T>(items: readonly T[], count: number): T[] {
+    const pool = [...new Set(items)];
+    const result: T[] = [];
+    while (result.length < count && pool.length > 0) {
+        result.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0]);
+    }
+    return result;
+}
+
+export function buildLifeNoiseHints(): string {
+    const hints = sampleDistinct(LIFE_NOISE_POOL, 2 + Math.floor(Math.random() * 3));
+    return `### [本场生活噪音 · 可选灵感]
+以下随机例子只是可能的灵感，不是本场必须出现的元素，可以一个都不用。只有与当前时间、地点、角色状态、情绪和剧情自然兼容时才采用；不要为了证明“这是现实生活”而刻意插入通知、设备状态或环境动作。
+${hints.map(hint => `- ${hint}`).join('\n')}`;
+}
+
 // 各基调对应的「情绪底色」候选池（丧是公共底子，差异在上层笔触）
 const MOOD_POOLS: Record<'depressive' | 'darkhumor' | 'cute', string[]> = {
     depressive: [
@@ -1155,7 +1206,7 @@ function buildVariation(tone: 'mix' | 'depressive' | 'darkhumor' | 'cute' = 'mix
     const entry = vPick([
         '从一个不起眼的中间时刻切入（绝不要从「起床/醒来/关闹钟」开始）',
         '从午后犯困、注意力涣散的那一刻切入',
-        '从黄昏、天快黑了还没开灯的那一刻切入',
+        '从环境或注意力自然发生变化的时刻切入',
         '从深夜睡不着、第无数次点亮屏幕切入',
         '从通勤/在路上、单手划手机切入',
         '从被一条通知突然打断的瞬间切入',
@@ -1173,7 +1224,7 @@ function buildVariation(tone: 'mix' | 'depressive' | 'darkhumor' | 'cute' = 'mix
         '整场围绕「一件小物 / 一条未读 / 一张旧图」打转',
         '在两件不相干的事之间反复横跳',
         '大量留白，几乎什么都没发生，靠空气感和零碎动作撑',
-        '被一个突发（来电/通知/没电）打断后，再也没回到原来的事',
+        '若场景自然需要，可以被一个与当前情境相符的小插曲打断',
         '线性但克制，靠细节而非情节推进',
     ]);
     const medium = vPick([
@@ -1194,14 +1245,15 @@ function buildVariation(tone: 'mix' | 'depressive' | 'darkhumor' | 'cute' = 'mix
         '一条快递的物流页', '一个总点开又退出的页面', '一张存了很久没再看的照片',
         '一个删到一半的草稿',
     ]);
-    return `### [本场变奏 · 必须严格遵守，让这一场和上一场截然不同]
+    return `### [本场变奏 · 可选导演灵感]
+以下变奏只用于避免每次演出结构完全一样，不是必须完成的任务。只有与用户主题、角色状态、时间地点和本场基调自然兼容时才采用；不兼容时可以修改、弱化或完全忽略，不得为了执行变奏破坏场景合理性。
 - 切入：${entry}
 - 跨度：${span}
 - 结构：${structure}
-- 主导表达：${medium}
+- 表达方式灵感：${medium}
 - 情绪底色：${mood}
-- 具体锚点：让这一场反复回到「${anchor}」上（可改写成更贴合人设的同类小物）
-※ 严禁套路化：不要从「起床/关闹钟/看天气」开场，也不要默认以「睡觉/锁屏」收尾，更不要走「醒来→刷一圈微信微博→睡觉」的流水账。下方字段示例只演示 JSON 格式，时间和内容一律按本场变奏来。`;
+- 具体锚点灵感：可在自然合适时回到「${anchor}」（也可改写或舍弃）
+※ 避免套路化：不要从「起床/关闹钟/看天气」开场，也不要默认以「睡觉/锁屏」收尾，更不要走「醒来→刷一圈微信微博→睡觉」的流水账。下方字段示例只演示 JSON 格式，时间和内容一律按当前主题与场景自然性决定。`;
 }
 
 // user 存在感三档（这一天里"你"占多少分量）
@@ -1231,7 +1283,7 @@ function buildToneRule(tone: 'mix' | 'depressive' | 'darkhumor' | 'cute'): strin
     }
 }
 
-function buildDirectorPrompt(context: string, recent: string, mode: 'daily' | 'event', theme: string, name: string, acquaintance: string, userName: string, presence: 'default' | 'light' | 'none', tone: 'mix' | 'depressive' | 'darkhumor' | 'cute'): string {
+export function buildDirectorPrompt(context: string, recent: string, mode: 'daily' | 'event', theme: string, name: string, acquaintance: string, userName: string, presence: 'default' | 'light' | 'none', tone: 'mix' | 'depressive' | 'darkhumor' | 'cute'): string {
     return `${context}
 
 ### [最近的聊天上下文]
@@ -1247,15 +1299,19 @@ ${buildToneRule(tone)}
 
 观众（用户）将**成为 ${name}**，通过 TA 使用手机的行为，亲身经历这段时间。
 
+【内容优先级】用户输入的体验内容 / 当前剧情 > 角色人设、关系和世界观 > 当前时间、地点、行为和气氛的自然性 > 本场基调 > 随机变奏与生活碎片灵感。后两项只在自然兼容时参考，冲突时直接忽略；不要为了“真实感”专门插入无关事件。
+
 ${buildVariation(tone)}
+
+${buildLifeNoiseHints()}
 
 【铁律】
 1. 不要把故事讲出来，不要解释人物，不要分析情绪，不要总结意义。一切通过**手机行为 / 数字痕迹 / 内心独白 / 环境碎片**自然呈现。
 2. 内心独白（monologue）要**大量出现**，但**极其口语、简短、真实**，像真实人脑活动。例如：「不想起床。」「算了。」「她怎么还没回我。」「应该没事吧。」「其实有点在意。」禁止文学腔、禁止解释剧情。
 3. **非可靠叙事**：TA 说的/想的不一定是真相，允许自我安慰、自我欺骗、逃避、美化记忆、误解他人。让行为去拆穿独白（例如嘴上说「我根本不在意」，却反复打开同一个聊天窗口）。
 4. **数字行为优先**：多用「打字后删除(compose)」「搜索后删除再搜(search)」「翻看旧照片」「反复打开同一页面」「消息撤回」来表达，而不是直接说出情绪。
-5. **真实手机感**：可穿插与主线无关的真实手机事件——来电、电量不足、验证码、快递通知、垃圾短信、天气预警、自动续费、各种推送。它们不一定推动剧情，但增强真实。
-6. **环境碎片**：可出现与主线无关的痕迹——没做完的待办、半年前的截图、忘记删的照片、一堆浏览器标签、购物车、旧闹钟、收藏夹。这些共同拼出 TA 的人格。
+5. **真实手机感**：可以偶尔出现与主线无关的手机或现实生活噪音，让人感到一个真实的人正在生活；这些元素可有可无，当前场景自然性优先。不符合时间、地点、角色状态或情绪时就不要出现，也不要为了证明“这是现实生活”而刻意插入通知、设备状态或环境动作。本场抽到的少量例子也只是灵感。
+6. **环境碎片**：只在自然需要时使用少量、具体、贴合场景的痕迹，不需要时可以完全不出现。一个真正贴合场景的细节，比五个为了增加“生活感”而硬塞的细节更有效。
 7. **情绪高潮放慢节奏**：关键节点用「打开→关闭→重新打开→停顿→锁屏→再打开→输入→删除→输入→删除→最终发送(或不发)」这种反复的 beat 序列制造张力，并把这些 beat 的 pace 设为 3。
 8. 【记忆闪回 · 务必先判断是否合理，宁可不插也不要 OOC】闪回是 ${name} **自己的一段过去突然闯进现在**（相册自动弹出一张旧照片→沉默→什么都不说→继续今天，杀伤力来自“过去闯进现在”）。但是否插入、用什么时间口径，必须严格符合人设与世界观：
    - 时间标签(label)由你决定，必须与上面的「关系时间线」以及角色自身的人生阶段/世界观自洽。例如真的相识一年以上才用「去年今日」；几个月就用「三个月前的今天」「那天」；刚认识或时间线不支持，**绝不要**用「去年」。
@@ -1263,15 +1319,15 @@ ${buildVariation(tone)}
    - 如果该角色的设定/世界观里根本没有「拍照片 / 现代时间感 / 可追溯的过去」，或任何闪回都会显得突兀 OOC，就**完全不要**加 flashback beat。
    - ${mode === 'event' ? '事件模拟下，若合理，优先安排一次闪回来强化情绪；若不合理则跳过。' : '日常模拟下，仅在某个安静且合理的时刻择机插入，可有可无。'}
 
-【下猛料 · 密度 / 强度 / 具体度（这一段优先级最高，别给我收着）】
-- **要长、要满**：这是一场完整演出，不是预告片。beats 给足 **40~64 个**，疏密有致但总量宁多勿少。
+【演出密度 / 强度 / 具体度】
+- **长度服从内容**：演出通常约 **20～60 个 beat**，这是参考范围，不是配额。简单日常可以明显短一些，情绪复杂或事件型场景可以更长；不要为了达到某个数量机械增加动作、独白、通知或环境碎片。自然完整比 beat 数量重要，剧情已经自然结束时不必为凑最低数量继续演。
 - **每一步都有戏**：绝大多数 beat 都带 monologue；独白可以接连成串——一个动作配 2~3 个跳跃、互相打架的念头，让脑子真的"在转"。
 - **往死里具体**：用真实的名字、店名、歌名、金额、时间、对话原话、搜索词。**拒绝**「某人 / 某件事 / 一条消息 / 一首歌」这种含糊占位，每个细节都要像真有其事，能拼出一个活人。
 - **数字行为往狠里堆**：compose 的「打了又删」至少 2~3 次且每次草稿不同、search 的「搜了又删」至少一串 3~4 条层层递进（越搜越露底）、再穿插消息撤回 / 反复开同一页 / 已读不回 / 对方"正在输入…"又停了。
 - **高潮要够长够窒息**：把关键节点拉成 **8~12 个连续 beat**（开→关→重开→停顿→锁屏→再开→输入→删→输入→删→…→最终发送或最终没发），全程 pace=3，把"手指悬在发送键上"的劲儿磨出来。
-- **环境碎片撒厚**：购物车里躺着什么、半年前的待办写了什么、浏览器开着哪些标签、相册某张图是哪天——具体到刺人。
+- **环境碎片少而准**：需要时给出一个与当前场景真正相关的具体痕迹；不需要时可以完全不放，不要靠堆叠碎片制造生活感。
 - **敢于不体面**：真实的人会走神、会反复确认、会自欺、会因一件小事突然破防。别替 TA 美化、克制成一张白纸——该狼狈就狼狈，该上头就上头。
-- **结尾要"落地"，不要"断电"**：高潮之后**必须**有 3~6 个 beat 的收束——情绪慢慢沉下来、做一个最终的小动作（放下手机 / 关灯 / 最后看一眼那条消息 / 轻轻锁屏），pace 回落到 1~2；倒数第二拍用一句 thought 或一个 lock 给整场一个情绪落点，让观众真切感到"这一段，结束了"。**绝不能停在动作中途或高潮顶点就 end**。end 永远是收束之后的最后一拍，不是急刹车。
+- **结尾要"落地"，不要"急停"**：高潮之后需要自然收束，绝不能在动作中途或高潮顶点突然 end。用 1 个与本场内容自然相关的小动作完成落地，例如停止当前操作、暂时离开某个页面、放下手机或结束正在做的事情；动作必须从本场情境自然长出来，不要套固定结尾模板。pace 可回落到 1~2，end 永远是收束之后的最后一拍。
 
 【输出格式】严格输出**一个 JSON 对象**（不要任何额外文字、不要 markdown 代码块），结构如下：
 {
@@ -1279,7 +1335,7 @@ ${buildVariation(tone)}
   "ending": "可选，这次的结局版本标签（如：最终没有发送）",
   "summary": "1-2 句收尾，客观留白，不解释",
   "buff": { "name": "英文key", "label": "中文情绪标签(4-8字)", "emoji": "1个emoji", "color": "#hex", "intensity": 1|2|3, "description": "一句给AI看的情绪底色" },
-  "beats": [ ... 40~64 个 beat，宁多勿少 ... ]
+  "beats": [ ... 按场景内容自然决定数量的 beat ... ]
 }
 
 每个 beat 是一个对象，必含 "kind"，按需含 "time"(HH:MM)、"monologue"、"pace"(1普通/2稍慢/3高潮)、"vibe"。
@@ -1305,7 +1361,7 @@ kind 取值与字段：
 - {"kind":"flashback","time":"15:00","flashback":{"label":"三个月前的今天","caption":"...","date":"...","tint":"#4a3a5a"},"monologue":""}  // 记忆闪回(可选)，label=自洽的时间口径，monologue留空=沉默
 - {"kind":"end","time":"23:40"}  // 最后一个 beat 必须是 end
 
-请严格贴合上面的【本场变奏】，并把【下猛料】那段吃透：beats 给足 40~64 个、独白密集、细节具体、数字行为反复、高潮拉长、结尾收束落地。**务必保证 JSON 完整闭合、结尾收好**——若篇幅吃紧，宁可砍掉几个中段 beat，也要留足收尾、把括号全部闭合，绝不允许写到一半被截断。直接输出 JSON 对象。`;
+请先遵守【内容优先级】，只在自然合适时参考【本场变奏】与生活噪音灵感。让演出细节具体、数字行为可信、高潮充分、结尾自然收束；长度通常可在 20～60 个 beat 间按内容伸缩，但不要凑数。**务必保证 JSON 完整闭合、结尾收好**——若篇幅吃紧，宁可砍掉几个中段 beat，也要留足收尾、把括号全部闭合，绝不允许写到一半被截断。直接输出 JSON 对象。`;
 }
 
 export default PersonaSim;

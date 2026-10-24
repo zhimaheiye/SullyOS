@@ -3,6 +3,7 @@ import type {ThinkingChainStyleId} from '../../utils/psycheAppearance';
 
 interface ThinkingChainSettingsValue {
     enabled: boolean;
+    autoTranslateThinking: boolean;
     styleId: ThinkingChainStyleId;
     customColors: { bg: string; accent: string; text: string };
     customPrompt: string;
@@ -38,7 +39,7 @@ const ThinkingChainSettingsModal: React.FC<Props> = ({ isOpen, onClose, value, o
                     <div className="flex items-center justify-between">
                         <div>
                             <h2 className="text-base font-bold text-slate-800">心象 · 设置</h2>
-                            <p className="text-[11px] text-slate-400 mt-0.5">显示与追加提示词；卡片风格在「个性装扮 → 心象」调整</p>
+                            <p className="text-[11px] text-slate-400 mt-0.5">显示、翻译与追加提示词；卡片风格在「个性装扮 → 心象」调整</p>
                         </div>
                         <button
                             onClick={() => { commitPrompt(); onClose(); }}
@@ -80,11 +81,26 @@ const ThinkingChainSettingsModal: React.FC<Props> = ({ isOpen, onClose, value, o
                                 这通常**不是模型本身的问题**——同一个模型走官方渠道（Anthropic / OpenAI / 智谱直连等）能正常保持中文，是中转 API 把 system prompt 截短或改写造成的。可以试：
                             </p>
                             <ul className="list-disc pl-4 space-y-0.5 mt-1">
+                                <li>打开下方「自动翻译外语心象」，新心象落库后会用副 API 生成中文译文；原文可随时切回查看</li>
                                 <li>下面「追加提示词」里再加一条肘击：「thinking 必须中文，禁止英文」</li>
                                 <li>直接在聊天里跟角色说一句「用中文想」</li>
                                 <li>换一个跑得动官克的渠道</li>
                             </ul>
                         </div>
+                    </section>
+
+                    <section>
+                        <label className="flex items-center justify-between gap-3 cursor-pointer">
+                            <span className="min-w-0">
+                                <span className="block text-[13px] font-bold text-slate-700">自动翻译外语心象</span>
+                                <span className="block text-[10.5px] text-slate-400 mt-0.5">新心象生成后翻译成中文，会消耗所配置副 API 的额度，原文保留。此开关对所有角色生效。</span>
+                            </span>
+                            <input type="checkbox" className="sr-only" checked={value.autoTranslateThinking}
+                                onChange={event => onChange({ autoTranslateThinking: event.target.checked })} />
+                            <span aria-hidden className={`shrink-0 w-10 h-6 rounded-full p-1 transition-colors flex items-center ${value.autoTranslateThinking ? 'bg-indigo-500' : 'bg-slate-200'}`}>
+                                <span className={`w-4 h-4 bg-white rounded-full shadow-sm transition-transform ${value.autoTranslateThinking ? 'translate-x-4' : ''}`} />
+                            </span>
+                        </label>
                     </section>
 
                     {/* 1. 总开关 */}

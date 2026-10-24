@@ -10,7 +10,7 @@ import './BeautyWardrobe.css';
 import { BeautyRepoBadge } from '../share/BeautyRepoInvitation';
 import {readDecorationOrigin,originLabel,canEditDecoration,type DecorationOrigin} from '../../utils/decorationLibrary';
 
-export interface WardrobeEntry extends BeautySource { attributionKey: () => Promise<string>; contents?: string; readLocal?: () => Promise<unknown> }
+export interface WardrobeEntry extends BeautySource { attributionKey: () => Promise<string>; contents?: string; readLocal?: () => Promise<unknown>; swatch?: string }
 interface WardrobeActions {getUsage?:WardrobeUsageReader;onEdit?:(entry:WardrobeEntry)=>void;onExport?:(entry:WardrobeEntry)=>void;onShare?:(entry:WardrobeEntry)=>void;onDelete?:(entry:WardrobeEntry)=>void;onUpdate?:(entry:WardrobeEntry)=>void|Promise<void>}
 interface Loaded { pack: unknown; share: BeautyShare | null; origin:DecorationOrigin }
 
@@ -39,7 +39,7 @@ function WardrobeTile({ entry, onOpen, getUsage, ...actions }: WardrobeActions &
     <div className="wardrobe-cover" aria-hidden="true">
       {loaded ? <BeautyPresetPreview data={loaded.pack} compact/> : <span className="wardrobe-placeholder">{error ? '点按重试预览' : '预览载入中'}</span>}
     </div>
-    <strong>{entry.name}</strong>{usage&&<span className="wardrobe-usage">{usage}</span>}<span className="wardrobe-credit">{loaded ? `${originLabel(loaded.origin)}${loaded.origin.credit?' · '+loaded.origin.credit:''}${!canEditDecoration(loaded.origin)?' · 禁止二改':''}` : error ? '读取失败 · 可重试或删除' : '正在读取来源'}</span>
+    {entry.swatch?<span className="wardrobe-name-row"><span className="wardrobe-swatch" style={{background:entry.swatch}}/><strong>{entry.name}</strong></span>:<strong>{entry.name}</strong>}{usage&&<span className="wardrobe-usage">{usage}</span>}<span className="wardrobe-credit">{loaded ? `${originLabel(loaded.origin)}${loaded.origin.credit?' · '+loaded.origin.credit:''}${!canEditDecoration(loaded.origin)?' · 禁止二改':''}` : error ? '读取失败 · 可重试或删除' : '正在读取来源'}</span>
   </button>{error&&<p className="wardrobe-credit" role="alert">{error}</p>}<CardActions entry={entry} origin={loaded?.origin} {...actions}/ >{loaded?.share && <BeautyRepoBadge share={loaded.share}/>}</article>;
 }
 

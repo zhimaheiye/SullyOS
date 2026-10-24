@@ -10,6 +10,8 @@ const legacyTextCalls: Record<string, number> = {
     'apps/GameApp.tsx': 1,
     'components/date/story/StoryTheaterSession.tsx': 2,
     'utils/socialGeneration.ts': 1,
+    'utils/characterStudyService.ts': 1,
+    'utils/healing/chatService.ts': 1,
     // 记忆诊断、迁移、后台门牌任务目前的契约是序列化文本，不是角色对话。
     'apps/MemoryPalaceApp.tsx': 1,
     'utils/memoryPalace/memoryRepair.ts': 1,

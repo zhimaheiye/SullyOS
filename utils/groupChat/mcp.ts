@@ -13,6 +13,7 @@ import {
 } from '../mcpToolBridge';
 import { buildToolResultMessage, normalizeToolCallsForCompat } from '../toolCallCompat';
 import { toolCallFingerprint } from '../agenticToolFeedback';
+import { isManualRelayEnabled } from '../manualModelRelay';
 
 interface GroupMcpCompletionOptions {
     url: string;
@@ -22,6 +23,8 @@ interface GroupMcpCompletionOptions {
     userName: string;
     signal?: AbortSignal;
     onStatus?: (status: string) => void;
+    requestCompletion?: (body: Record<string, any>) => Promise<any>;
+    supportsNativeTools?: boolean;
 }
 
 const mergeUsage = (total: Record<string, number>, usage: any) => {
@@ -36,10 +39,14 @@ const mergeUsage = (total: Record<string, number>, usage: any) => {
  * tools/call 循环和正文兼容兜底，最终仍返回标准 chat/completions 响应。
  */
 export async function completeGroupChatWithMcp(options: GroupMcpCompletionOptions): Promise<any> {
-    const { tools, resolve } = buildMcpOpenAITools(options.groupId);
     const usageTotal: Record<string, number> = {};
 
     const request = async (body: Record<string, any>): Promise<any> => {
+        if (options.requestCompletion) {
+            const data = await options.requestCompletion(body);
+            mergeUsage(usageTotal, data.usage);
+            return data;
+        }
         const response = await fetch(options.url, {
             method: 'POST',
             headers: options.headers,
@@ -55,6 +62,8 @@ export async function completeGroupChatWithMcp(options: GroupMcpCompletionOption
         return data;
     };
 
+    if (isManualRelayEnabled()) return request(options.body);
+    const { tools, resolve } = buildMcpOpenAITools(options.groupId);
     // 没有对本群可见的服务器时完全沿用群聊原请求。
     if (!tools.length) return request(options.body);
 
@@ -71,7 +80,7 @@ export async function completeGroupChatWithMcp(options: GroupMcpCompletionOption
         tools: [...(baseBody.tools || []), ...tools],
         tool_choice: baseBody.tool_choice || 'auto',
     };
-    let requestBody: Record<string, any> = getMcpUseNativeTools()
+    let requestBody: Record<string, any> = options.supportsNativeTools !== false && getMcpUseNativeTools()
         ? nativeBody
         : buildMcpRejectedToolsFallbackBody(nativeBody);
     let data: any;
@@ -81,6 +90,11 @@ export async function completeGroupChatWithMcp(options: GroupMcpCompletionOption
         if (!requestBody.tools?.length || !shouldRetryMcpWithoutTools(error)) throw error;
         requestBody = buildMcpRejectedToolsFallbackBody(nativeBody);
         data = await request(requestBody);
+    }
+
+    if (data?.model === 'external-manual-relay' && (data.choices?.[0]?.message?.tool_calls?.length
+        || extractTextFakedMcpCalls(String(data.choices?.[0]?.message?.content || ''), resolve).length)) {
+        throw new Error('手动接力文本包含工具调用，本轮已停止；未执行 MCP 工具');
     }
 
     let conversationMessages = [...(requestBody.messages || [])];

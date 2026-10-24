@@ -1,9 +1,10 @@
 import {BEAUTY_MAX_BYTES, validateBeautyMetadata, type BeautyShare} from './beautyShareContract';
 import {parseBeautyCatalog, type BeautyCatalog, type BeautyCatalogEntry} from './beautyCatalogContract';
 import {normalizeBeautyPackage} from './beautyShareClient';
+import {publicServiceUrl} from './beautyShareConfig';
 
-// This origin serves only public static snapshots. Never point it at the private bucket.
-export const BEAUTY_CATALOG_URL=(import.meta.env.VITE_BEAUTY_CATALOG_URL||'https://beauty-library.friedsully.com').replace(/\/$/,'');
+// 公开版本默认没有装扮库地址，不会读取作者的公共装扮库。
+export const BEAUTY_CATALOG_URL=publicServiceUrl(import.meta.env.VITE_BEAUTY_CATALOG_URL);
 let pending:{base:string;value:Promise<BeautyCatalog>}|undefined;
 async function readStatic(url:string,maxBytes:number,cache:RequestCache='default'){
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),30000);
@@ -18,17 +19,21 @@ async function readStatic(url:string,maxBytes:number,cache:RequestCache='default
   }finally{clearTimeout(timer);}
 }
 export function loadBeautyCatalog(base=BEAUTY_CATALOG_URL):Promise<BeautyCatalog>{
-  if(pending&&pending.base===base)return pending.value;
+  const resolved=publicServiceUrl(base);
+  if(!resolved)return Promise.reject(Error('这个版本还没有自己的装扮库，不会连接作者的公共装扮库。本地美化仍然可以使用。'));
+  if(pending&&pending.base===resolved)return pending.value;
   // Revalidate the static manifest on entry; the browser can reuse its ETag body.
   // Only concurrent entry requests are shared. Search/paging do not call this.
-  const value=readStatic(base+'/catalog.json',8*1024*1024,'no-cache').then(bytes=>parseBeautyCatalog(JSON.parse(new TextDecoder().decode(bytes))));
-  const entry={base,value};pending=entry;
+  const value=readStatic(resolved+'/catalog.json',8*1024*1024,'no-cache').then(bytes=>parseBeautyCatalog(JSON.parse(new TextDecoder().decode(bytes))));
+  const entry={base:resolved,value};pending=entry;
   const clear=()=>{if(pending===entry)pending=undefined;};
   void value.then(clear,clear);
   return value;
 }
 export async function loadCatalogPreview(entry:BeautyCatalogEntry,base=BEAUTY_CATALOG_URL){
-  const bytes=await readStatic(base+'/'+entry.file,BEAUTY_MAX_BYTES);
+  const resolved=publicServiceUrl(base);
+  if(!resolved)throw Error('这个版本还没有自己的装扮库，不会连接作者的公共装扮库。本地美化仍然可以使用。');
+  const bytes=await readStatic(resolved+'/'+entry.file,BEAUTY_MAX_BYTES);
   const digest=[...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes.buffer))].map(b=>b.toString(16).padStart(2,'0')).join('');
   if(bytes.length!==entry.bytes||digest!==entry.sha256)throw Error('预览文件校验失败，请稍后重试');
   return normalizeBeautyPackage(JSON.parse(new TextDecoder().decode(bytes)),entry.kind);

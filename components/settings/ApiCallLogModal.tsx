@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import Modal from '../os/Modal';
 import { DB } from '../../utils/db';
+import { FEATURE_APIS } from '../../utils/featureApi';
 import {
     API_REQUEST_CAPTURE_EVENT,
     formatApiRequestCaptureTxt,
@@ -275,6 +276,7 @@ const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) =>
                                     <Field label="App" value={e.appName} />
                                     <Field label="角色" value={e.charName} />
                                     <Field label="用途" value={e.purpose} />
+                                    {e.featureId && <Field label="副 API 功能" value={FEATURE_APIS.find(f => f.id === e.featureId)?.name || e.featureId} />}
                                     <div className="col-span-2">
                                         {/* 模型/实际后端两行不截断（break-all 换行）：截断会把「为什么黄了」的
                                             关键差异（后缀 -c、渠道标签）藏进省略号里，用户看着两行一样却标黄一头雾水 */}

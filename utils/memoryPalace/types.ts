@@ -130,6 +130,14 @@ export interface MemoryNode {
     /** 群名快照（用于群被删除后仍能在 UI 里识别这条记忆来自哪个群） */
     groupName?: string;
 
+    /** 虚构剧情树的归档来源。每个 archive 使用独立 charId 分区，阻止兄弟路线串线。 */
+    storyTimelineScope?: {
+        entryId: string;
+        archiveId: string;
+        sourceMessageIds: number[];
+        branchId?: string;
+    };
+
     // ─── 已弃用字段（保留以兼容历史数据读取，新代码不应写入） ───
     /** @deprecated 旧话题盒 ID，已由 eventBoxId 替代 */
     boxId?: string;

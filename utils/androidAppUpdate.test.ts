@@ -29,16 +29,16 @@ vi.mock('@capacitor/filesystem', () => ({
   Filesystem: filesystemMocks,
 }));
 
-import { downloadAndVerifyAndroidUpdate, parseAndroidUpdateManifest } from './androidAppUpdate';
+import { downloadAndVerifyAndroidUpdate, parseAndroidUpdateManifest, type AndroidUpdateManifest } from './androidAppUpdate';
 
-const validManifest = {
+const validManifest: AndroidUpdateManifest = {
   schemaVersion: 1,
   versionCode: 30402,
   versionName: '3.4.2',
   apkUrl: 'https://github.com/example/app/releases/download/v3.4.2/app.apk',
   sha256: 'a'.repeat(64),
   sizeBytes: 37_000_000,
-  releaseNotes: ['修复更新按钮', '', 123],
+  releaseNotes: ['修复更新按钮'],
 };
 
 beforeEach(() => {
@@ -60,7 +60,7 @@ beforeEach(() => {
 
 describe('parseAndroidUpdateManifest', () => {
   it('accepts and normalizes a valid manifest', () => {
-    expect(parseAndroidUpdateManifest(validManifest)).toMatchObject({
+    expect(parseAndroidUpdateManifest({ ...validManifest, releaseNotes: ['修复更新按钮', '', 123] as any })).toMatchObject({
       versionCode: 30402,
       versionName: '3.4.2',
       sha256: 'a'.repeat(64),

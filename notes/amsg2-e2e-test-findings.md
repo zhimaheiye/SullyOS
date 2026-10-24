@@ -26,8 +26,8 @@ Toast 却写着「记得把同样的值填进 Worker 环境变量 AMSG_SERVER_TO
 > Settings → Bindings 加一个 D1 database，变量名必须是 DB…
 > Settings → Trigger Events 加 Cron Trigger：`* * * * *`…
 
-而现在推的是 fork `sullyos-workers` + Cloudflare 连 Git 的流程，D1 binding 和 cron 都由仓库里的
-`wrangler.toml` 自动带上，用户按 App 里的指引反而会多做两步、还可能建出配置不一致的 Worker。
+而现在推的是 fork 本项目仓库 + Cloudflare 连 Git 的流程，D1 binding 和 cron 都由仓库里的
+`worker/amsg/wrangler.toml` 自动带上，用户按 App 里的指引反而会多做两步、还可能建出配置不一致的 Worker。
 两处说法要统一。
 
 已把这一节改成 fork 流程（含 Fork 仓库 / 图文教程 / CF 面板三个跳转），粘贴那套连同

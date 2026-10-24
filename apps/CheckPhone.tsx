@@ -2,7 +2,7 @@ import { loadCharacterContextMessages } from '../utils/chatContextRange';
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useOS } from '../context/OSContext';
 import { DB } from '../utils/db';
-import { CharacterProfile, PhoneEvidence, PhoneCustomApp, PhoneContact, PhoneSimLog, ConvTopic, AiSession, AiServiceKind, TavernCard, APIConfig } from '../types';
+import { CharacterProfile, PhoneEvidence, PhoneCustomApp, PhoneContact, PhoneSimLog, ConvTopic, AiSession, AiServiceKind, TavernCard, APIConfig, PhoneConversationTurn } from '../types';
 import { ContextBuilder } from '../utils/context';
 import Modal from '../components/os/Modal';
 import TokenImg from '../components/os/TokenImg';
@@ -12,8 +12,9 @@ import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
 import {
     runRealConversation, runNpcConversation, upsertContact, matchRealChar,
     clampAffinity, normName, flipTranscript, parseTranscript, serializeTurns, appendLearned,
-    topicText, summarizeConversation, applyRealConversationToPhoneState,
+    topicText, summarizeConversation,
 } from '../utils/relationshipChat';
+import { readRealConversationModes, saveRealConversationModes, realConversationPairKey, type RealConversationMode } from '../utils/realConversationMode';
 import PersonaSim, { LifeLog, generatePersonaScript } from './PersonaSim';
 import { usePersonaSim, personaSimStore } from '../utils/personaSimStore';
 import { createPersonaSimLog, getPersonaSimBeatIndex } from '../utils/personaSimLog';
@@ -23,6 +24,16 @@ import { buildPhoneEvidenceChatCard, normalizePhoneEvidence, phoneFieldToText } 
 import { normalizePhoneAiSession } from '../utils/phoneTranscript';
 import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
 import { getCheckPhoneApi, resolveCheckPhoneApi, setCheckPhoneApi } from '../utils/checkPhoneApi';
+import { buildAiInputExpandPrompt, cleanAiInputExpansion } from '../utils/aiInputExpand';
+import { commitRealConversationSide, type CommitConversationOptions } from '../utils/phoneConversationSync';
+import { findOperatorIdentity } from '../utils/operatorIdentity';
+import {
+    deletePhoneConversationTurns,
+    materializePhoneConversationTurns,
+    mirrorPhoneConversationTurns,
+    projectPhoneConversationForViewer,
+    serializePhoneConversationTurns,
+} from '../utils/phoneConversationProvenance';
 import {
     User, Phone, ChatCircleDots, ChatCircle, ShoppingBag, Hamburger, Compass, GearSix,
     Plus, SignOut, CaretLeft, CaretRight, Cloud, ImagesSquare, LockSimple, Package,
@@ -260,7 +271,7 @@ const HomeCard: React.FC<{
 );
 
 const CheckPhone: React.FC = () => {
-    const { closeApp, characters, activeCharacterId, updateCharacter, apiConfig, apiPresets, addToast, userProfile, characterGroups } = useOS();
+    const { closeApp, characters, activeCharacterId, updateCharacter, updateUserProfile, apiConfig, apiPresets, addToast, userProfile, characterGroups } = useOS();
     const [view, setView] = useState<'select' | 'phone'>('select');
     // activeAppId: 'home' | 'chat_detail' | 'app_id'
     const [activeAppId, setActiveAppId] = useState<string>('home');
@@ -286,6 +297,17 @@ const CheckPhone: React.FC = () => {
 
     // 人际关系系统 State
     const [selectedContact, setSelectedContact] = useState<PhoneContact | null>(null);
+    const [realConversationModes, setRealConversationModes] = useState(readRealConversationModes);
+    // 从当前角色对派生，切联系人/机主/绑定时不会沿用上一对的模式。
+    const realPairKey = targetChar && selectedContact?.kind === 'real' && selectedContact.linkedCharId
+        ? realConversationPairKey(targetChar.id, selectedContact.linkedCharId) : undefined;
+    const realConversationMode = (realPairKey && realConversationModes[realPairKey]) || 'free';
+    const changeRealConversationMode = (mode: RealConversationMode) => {
+        if (!realPairKey) return;
+        const next = { ...realConversationModes, [realPairKey]: mode };
+        setRealConversationModes(next);
+        saveRealConversationModes(next);
+    };
     const [identityDraft, setIdentityDraft] = useState('');
     const [editingIdentity, setEditingIdentity] = useState(false);
     const [noteDraft, setNoteDraft] = useState('');
@@ -309,7 +331,7 @@ const CheckPhone: React.FC = () => {
     const [selectedContactIds, setSelectedContactIds] = useState<string[]>([]);
     // 聊天气泡：长按进入多选，删选中的几条（不满这轮生成时挑掉重来）
     const [msgSelectMode, setMsgSelectMode] = useState(false);
-    const [selectedMsgIdx, setSelectedMsgIdx] = useState<number[]>([]);
+    const [selectedMsgIds, setSelectedMsgIds] = useState<string[]>([]);
 
     // Custom App Creation State
     const [showCreateModal, setShowCreateModal] = useState(false);
@@ -318,12 +340,23 @@ const CheckPhone: React.FC = () => {
     const [newAppColor, setNewAppColor] = useState('#8b9cff');
     const [newAppPrompt, setNewAppPrompt] = useState('');
     const [newAppLayout, setNewAppLayout] = useState<NonNullable<PhoneCustomApp['layout']>>('generic');
+    const [syncTargetIds, setSyncTargetIds] = useState<string[]>([]);
 
     // 智能体 App State（「TA 的小手机」偷看）
     const [aiService, setAiService] = useState<AiServiceKind>('assistant'); // 智能体首页当前选中的服务 tab
     const [selectedAiSessionId, setSelectedAiSessionId] = useState<string | null>(null);
     const [aiInput, setAiInput] = useState('');
     const [aiSending, setAiSending] = useState(false);
+    const [aiExpanding, setAiExpanding] = useState(false);
+    const aiExpandRequestRef = useRef(0);
+    const aiInputRef = useRef('');
+    const selectedAiSessionIdRef = useRef<string | null>(null);
+    useEffect(() => { aiInputRef.current = aiInput; }, [aiInput]);
+    useEffect(() => { selectedAiSessionIdRef.current = selectedAiSessionId; }, [selectedAiSessionId]);
+    const selectAiSession = (id: string | null) => {
+        selectedAiSessionIdRef.current = id;
+        setSelectedAiSessionId(id);
+    };
     const [aiArchiveOpen, setAiArchiveOpen] = useState(false); // 展开已折叠的早期原文
     // 长按编辑/删除：动作菜单 + 编辑弹窗
     const [aiMenu, setAiMenu] = useState<{ kind: 'session' | 'card'; id: string } | null>(null);
@@ -370,7 +403,12 @@ const CheckPhone: React.FC = () => {
     const records = (targetChar?.phoneState?.records || []).map(normalizePhoneEvidence);
     const customApps = targetChar?.phoneState?.customApps || [];
     const contacts = targetChar?.phoneState?.contacts || [];
+    const operatorIdentities = userProfile.operatorIdentities || [];
     const allowFictional = targetChar?.phoneState?.allowFictionalContacts !== false;
+    const otherCharacters = characters.filter(c => c.id !== targetChar?.id);
+    const selectedSyncCount = otherCharacters.filter(c => syncTargetIds.includes(c.id)).length;
+    const allSyncSelected = otherCharacters.length > 0 && selectedSyncCount === otherCharacters.length;
+    const installCount = 1 + selectedSyncCount;
     // Keep the contact-chat scroll effect tied to this conversation's actual
     // content. `records` is normalized into a fresh array on every render, so
     // depending on the array itself makes unrelated renders snap the user back
@@ -395,6 +433,7 @@ const CheckPhone: React.FC = () => {
     const contactAvatar = (c: PhoneContact): string | undefined => linkedCharOf(c)?.avatar || c.avatar;
     // 真人联系人显示成「备注名（真名）」：identity(称呼/关系) 当备注名，真名放括号；虚构/无备注名就显示本名
     const contactDisplayName = (c: PhoneContact): string => {
+        if (c.kind === 'custom') return findOperatorIdentity(operatorIdentities, c.operatorIdentityId)?.name || c.name;
         const realName = (c.kind === 'real' && c.linkedCharId) ? linkedCharOf(c)?.name : undefined;
         if (!realName) return c.name;
         const alias = (c.identity && normName(c.identity) !== normName(realName)) ? c.identity
@@ -462,6 +501,7 @@ const CheckPhone: React.FC = () => {
 
     const handleSelectChar = (c: CharacterProfile) => {
         setTargetChar(c);
+        selectAiSession(null);
         setView('phone');
         setActiveAppId('home');
         setSelectedEvidenceRecord(null);
@@ -531,6 +571,7 @@ const CheckPhone: React.FC = () => {
     const handleExitPhone = () => {
         setView('select');
         setTargetChar(null);
+        selectAiSession(null);
         setActiveAppId('home');
         setSelectedEvidenceRecord(null);
         setEvidenceBackAppId('home');
@@ -675,30 +716,63 @@ const CheckPhone: React.FC = () => {
         addToast('App 已卸载', 'success');
     };
 
+    const openCreateAppModal = () => {
+        if (!targetChar) return;
+        setSyncTargetIds(characters.filter(c => c.id !== targetChar.id).map(c => c.id));
+        setShowCreateModal(true);
+    };
+
+    const toggleSelectAllSyncTargets = () => {
+        setSyncTargetIds(allSyncSelected ? [] : otherCharacters.map(c => c.id));
+    };
+
+    const toggleSyncTarget = (charId: string) => {
+        setSyncTargetIds(prev => prev.includes(charId)
+            ? prev.filter(id => id !== charId)
+            : [...prev, charId]);
+    };
+
     const handleCreateCustomApp = () => {
-        if (!targetChar || !newAppName || !newAppPrompt) return;
+        const appName = newAppName.trim();
+        const appPrompt = newAppPrompt.trim();
+        if (!targetChar || !appName || !appPrompt) return;
 
-        const newApp: PhoneCustomApp = {
-            id: `app-${Date.now()}`,
-            name: newAppName,
-            icon: newAppIcon,
-            color: newAppColor,
-            prompt: newAppPrompt,
-            layout: newAppLayout
-        };
+        const validCharacterIds = new Set(characters.map(c => c.id));
+        const targetIds = [
+            targetChar.id,
+            ...syncTargetIds.filter(id => id !== targetChar.id && validCharacterIds.has(id)),
+        ];
+        const createdAt = Date.now();
 
-        const currentApps = targetChar.phoneState?.customApps || [];
-        updateCharacter(targetChar.id, {
-            phoneState: { records: targetChar.phoneState?.records || [], ...targetChar.phoneState, customApps: [...currentApps, newApp] }
+        targetIds.forEach((charId, index) => {
+            const appCopy: PhoneCustomApp = {
+                id: `app-${createdAt}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+                name: appName,
+                icon: newAppIcon,
+                color: newAppColor,
+                prompt: appPrompt,
+                layout: newAppLayout,
+            };
+            updateCharacter(charId, prev => ({
+                phoneState: {
+                    ...prev.phoneState,
+                    records: prev.phoneState?.records || [],
+                    customApps: [...(prev.phoneState?.customApps || []), appCopy],
+                },
+            }));
         });
 
         setShowCreateModal(false);
         setNewAppName('');
         setNewAppPrompt('');
         setNewAppLayout('generic');
+        setSyncTargetIds([]);
         setPage(1);
-        addToast(`已安装 ${newAppName}`, 'success');
-        trackEvent('安装自定义 App', { layout: newAppLayout });
+        const syncedCount = targetIds.length - 1;
+        addToast(syncedCount > 0
+            ? `已安装 ${appName} · 已同步到另外 ${syncedCount} 台手机`
+            : `已安装 ${appName}`, 'success');
+        trackEvent('安装自定义 App', { layout: newAppLayout, syncedCount });
     };
 
     // --- Core Generation Logic ---
@@ -889,7 +963,8 @@ ${realCharRule}
                             note: type === 'contacts' ? recordDetail : undefined,
                             lastInteraction: Date.now(),
                         });
-                        contactId = contactsAcc.find(c => (linkedId && c.linkedCharId === linkedId) || normName(c.name) === normName(contactName))?.id;
+                        contactId = contactsAcc.find(c => (linkedId && c.linkedCharId === linkedId)
+                            || (c.kind !== 'custom' && normName(c.name) === normName(contactName)))?.id;
                     }
 
                     // contacts 模式只建联系人，不落聊天卡片/记录
@@ -1203,6 +1278,53 @@ ${olderText}
         } catch (e) { console.error('ai summary failed', e); }
     };
 
+    // 发送前扩写：只读当前智能体会话并回填输入框，不触碰 transcript / DB / 角色现实上下文。
+    const handleAiExpand = async () => {
+        const session = selectedAiSession;
+        const sourceInput = aiInput;
+        const sourceText = sourceInput.trim();
+        if (!session || !sourceText || aiExpanding || aiSending) return;
+        if (!effectiveApiConfig.apiKey) { addToast('请先配置 API', 'error'); return; }
+
+        const requestId = ++aiExpandRequestRef.current;
+        setAiExpanding(true);
+        try {
+            const card = session.service === 'tavern' ? aiCards.find(c => c.id === session.cardId) : undefined;
+            const prompt = buildAiInputExpandPrompt({
+                service: session.service,
+                serviceName: session.serviceName,
+                sourceText,
+                transcript: session.transcript,
+                recap: recapOf(session),
+                card: card ? {
+                    name: card.name,
+                    kind: card.kind === 'world' ? 'world' : 'character',
+                    persona: card.persona,
+                    scenario: card.scenario,
+                } : undefined,
+                assistantStyleLore: session.service === 'assistant' ? AI_VENDOR_LORE : undefined,
+            });
+            const temperature = session.service === 'assistant' ? 0.6 : session.service === 'claude' ? 0.72 : 0.82;
+            const expandedText = cleanAiInputExpansion(await callLLM(prompt, temperature), session.service);
+
+            if (requestId !== aiExpandRequestRef.current || selectedAiSessionIdRef.current !== session.id) return;
+            if (aiInputRef.current !== sourceInput) {
+                addToast('输入内容已变化，本次扩写结果未覆盖', 'info');
+                return;
+            }
+            if (!expandedText) { addToast('没有生成扩写内容，再试一次', 'error'); return; }
+            aiInputRef.current = expandedText;
+            setAiInput(expandedText);
+        } catch (e) {
+            console.error(e);
+            if (requestId === aiExpandRequestRef.current && selectedAiSessionIdRef.current === session.id) {
+                addToast('扩写失败，请重试', 'error');
+            }
+        } finally {
+            if (requestId === aiExpandRequestRef.current) setAiExpanding(false);
+        }
+    };
+
     // 互动续写：assistant/claude = 你替机主问、AI 答；tavern = 你以卡片身份回、机主本色反应
     const handleAiSend = async () => {
 
@@ -1315,7 +1437,7 @@ ${olderText}
                 },
             },
         }));
-        if (selectedAiSessionId === id) { setSelectedAiSessionId(null); setActiveAppId('aiagent'); }
+        if (selectedAiSessionId === id) { selectAiSession(null); setActiveAppId('aiagent'); }
     };
 
     // 会话内单条内容的"轮次"：酒馆按楼层(合并连续同说话人)，助手/树洞按行——与渲染里一致
@@ -1435,7 +1557,7 @@ ${olderText}
             }));
             await syncAiCardToChat(sess, parseTranscript(sess.transcript));
             setAiCardView(null);
-            setSelectedAiSessionId(sess.id);
+            selectAiSession(sess.id);
             setActiveAppId('ai_session');
         } catch (e) {
             console.error(e); addToast('生成失败', 'error');
@@ -1629,7 +1751,9 @@ ${olderText}
             }));
             // 3) 给新角色建镜像（把现有 A 视角对话翻转过去）
             if (myRec?.detail) {
-                const flipped = flipTranscript(myRec.detail);
+                const ownerTurns = materializePhoneConversationTurns(myRec, { ownerCharId: targetChar.id, contactCharId: d.id });
+                const mirrorTurns = mirrorPhoneConversationTurns(ownerTurns);
+                const flipped = serializePhoneConversationTurns(mirrorTurns);
                 const now = Date.now();
                 updateCharacter(d.id, (cur) => {
                     const cs = upsertContact(cur.phoneState?.contacts || [], {
@@ -1639,8 +1763,8 @@ ${olderText}
                     const recs = cur.phoneState?.records || [];
                     const ex = recs.find(r => r.type === 'chat' && (r.contactId === cid || normName(r.title) === normName(targetChar.name)));
                     const next = ex
-                        ? recs.map(r => r.id === ex.id ? { ...r, detail: flipped, timestamp: now, contactId: cid } : r)
-                        : [...recs, { id: `rec-${now}-${Math.random()}`, type: 'chat' as const, title: targetChar.name, detail: flipped, timestamp: now, contactId: cid }];
+                        ? recs.map(r => r.id === ex.id ? { ...r, detail: flipped, conversationTurns: mirrorTurns, timestamp: now, contactId: cid } : r)
+                        : [...recs, { id: `rec-${now}-${Math.random()}`, type: 'chat' as const, title: targetChar.name, detail: flipped, conversationTurns: mirrorTurns, timestamp: now, contactId: cid }];
                     return { phoneState: { ...cur.phoneState, contacts: cs, records: next } };
                 });
             }
@@ -1678,53 +1802,37 @@ ${olderText}
         trackEvent('手动添加一位联系人', { contactKind: ncKind });
     };
 
-    // 给某个机主侧落一段真实对话：更新好感/状态 + 写 chat 记录 + （机主开了同步才）镜像进私聊 + 自动加删友播报
+    // 给某个机主侧落一段真实对话；真人共享事件可覆盖 owner 自己的同步开关。
     const commitConversationSide = async (
         owner: CharacterProfile, partnerName: string, partnerCharId: string,
         detail: string, delta: number, partnerNote?: string, learnedNew?: string, seedIdentity?: string,
+        options?: CommitConversationOptions, conversationTurns?: PhoneConversationTurn[],
     ) => {
-        const timestamp = Date.now();
-        const result = {
-            partnerName, partnerCharId, detail, delta, partnerNote, learnedNew, seedIdentity,
-            timestamp, recordId: `rec-${timestamp}-${Math.random()}`,
-        };
-        const contact = owner.phoneState?.contacts?.find(c => c.linkedCharId === partnerCharId || normName(c.name) === normName(partnerName));
-        const existing = owner.phoneState?.records?.find(r => r.type === 'chat'
-            && ((contact && r.contactId === contact.id) || (!r.contactId && normName(r.title) === normName(partnerName))));
-        const ownerSendToChat = owner.phoneState?.sendToChat !== false;
-        let msgId: number | undefined;
-        if (ownerSendToChat) {
-            // 续写时先删掉这段对话上一张卡，私聊里只留一张最新完整的（不再 AB / ABC 堆叠）
-            if (existing?.systemMessageId) await DB.deleteMessage(existing.systemMessageId);
-            msgId = await DB.saveMessage({
-                charId: owner.id, role: 'assistant', type: 'phone_card',
-                content: `[你手机的聊天软件] 你和「${partnerName}」的对话：${detail.replace(/\n/g, ' ')}`,
-                metadata: { phoneCard: { app: '聊天软件', kind: 'chat', title: partnerName, detail } },
-            } as any);
-        }
-        // 自动加删友播报：进机主与用户的私聊（同样受 sendToChat 控制）
-        const { broadcast } = applyRealConversationToPhoneState(owner.phoneState, result);
-        if (broadcast && ownerSendToChat) {
-            await DB.saveMessage({ charId: owner.id, role: 'assistant', type: 'text', content: broadcast } as any);
-        }
-        updateCharacter(owner.id, (cur) => ({
-            phoneState: applyRealConversationToPhoneState(cur.phoneState, { ...result, systemMessageId: msgId }).phoneState,
-        }));
+        await commitRealConversationSide({
+            owner, partnerName, partnerCharId, detail, delta,
+            partnerNote, learnedNew, seedIdentity, options, conversationTurns,
+        }, {
+            deleteMessage: id => DB.deleteMessage(id),
+            saveMessage: message => DB.saveMessage(message),
+            updateCharacter,
+        });
     };
 
     // 聊满 100 条触发总结：把待归档的每 100 条原文，A/B 各自第一人称浓缩成一条话题盒记忆，推进水位线。
     // 原文仍留在 record.detail（用户能看），只是不再进上下文。
     const ARCHIVE_EVERY = 100;
-    const maybeArchiveConversation = async (aContact: PhoneContact, b: CharacterProfile, aFull: string) => {
+    const maybeArchiveConversation = async (aContact: PhoneContact, b: CharacterProfile, fullTurns: PhoneConversationTurn[]) => {
         if (!targetChar) return;
-        const aLines = parseTranscript(aFull);
         const startMark = aContact.archivedThru ?? 0;
         let mark = startMark;
         const aTopics: ConvTopic[] = [];
         const bTopics: ConvTopic[] = [];
-        while (aLines.length - mark >= ARCHIVE_EVERY) {
-            const aChunk = serializeTurns(aLines.slice(mark, mark + ARCHIVE_EVERY));
-            const bChunk = flipTranscript(aChunk);
+        while (fullTurns.length - mark >= ARCHIVE_EVERY) {
+            // 第一版只归档纯 AI/legacy 段。含接管消息的 chunk 保留结构化原文，避免错误写成被冒充者自述。
+            const chunk = fullTurns.slice(mark, mark + ARCHIVE_EVERY);
+            if (chunk.some(turn => turn.author === 'operator')) break;
+            const aChunk = serializePhoneConversationTurns(chunk);
+            const bChunk = serializePhoneConversationTurns(mirrorPhoneConversationTurns(chunk));
             const [aSum, bSum] = await Promise.all([
                 summarizeConversation({ api: effectiveApiConfig as any, speakerName: targetChar.name, otherName: b.name, transcript: aChunk }),
                 summarizeConversation({ api: effectiveApiConfig as any, speakerName: b.name, otherName: targetChar.name, transcript: bChunk }),
@@ -1758,20 +1866,23 @@ ${olderText}
         if (!targetChar || !effectiveApiConfig.apiKey) { addToast('请先配置 API', 'error'); return; }
         const b = characters.find(c => c.id === contact.linkedCharId);
         if (!b) { addToast('该联系人未绑定真实角色', 'error'); return; }
+        // 真人私聊是双方共同发生的一件事：生成开始时冻结当前查手机会话的同步选择，A/B 共用。
+        const sharedSendToChat = targetChar.phoneState?.sendToChat !== false;
         setIsLoading(true);
         trackEvent('生成一段与联系人的对话', { contactKind: 'real' });
         try {
             const existing = (targetChar.phoneState?.records || []).find(r => r.type === 'chat' && (r.contactId === contact.id || normName(r.title) === normName(contact.name)));
             const bToA = (b.phoneState?.contacts || []).find(c => c.linkedCharId === targetChar.id || normName(c.name) === normName(targetChar.name));
             // 上下文压缩：归档过的原文(0~archivedThru)不再进上下文，只喂「话题盒总结 + 近段原文」。
-            const aAllLines = parseTranscript(existing?.detail || '');
-            const aArchived = Math.min(contact.archivedThru ?? 0, aAllLines.length);
-            const archivedALines = aAllLines.slice(0, aArchived);            // 留着给用户看的原文
-            const recentDetail = serializeTurns(aAllLines.slice(aArchived));  // 喂上下文的近段
+            const allTurns = materializePhoneConversationTurns(existing, { ownerCharId: targetChar.id, contactCharId: b.id });
+            const aArchived = Math.min(contact.archivedThru ?? 0, allTurns.length);
+            const archivedTurns = allTurns.slice(0, aArchived);
+            const recentTurns = allTurns.slice(aArchived);
             const result = await runRealConversation({
                 a: targetChar, b, user: userProfile, api: effectiveApiConfig as any,
+                mode: realConversationModes[realConversationPairKey(targetChar.id, b.id)] ?? 'free',
                 affinityA: contact.affinity, affinityB: bToA?.affinity ?? 0,
-                existingDetail: recentDetail,
+                existingTurns: recentTurns,
                 // bNote = A 对 B 的备注（喂给 A）；aNote = B 对 A 的备注（喂给 B）。别接反。
                 aNote: bToA?.note, bNote: contact.note,
                 bLearned: contact.learned, aLearned: bToA?.learned,
@@ -1779,14 +1890,16 @@ ${olderText}
             });
             if (!result.aDetail.trim()) { addToast('对方没有回应…', 'error'); return; }
             // 把归档段拼回去，存「完整原文」给用户看（上下文用的是压缩版，互不影响）
-            const aFull = serializeTurns([...archivedALines, ...parseTranscript(result.aDetail)]);
-            const bFull = flipTranscript(aFull);
+            const fullTurns = [...archivedTurns, ...result.conversationTurns];
+            const aFull = serializePhoneConversationTurns(fullTurns);
+            const mirroredTurns = mirrorPhoneConversationTurns(fullTurns);
+            const bFull = serializePhoneConversationTurns(mirroredTurns);
             // A 学到的写进 A 对 B 的了解；B 学到的写进 B 对 A 的了解。
             // 若对方通讯录里还没有自己，commitConversationSide 会先建好联系人（带名字+起始备注名）再挂消息。
-            await commitConversationSide(targetChar, contact.name, b.id, aFull, result.aDelta, contact.note, result.aLearnedNew, contact.identity);
-            await commitConversationSide(b, targetChar.name, targetChar.id, bFull, result.bDelta, bToA?.note, result.bLearnedNew, contact.identity);
+            await commitConversationSide(targetChar, contact.name, b.id, aFull, result.aDelta, contact.note, result.aLearnedNew, contact.identity, { sendToChatOverride: sharedSendToChat }, fullTurns);
+            await commitConversationSide(b, targetChar.name, targetChar.id, bFull, result.bDelta, bToA?.note, result.bLearnedNew, contact.identity, { sendToChatOverride: sharedSendToChat }, mirroredTurns);
             // 聊满 100 条 → 各自第一人称总结归档进话题盒
-            await maybeArchiveConversation(contact, b, aFull);
+            await maybeArchiveConversation(contact, b, fullTurns);
             addToast(`${targetChar.name} 和 ${b.name} 聊了一会儿`, 'success');
         } catch (e) {
             console.error(e);
@@ -1796,7 +1909,6 @@ ${olderText}
         }
     };
 
-    // 与虚构 NPC 的对话（机主脑补，单 LLM，纯虚构、不镜像）
     const handleNpcConversation = async (contact: PhoneContact) => {
         if (!targetChar || !effectiveApiConfig.apiKey) { addToast('请先配置 API', 'error'); return; }
         setIsLoading(true);
@@ -1878,27 +1990,53 @@ ${olderText}
     };
 
     // 把「编辑后的 A 视角脚本」落库：刷新机主侧记录/卡片 + 真人镜像 + 同步 archivedThru；全删空则移除记录。
-    const saveEditedConversation = async (c: PhoneContact, newDetail: string, newArchived: number) => {
+    const saveEditedConversation = async (c: PhoneContact, newDetail: string, newArchived: number, newTurns?: PhoneConversationTurn[]) => {
         if (!targetChar) return;
         const isChatWith = (r: PhoneEvidence, cId: string | undefined, nm: string) =>
             r.type === 'chat' && (r.contactId === cId || normName(r.title) === normName(nm));
         const has = !!newDetail.trim();
+        const sharedSendToChat = c.kind === 'real'
+            ? targetChar.phoneState?.sendToChat !== false
+            : undefined;
+        const ownerSendToChat = sharedSendToChat ?? (targetChar.phoneState?.sendToChat !== false);
+        const lastOperator = newTurns ? newTurns.map(turn => turn.author).lastIndexOf('operator') : -1;
+        const participantSides = new Set((lastOperator >= 0 ? newTurns!.slice(lastOperator + 1) : [])
+            .filter(turn => turn.author === 'ai').map(turn => turn.side));
+        const ownerMayRefreshCard = lastOperator < 0 || participantSides.has('owner');
+        const contactMayRefreshCard = lastOperator < 0 || participantSides.has('contact');
+        const cardWasCreatedForParticipant = async (record: PhoneEvidence | undefined) => {
+            if (!record?.systemMessageId) return false;
+            const message = await DB.getMessageById(record.systemMessageId);
+            const turns = message?.metadata?.phoneCard?.conversationTurns as PhoneConversationTurn[] | undefined;
+            if (!turns?.length) return false;
+            const priorLastOperator = turns.map(turn => turn.author).lastIndexOf('operator');
+            return priorLastOperator >= 0 && turns.slice(priorLastOperator + 1)
+                .some(turn => turn.author === 'ai' && turn.side === 'owner');
+        };
         // 机主侧卡片刷新
         const ownerRec = (targetChar.phoneState?.records || []).find(r => isChatWith(r, c.id, c.name));
-        if (ownerRec?.systemMessageId) await DB.deleteMessage(ownerRec.systemMessageId);
+        const ownerHadParticipantCard = await cardWasCreatedForParticipant(ownerRec);
+        if ((ownerMayRefreshCard || ownerHadParticipantCard) && ownerRec?.systemMessageId) await DB.deleteMessage(ownerRec.systemMessageId);
         let msgId: number | undefined;
-        if (has && targetChar.phoneState?.sendToChat !== false) {
+        if (has && ownerSendToChat && ownerMayRefreshCard) {
+            const promptDetail = newTurns?.length ? projectPhoneConversationForViewer(newTurns, {
+                viewerCharId: targetChar.id, ownerCharId: targetChar.id,
+                ownerName: targetChar.name, contactName: c.name,
+            }) : newDetail;
             msgId = await DB.saveMessage({
                 charId: targetChar.id, role: 'assistant', type: 'phone_card',
-                content: `[你手机的聊天软件] 你和「${c.name}」的对话：${newDetail.replace(/\n/g, ' ')}`,
-                metadata: { phoneCard: { app: '聊天软件', kind: 'chat', title: c.name, detail: newDetail } },
+                content: `[你手机的聊天软件] 你和「${c.name}」的对话：${promptDetail.replace(/\n/g, ' ')}`,
+                metadata: { phoneCard: { app: '聊天软件', kind: 'chat', title: c.name, detail: newDetail, conversationTurns: newTurns } },
             } as any);
         }
         updateCharacter(targetChar.id, (cur) => ({
             phoneState: {
                 ...cur.phoneState,
                 records: has
-                    ? (cur.phoneState?.records || []).map(r => isChatWith(r, c.id, c.name) ? { ...r, detail: newDetail, timestamp: Date.now(), systemMessageId: msgId } : r)
+                    ? (cur.phoneState?.records || []).map(r => isChatWith(r, c.id, c.name) ? {
+                        ...r, detail: newDetail, conversationTurns: newTurns, timestamp: Date.now(),
+                        systemMessageId: ownerMayRefreshCard ? msgId : ownerHadParticipantCard ? undefined : r.systemMessageId,
+                    } : r)
                     : (cur.phoneState?.records || []).filter(r => !isChatWith(r, c.id, c.name)),
                 contacts: (cur.phoneState?.contacts || []).map(x => x.id === c.id ? { ...x, archivedThru: newArchived } : x),
             },
@@ -1907,24 +2045,33 @@ ${olderText}
         if (c.kind === 'real' && c.linkedCharId) {
             const b = characters.find(x => x.id === c.linkedCharId);
             if (b) {
-                const bDetail = flipTranscript(newDetail);
+                const bTurns = newTurns ? mirrorPhoneConversationTurns(newTurns) : undefined;
+                const bDetail = bTurns ? serializePhoneConversationTurns(bTurns) : flipTranscript(newDetail);
                 const bHas = !!bDetail.trim();
                 const bContact = (b.phoneState?.contacts || []).find(x => x.linkedCharId === targetChar.id || normName(x.name) === normName(targetChar.name));
                 const bRec = (b.phoneState?.records || []).find(r => isChatWith(r, bContact?.id, targetChar.name));
-                if (bRec?.systemMessageId) await DB.deleteMessage(bRec.systemMessageId);
+                const bHadParticipantCard = await cardWasCreatedForParticipant(bRec);
+                if ((contactMayRefreshCard || bHadParticipantCard) && bRec?.systemMessageId) await DB.deleteMessage(bRec.systemMessageId);
                 let bMsgId: number | undefined;
-                if (bHas && b.phoneState?.sendToChat !== false) {
+                if (bHas && sharedSendToChat && contactMayRefreshCard) {
+                    const bPromptDetail = bTurns?.length ? projectPhoneConversationForViewer(bTurns, {
+                        viewerCharId: b.id, ownerCharId: b.id,
+                        ownerName: b.name, contactName: targetChar.name,
+                    }) : bDetail;
                     bMsgId = await DB.saveMessage({
                         charId: b.id, role: 'assistant', type: 'phone_card',
-                        content: `[你手机的聊天软件] 你和「${targetChar.name}」的对话：${bDetail.replace(/\n/g, ' ')}`,
-                        metadata: { phoneCard: { app: '聊天软件', kind: 'chat', title: targetChar.name, detail: bDetail } },
+                        content: `[你手机的聊天软件] 你和「${targetChar.name}」的对话：${bPromptDetail.replace(/\n/g, ' ')}`,
+                        metadata: { phoneCard: { app: '聊天软件', kind: 'chat', title: targetChar.name, detail: bDetail, conversationTurns: bTurns } },
                     } as any);
                 }
                 updateCharacter(b.id, (cur) => ({
                     phoneState: {
                         ...cur.phoneState,
                         records: bHas
-                            ? (cur.phoneState?.records || []).map(r => isChatWith(r, bContact?.id, targetChar.name) ? { ...r, detail: bDetail, timestamp: Date.now(), systemMessageId: bMsgId } : r)
+                            ? (cur.phoneState?.records || []).map(r => isChatWith(r, bContact?.id, targetChar.name) ? {
+                                ...r, detail: bDetail, conversationTurns: bTurns, timestamp: Date.now(),
+                                systemMessageId: contactMayRefreshCard ? bMsgId : bHadParticipantCard ? undefined : r.systemMessageId,
+                            } : r)
                             : (cur.phoneState?.records || []).filter(r => !isChatWith(r, bContact?.id, targetChar.name)),
                         contacts: (cur.phoneState?.contacts || []).map(x => (bContact && x.id === bContact.id) ? { ...x, archivedThru: newArchived } : x),
                     },
@@ -1933,20 +2080,24 @@ ${olderText}
         }
     };
 
-    const exitMsgSelect = () => { setMsgSelectMode(false); setSelectedMsgIdx([]); };
-    // 删掉聊天里选中的几条气泡（按完整脚本的下标），重排回脚本落库
+    const exitMsgSelect = () => { setMsgSelectMode(false); setSelectedMsgIds([]); };
+    // 删掉聊天里选中的稳定 turn id；序列化回 detail 时 provenance 不丢失。
     const handleDeleteSelectedMessages = async () => {
-        if (!targetChar || !selectedContact || !selectedMsgIdx.length) { exitMsgSelect(); return; }
+        if (!targetChar || !selectedContact || !selectedMsgIds.length) { exitMsgSelect(); return; }
         const c = selectedContact;
         const rec = (targetChar.phoneState?.records || []).find(r => r.type === 'chat' && (r.contactId === c.id || normName(r.title) === normName(c.name)));
         if (!rec) { exitMsgSelect(); return; }
-        const turns = parseTranscript(rec.detail);
-        const sel = new Set(selectedMsgIdx);
-        const deletedInArchived = [...sel].filter(i => i < (c.archivedThru ?? 0)).length;
-        const keep = turns.filter((_, i) => !sel.has(i));
-        const newDetail = serializeTurns(keep);
+        const turns = materializePhoneConversationTurns(rec, {
+            ownerCharId: targetChar.id,
+            contactCharId: c.kind === 'real' ? c.linkedCharId : undefined,
+            customIdentityId: c.kind === 'custom' ? c.operatorIdentityId : undefined,
+        });
+        const sel = new Set(selectedMsgIds);
+        const deletedInArchived = turns.slice(0, c.archivedThru ?? 0).filter(turn => sel.has(turn.id)).length;
+        const keep = deletePhoneConversationTurns(turns, sel);
+        const newDetail = serializePhoneConversationTurns(keep);
         const newArchived = Math.max(0, (c.archivedThru ?? 0) - deletedInArchived);
-        await saveEditedConversation(c, newDetail, newArchived);
+        await saveEditedConversation(c, newDetail, newArchived, keep);
         addToast(`已删除 ${sel.size} 条`, 'success');
         exitMsgSelect();
     };
@@ -2538,13 +2689,14 @@ ${olderText}
     const affColor = (a: number) => a >= 40 ? '#4ade80' : a >= 0 ? '#8b9cff' : a >= -40 ? '#fbbf24' : '#fb7185';
     const kindBadge = (c: PhoneContact) => {
         if (c.kind === 'real') return { icon: <LinkSimple size={11} weight="bold" />, label: '真人', color: '#a78bfa' };
+        if (c.kind === 'custom') return { icon: <MaskHappy size={11} weight="fill" />, label: findOperatorIdentity(operatorIdentities, c.operatorIdentityId) ? '自建身份' : '身份已删除', color: '#f472b6' };
         return { icon: <User size={11} weight="fill" />, label: 'NPC', color: '#94a3b8' };
     };
 
     const renderContactsList = () => {
         const accent = '#f472b6';
         // 人际关系里不出现用户自己
-        const list = contacts.filter(c => !isUserName(c.name)).sort((a, b) => (b.lastInteraction || b.createdAt) - (a.lastInteraction || a.createdAt));
+        const list = contacts.filter(c => c.kind === 'custom' || !isUserName(c.name)).sort((a, b) => (b.lastInteraction || b.createdAt) - (a.lastInteraction || a.createdAt));
         return (
             <SubAppShell>
                 <TermHeader title={contactSelectMode ? `已选 ${selectedContactIds.length}` : '联系人'} sub={contactSelectMode ? '长按进入了多选' : `${list.length} contacts`} accent={accent}
@@ -2710,7 +2862,7 @@ ${olderText}
                         const vt = getVendorTheme(s.serviceName, s.service);
                         return (
                             <button key={s.id} {...longPress(() => setAiMenu({ kind: 'session', id: s.id }))}
-                                onClick={() => { if (lpFired.current) { lpFired.current = false; return; } setSelectedAiSessionId(s.id); setActiveAppId('ai_session'); }}
+                                onClick={() => { if (lpFired.current) { lpFired.current = false; return; } selectAiSession(s.id); setActiveAppId('ai_session'); }}
                                 className="group relative w-full text-left flex gap-3 rounded-2xl p-3.5 bg-white/[0.035] border border-white/[0.06] animate-fade-in active:scale-[0.99] transition">
                                 <div className="w-11 h-11 rounded-2xl flex items-center justify-center shrink-0"
                                     style={{ background: aiService === 'assistant' ? `${vt.accent}1f` : `${svc.accent}1f`, color: svc.accent }}>
@@ -2946,7 +3098,7 @@ ${olderText}
                 </div>
                 {/* 自然推进：不用开口，让剧情自己往下走一轮 */}
                 <div className="shrink-0 w-full px-3 pt-2" style={{ borderTop: `1px solid ${hairline}` }}>
-                    <button onClick={handleAiAutoContinue} disabled={aiSending}
+                    <button onClick={handleAiAutoContinue} disabled={aiSending || aiExpanding}
                         className="w-full py-2 rounded-xl text-[12px] font-semibold flex items-center justify-center gap-1.5 active:scale-[0.99] transition disabled:opacity-40"
                         style={{ background: `${t.accent}1a`, border: `1px dashed ${t.accent}66`, color: t.accent }}>
                         <Sparkle size={14} weight="fill" /> {isTavern ? '让剧情自己往下走一轮' : '让 TA 接着问下去'}
@@ -2955,11 +3107,18 @@ ${olderText}
                 {/* 互动输入：替 TA 问 / 潜入对戏（回车换行，点按钮发送） */}
                 <div className="shrink-0 w-full px-3 pt-2 flex items-end gap-2"
                     style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 16px)' }}>
-                    <textarea value={aiInput} onChange={e => setAiInput(e.target.value)}
+                    <textarea value={aiInput} onChange={e => { aiInputRef.current = e.target.value; setAiInput(e.target.value); }}
                         rows={1} placeholder={inputHint}
                         className="flex-1 resize-none rounded-2xl px-3.5 py-2.5 text-[13px] max-h-24 no-scrollbar focus:outline-none"
                         style={{ background: inputBg, color: t.text, border: `1px solid ${hairline}` }} />
-                    <button onClick={handleAiSend} disabled={aiSending || !aiInput.trim()}
+                    <button onClick={handleAiExpand} disabled={aiExpanding || aiSending || !aiInput.trim()}
+                        aria-label="AI 扩写" title="AI 扩写"
+                        className="w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 disabled:opacity-30 active:scale-90 transition"
+                        style={{ background: `${t.accent}1a`, border: `1px solid ${t.accent}66`, color: t.accent }}>
+                        {aiExpanding ? <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" /> : <Sparkle size={17} weight="fill" />}
+                    </button>
+                    <button onClick={handleAiSend} disabled={aiSending || aiExpanding || !aiInput.trim()}
+                        aria-label="发送" title="发送"
                         className="w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 disabled:opacity-30 active:scale-90 transition"
                         style={{ background: t.accent, color: '#fff' }}>
                         {aiSending ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <PaperPlaneTilt size={17} weight="fill" />}
@@ -2975,9 +3134,14 @@ ${olderText}
         const accent = '#f472b6';
         const badge = kindBadge(c);
         const isReal = c.kind === 'real' && !!c.linkedCharId;
+        const isCustom = c.kind === 'custom';
         const av = contactAvatar(c);
         const rec = records.find(r => r.type === 'chat' && (r.contactId === c.id || normName(r.title) === normName(c.name)));
-        const parsed = rec ? parseTranscript(rec.detail).map(t => ({ isMe: t.isMe, content: t.text })) : [];
+        const parsed = rec ? materializePhoneConversationTurns(rec, {
+            ownerCharId: targetChar.id,
+            contactCharId: isReal ? c.linkedCharId : undefined,
+            customIdentityId: isCustom ? c.operatorIdentityId : undefined,
+        }).map(turn => ({ id: turn.id, isMe: turn.side === 'owner', content: turn.text, operatorAuthored: turn.author === 'operator' })) : [];
         const CAP = 50;
         const hidden = convExpanded ? 0 : Math.max(0, parsed.length - CAP);
         const shown = hidden > 0 ? parsed.slice(-CAP) : parsed;
@@ -3015,7 +3179,7 @@ ${olderText}
                     {parsed.length === 0 && !isLoading && (
                         <div className="flex flex-col items-center justify-center h-full gap-2.5 text-white/30">
                             <ChatCircleDots size={42} weight="light" />
-                            <span className="text-[12px] tracking-wide">{isReal ? '还没聊过 · 在下面发起对话' : '还没偷看过 · 下面偷看一段'}</span>
+                            <span className="text-[12px] tracking-wide">{isCustom ? '这段身份对话只保留历史' : isReal ? '还没聊过 · 在下面发起对话' : '还没偷看过 · 下面偷看一段'}</span>
                         </div>
                     )}
                     {hidden > 0 && (
@@ -3024,15 +3188,14 @@ ${olderText}
                             ▲ 展开更早的 {hidden} 条消息
                         </button>
                     )}
-                    {shown.map((m, i) => {
-                        const realIdx = hidden + i; // 映射回完整脚本下标
-                        const sel = selectedMsgIdx.includes(realIdx);
+                    {shown.map((m) => {
+                        const sel = selectedMsgIds.includes(m.id);
                         return (
-                        <div key={realIdx}
-                            {...longPress(() => { setMsgSelectMode(true); setSelectedMsgIdx(prev => prev.includes(realIdx) ? prev : [...prev, realIdx]); })}
+                        <div key={m.id}
+                            {...longPress(() => { setMsgSelectMode(true); setSelectedMsgIds(prev => prev.includes(m.id) ? prev : [...prev, m.id]); })}
                             onClick={() => {
                                 if (lpFired.current) { lpFired.current = false; return; }
-                                if (msgSelectMode) setSelectedMsgIdx(prev => prev.includes(realIdx) ? prev.filter(x => x !== realIdx) : [...prev, realIdx]);
+                                if (msgSelectMode) setSelectedMsgIds(prev => prev.includes(m.id) ? prev.filter(x => x !== m.id) : [...prev, m.id]);
                             }}
                             className={`flex items-end gap-2 select-none ${m.isMe ? 'justify-end' : 'justify-start'} ${msgSelectMode ? 'cursor-pointer rounded-xl -mx-1 px-1 py-0.5 transition ' + (sel ? 'bg-pink-500/15' : '') : ''}`}>
                             {msgSelectMode && (
@@ -3041,8 +3204,11 @@ ${olderText}
                             {!m.isMe && (av
                                 ? <TokenImg value={av} alt="" className="w-7 h-7 rounded-xl object-cover shrink-0" />
                                 : <div className="w-7 h-7 rounded-xl flex items-center justify-center text-[11px] text-white shrink-0" style={{ background: `linear-gradient(135deg, ${accent}40, ${accent}10)` }}>{c.name[0]}</div>)}
-                            <div className={`px-3.5 py-2.5 rounded-2xl max-w-[76%] text-[13px] leading-relaxed break-words ${m.isMe ? 'text-white rounded-br-md' : 'bg-white/[0.07] text-white/90 border border-white/[0.06] rounded-bl-md'}`}
-                                style={m.isMe ? { background: `linear-gradient(135deg, ${accent}, ${accent}bb)` } : undefined}>{m.content}</div>
+                            <div className={`px-3.5 py-2.5 rounded-2xl max-w-[76%] text-[13px] leading-relaxed break-words whitespace-pre-wrap ${m.isMe ? 'text-white rounded-br-md' : 'bg-white/[0.07] text-white/90 border border-white/[0.06] rounded-bl-md'}`}
+                                style={m.isMe ? { background: `linear-gradient(135deg, ${accent}, ${accent}bb)` } : undefined}>
+                                {m.content}
+                                {m.operatorAuthored && <span className="block text-[9px] opacity-55 mt-1 text-right" title="你接管身份代发">🎭 代发</span>}
+                            </div>
                             {m.isMe && <TokenImg value={targetChar.avatar} alt="" className="w-7 h-7 rounded-xl object-cover shrink-0" />}
                         </div>
                     );})}
@@ -3064,22 +3230,40 @@ ${olderText}
                         <div className="flex gap-2">
                             <button onClick={exitMsgSelect}
                                 className="px-5 py-3 rounded-2xl text-[13px] font-semibold text-white/75 bg-white/[0.06] border border-white/[0.08] active:scale-[0.99] transition">取消</button>
-                            <button disabled={!selectedMsgIdx.length}
+                            <button disabled={!selectedMsgIds.length}
                                 onClick={() => askConfirm({
-                                    title: `删除选中的 ${selectedMsgIdx.length} 条消息？`,
+                                    title: `删除选中的 ${selectedMsgIds.length} 条消息？`,
                                     desc: c.kind === 'real' && c.linkedCharId ? '这几条会从两边手机里一并删除。' : '从这段对话里删掉这几条。',
                                     confirmLabel: '删除', danger: true, onConfirm: handleDeleteSelectedMessages,
                                 })}
                                 className="flex-1 py-3 rounded-2xl text-[13px] font-semibold text-white bg-rose-500 disabled:opacity-40 active:scale-[0.99] transition flex items-center justify-center gap-2">
-                                <Trash size={16} weight="bold" /> 删除选中 {selectedMsgIdx.length || ''}
+                                <Trash size={16} weight="bold" /> 删除选中 {selectedMsgIds.length || ''}
                             </button>
                         </div>
                     ) : isReal ? (
-                        <button onClick={() => handleRealConversation(c)} disabled={isLoading}
-                            className="w-full py-3 rounded-2xl text-[13px] font-semibold text-white active:scale-[0.99] transition flex items-center justify-center gap-2"
-                            style={{ background: `linear-gradient(135deg, ${accent}, ${accent}bb)` }}>
-                            <PaperPlaneTilt size={16} weight="fill" /> {rec ? '继续真实对话（双方同步）' : '发起真实对话（A 发 B 回）'}
-                        </button>
+                        <div className="space-y-2.5">
+                            <div className="flex items-center justify-between gap-3">
+                                <span className="text-[11px] text-white/40">对话模式</span>
+                                <div role="group" aria-label="对话模式" className="flex rounded-full p-0.5 bg-white/[0.05] border border-white/[0.08]">
+                                    {(['free', 'mutual-friend'] as const).map(mode => (
+                                        <button key={mode} onClick={() => changeRealConversationMode(mode)} disabled={isLoading}
+                                            aria-pressed={realConversationMode === mode}
+                                            className={`px-3 py-1.5 rounded-full text-[11px] transition disabled:opacity-50 ${realConversationMode === mode ? 'text-pink-200 bg-pink-400/15' : 'text-white/45'}`}>
+                                            {mode === 'free' ? '自由聊天' : '共同好友'}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                            <button onClick={() => handleRealConversation(c)} disabled={isLoading}
+                                className="w-full py-3 rounded-2xl text-[13px] font-semibold text-white active:scale-[0.99] transition flex items-center justify-center gap-2"
+                                style={{ background: `linear-gradient(135deg, ${accent}, ${accent}bb)` }}>
+                                <PaperPlaneTilt size={16} weight="fill" /> {rec ? '继续真实对话（双方同步）' : '发起真实对话（A 发 B 回）'}
+                            </button>
+                        </div>
+                    ) : isCustom ? (
+                        <div className="rounded-2xl px-3.5 py-3 text-[11.5px] text-white/45 bg-white/[0.04] border border-white/[0.07]">
+                            这段身份对话只保留历史，不能再代发。
+                        </div>
                     ) : (
                         <button onClick={() => handleNpcConversation(c)} disabled={isLoading}
                             className="w-full py-3 rounded-2xl text-[13px] font-semibold text-white/90 bg-white/[0.06] border border-white/[0.08] active:scale-[0.99] transition flex items-center justify-center gap-2">
@@ -3196,15 +3380,15 @@ ${olderText}
                                 )}
                             </div>
 
-                            {/* 绑定 / 改绑 */}
-                            <button onClick={() => { closeProfile(); setShowRebindModal(true); }}
+                            {/* 绑定 / 改绑；自建身份使用稳定全局引用，不允许误转成随机 NPC。 */}
+                            {!isCustom && <button onClick={() => { closeProfile(); setShowRebindModal(true); }}
                                 className="w-full flex items-center gap-2 rounded-xl px-3 py-2.5 bg-white/[0.04] border border-white/[0.07] active:scale-[0.99] transition">
                                 <LinkSimple size={13} weight="bold" className="shrink-0 text-white/50" />
                                 <span className="text-[11px] text-white/55 flex-1 text-left truncate">
                                     {isReal ? `绑定真实角色：${linkedCharOf(c)?.name || '已绑定'}` : '虚构联系人（未绑定真实角色）'}
                                 </span>
                                 <span className="text-[11px] font-semibold shrink-0" style={{ color: accent }}>改绑定</span>
-                            </button>
+                            </button>}
 
                             {/* 关系操作 */}
                             <div className="flex gap-2">
@@ -3436,7 +3620,7 @@ ${olderText}
 
             {/* Add app + my apps row */}
             <div className="grid grid-cols-2 gap-3.5 mb-7">
-                <button onClick={() => setShowCreateModal(true)}
+                <button onClick={openCreateAppModal}
                     className={`${customApps.length ? '' : 'col-span-2'} rounded-[20px] p-4 border border-dashed border-white/15 bg-white/[0.02] flex flex-col items-center justify-center gap-2 active:scale-[0.98] transition min-h-[90px]`}>
                     <Plus size={22} weight="light" className="text-white/60" />
                     <span className="text-[11px] tracking-[0.25em] uppercase text-white/50">Add App</span>
@@ -3529,7 +3713,7 @@ ${olderText}
                         </div>
                     );
                 })}
-                <button onClick={() => setShowCreateModal(true)}
+                <button onClick={openCreateAppModal}
                     className="rounded-[24px] p-4 border border-dashed border-white/15 bg-white/[0.02] flex flex-col items-center justify-center gap-2 active:scale-[0.98] transition min-h-[130px]">
                     <Plus size={24} weight="light" className="text-white/60" />
                     <span className="text-[11px] tracking-[0.2em] uppercase text-white/50">Add App</span>
@@ -3955,7 +4139,7 @@ ${olderText}
                                 {plays.length === 0 && <div className="text-[12px] text-slate-400">还没有对戏记录——点下面「用这张卡开一局」让 TA 玩起来。</div>}
                                 <div className="space-y-1.5 max-h-48 overflow-y-auto no-scrollbar">
                                     {plays.map(s => (
-                                        <button key={s.id} onClick={() => { setAiCardView(null); setSelectedAiSessionId(s.id); setActiveAppId('ai_session'); }}
+                                        <button key={s.id} onClick={() => { setAiCardView(null); selectAiSession(s.id); setActiveAppId('ai_session'); }}
                                             className="w-full text-left rounded-xl p-2.5 bg-slate-50 active:bg-slate-100 transition">
                                             <div className="text-[13px] font-semibold text-slate-700 truncate">{s.title}</div>
                                             <div className="text-[10px] text-slate-400">{parseTranscript(s.transcript).length} 条 · {fmtClock(s.updatedAt)}</div>
@@ -3970,7 +4154,9 @@ ${olderText}
 
             {/* Create App Modal */}
             <Modal isOpen={showCreateModal} title="安装自定义 App" onClose={() => setShowCreateModal(false)}
-                footer={<button onClick={handleCreateCustomApp} className="w-full py-3 bg-violet-500 text-white font-bold rounded-2xl">安装到桌面</button>}>
+                footer={<button onClick={handleCreateCustomApp} className="w-full py-3 bg-violet-500 text-white font-bold rounded-2xl">
+                    {installCount > 1 ? `安装到 ${installCount} 台手机` : '安装到桌面'}
+                </button>}>
                 <div className="space-y-4">
                     <div className="flex gap-4">
                         <div className="w-16 h-16 rounded-2xl flex items-center justify-center text-3xl shadow-md border border-white/10 shrink-0"
@@ -4013,6 +4199,39 @@ ${olderText}
                                 );
                             })}
                         </div>
+                    </div>
+                    <div className="pt-4 border-t border-slate-200">
+                        <div className="flex items-start justify-between gap-3 mb-3">
+                            <div>
+                                <div className="text-[12px] font-bold text-slate-700">同步安装</div>
+                                <p className="text-[10px] text-slate-400 mt-0.5">将这个 App 同时安装到其他角色手机</p>
+                            </div>
+                            <span className="text-[10px] text-violet-500 shrink-0">已选择 {selectedSyncCount} 人</span>
+                        </div>
+                        {otherCharacters.length > 0 ? (
+                            <>
+                                <button type="button" onClick={toggleSelectAllSyncTargets}
+                                    className="w-full flex items-center gap-2.5 rounded-xl px-3 py-2 mb-2 bg-violet-50 text-left">
+                                    <span className={`w-5 h-5 rounded-md border flex items-center justify-center text-[11px] font-bold ${allSyncSelected ? 'bg-violet-500 border-violet-500 text-white' : 'border-slate-300 text-transparent'}`}>✓</span>
+                                    <span className="text-[12px] font-semibold text-slate-700">全选</span>
+                                </button>
+                                <div className="max-h-56 overflow-y-auto space-y-1.5 no-scrollbar">
+                                    {otherCharacters.map(char => {
+                                        const selected = syncTargetIds.includes(char.id);
+                                        return (
+                                            <button key={char.id} type="button" onClick={() => toggleSyncTarget(char.id)} aria-pressed={selected}
+                                                className="w-full flex items-center gap-2.5 rounded-xl p-2.5 border border-slate-200 bg-slate-50 text-left active:scale-[0.99] transition">
+                                                <TokenImg value={char.avatar} alt="" className="w-8 h-8 rounded-lg object-cover shrink-0" />
+                                                <span className="text-[13px] font-semibold text-slate-700 flex-1 truncate">{char.name}</span>
+                                                <span className={`w-5 h-5 rounded-md border flex items-center justify-center text-[11px] font-bold ${selected ? 'bg-violet-500 border-violet-500 text-white' : 'border-slate-300 text-transparent'}`}>✓</span>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </>
+                        ) : (
+                            <p className="text-[11px] text-slate-400 py-2">暂无其他角色，App 将只安装到当前手机。</p>
+                        )}
                     </div>
                 </div>
             </Modal>

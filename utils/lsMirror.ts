@@ -18,6 +18,7 @@
 
 import { DB } from './db';
 import { HOME3D_LOCAL_KEYS } from './home3DBackup';
+import { healAllMemoryPalaceHighWaterMarks } from './memoryPalace/highWaterMark';
 
 /**
  * 参与镜像的键。收录标准：用户手动配置或长期积累、丢了没法凭空再生、体积是小段
@@ -41,14 +42,95 @@ export const MIRRORED_KEYS: readonly string[] = [
     'study_tutor_presets',
     'push_vapid_v1',                     // VAPID 密钥对，须与浏览器既有推送订阅匹配
     'chat_archive_prompts',
+    'journal_default_template_v1',
     'chat_active_archive_prompt_id',
     'character_refine_prompts',
     'character_active_refine_prompt_id',
+    'os_available_models',               // 已拉取的模型列表
+    'world_custom_styles',               // 家园自定义文风收藏
+    'check_phone_api',                   // 查手机独立 API
+    'sully_navigation_ball_enabled_v1',
+    'sully_navigation_ball_slots_v1',
+    'sully_navigation_ball_position_v1',
+    'vr_fishing_market_v1',
+    'vr_sar_club_v1',
+    'vr_sar_gacha_v1',
+    'vr_sar_module_shop_v1',
+    'vr_sar_simulations_v1',
+    'vr_fishing_simple_mode',
+    'vr_sar_session_theme_v1',
+    'sar-garden-guide-v1',
+    'sar-facility-guide-water-v1',
+    'sar-facility-guide-garden-v1',
+    'sar-facility-guide-gacha-v1',
+    'sar-facility-guide-simulation-v1',
+    'sar-facility-guide-modules-v1',
+    'sar-facility-guide-npc-v1',
+    'sar-facility-guide-collection-v1',
+    'aetheros.luckin.mcpToken',
+    'aetheros.luckin.mcpEnabled',
+    'aetheros.mcd.mcpToken',
+    'aetheros.mcd.mcpEnabled',
+    'aetheros.mcp.servers',
+    'aetheros.mcp.useNativeTools',
+    'sully_music_cfg_v1',
+    'sully_music_state_v1',
+    'sully_music_local_album_v1',
+    'proactive_schedules',
+    'proactive_last_fire_map',
+    'vr_schedules',
+    'vr_last_fire_map',
+    'world_home_schedules',
+    'world_home_last_fire_map',
+    'sully_proxy_worker_url',
+    'browser_brave_key',
+    'browser_use_real_search',
+    'sully_firecrawl_api_key',
+    'sullyos_chat_input_preferences_v1',
+    'schedule_app_theme',
+    'handbook_lifestream_depth',
+    'groupchat_context_limit',
+    'bm25_mode',
+    'spark_char_handles',
+    'spark_user_id',
+    'companion_frame_style_v1',
+    'companion_layout_v1',
+    'tama_style_v2',
+    'mg_style_v1',
+    'tama_board_fg',
+    'tama_accent_hue',
+    'sully-beauty-author-identity-v1',
+    'sully-beauty-usage-v1',
+    'sully-beauty-repo-status-v1',
+    'sully-beauty-author-defaults-v1',
+    'sullyos_chat_wardrobe_update_v2_seen',
+    'sullyos_chat_wardrobe_guide_v2_done',
+    'sully-beauty-catalog-notice-v1',
+    'sully-beauty-author-notice-v1',
+    'sullyos_disclaimer_accepted',
+    'os_first_use_memory_guide_v1',
+    'sullyos_backup_reminder',
+    'sullyos_anniversary_gift_v1',
+    'sullyos_real_location_intro_v1_seen',
+    'sullyos_navigation_ball_intro_v1_seen',
+    'sullyos_update_2026_10_home3d_beta_seen',
+    'sullyos_update_2026_09_small_updates_seen',
+    'sullyos_user_holidays_intro_v1',
+    'sullyos_update_2026_09_11_sar_seen',
+    'sullyos_notice_2026_08_network_transit_seen',
+    'sullyos_update_2026_08_30_collaboration_seen',
+    'sullyos_update_2026_08_10_live2d_seen',
+    'sullyos_update_2026_08_03_amsg2_seen',
     'os_last_active_char_id',
+    'sully-chat-action-order-v1',        // 私聊/群聊「＋」功能格排序
 ];
 
 const MIRROR_ASSET_ID = 'ls_mirror_v1';
 const SNAPSHOT_INTERVAL_MS = 5 * 60_000;
+const MIRRORED_KEYS_SET = new Set<string>(MIRRORED_KEYS);
+const WRITE_DEBOUNCE_MS = 250;
+let mirrorReadFailed = false;
+let pendingDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 type MirrorPayload = { savedAt: number; data: Record<string, string> };
 
@@ -61,7 +143,9 @@ export async function healLocalStorageMirror(): Promise<string[]> {
     let payload: MirrorPayload | null = null;
     try {
         payload = await DB.getAssetRaw(MIRROR_ASSET_ID);
+        mirrorReadFailed = false;
     } catch {
+        mirrorReadFailed = true;
         return [];
     }
     const data = payload?.data;
@@ -80,11 +164,20 @@ export async function healLocalStorageMirror(): Promise<string[]> {
             // quota 满 / 私有模式写不进：兜底失败就算了，不能让启动流程挂掉
         }
     }
+    if (restored.length > 0 && typeof window !== 'undefined') {
+        try {
+            window.dispatchEvent(new StorageEvent('storage', { key: null }));
+        } catch { /* ignore */ }
+    }
     return restored;
 }
 
 /** 把当前 localStorage 里的镜像键快照进 IndexedDB。全部缺失时不写（避免拿空快照覆盖有效镜像）。 */
 export async function snapshotLocalStorageMirror(): Promise<void> {
+    if (mirrorReadFailed) {
+        await healLocalStorageMirror();
+        if (mirrorReadFailed) return;
+    }
     const data: Record<string, string> = {};
     for (const key of MIRRORED_KEYS) {
         try {
@@ -100,22 +193,64 @@ export async function snapshotLocalStorageMirror(): Promise<void> {
 
 let listenersAttached = false;
 
+function scheduleDebouncedSnapshot(): void {
+    if (pendingDebounceTimer !== null) clearTimeout(pendingDebounceTimer);
+    pendingDebounceTimer = setTimeout(() => {
+        pendingDebounceTimer = null;
+        void snapshotLocalStorageMirror();
+    }, WRITE_DEBOUNCE_MS);
+}
+
 /**
- * 应用启动时调一次：先回填、再拍一张新快照，并挂上"页面隐藏 / 关闭 / 定时"的快照钩子。
+ * 应用启动时调一次：先回填（含记忆宫殿水位线）、再拍一张新快照，并挂上"写盘防抖 / 页面隐藏 / 关闭 / 定时"的快照钩子。
  * 返回回填的键名，调用方可据此提示用户"本地设置曾丢失，已自动恢复"。
  */
 export async function initLocalStorageMirror(): Promise<string[]> {
-    const restored = await healLocalStorageMirror();
+    const [restored, restoredHwms] = await Promise.all([
+        healLocalStorageMirror(),
+        healAllMemoryPalaceHighWaterMarks(),
+    ]);
     await snapshotLocalStorageMirror();
 
     if (!listenersAttached && typeof window !== 'undefined' && typeof document !== 'undefined') {
         listenersAttached = true;
-        const snap = () => { void snapshotLocalStorageMirror(); };
+        const snap = () => {
+            if (pendingDebounceTimer !== null) {
+                clearTimeout(pendingDebounceTimer);
+                pendingDebounceTimer = null;
+            }
+            void snapshotLocalStorageMirror();
+        };
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'hidden') snap();
         });
         window.addEventListener('pagehide', snap);
         setInterval(snap, SNAPSHOT_INTERVAL_MS);
+
+        if (typeof Storage !== 'undefined') {
+            const origSetItem = Storage.prototype.setItem;
+            const origRemoveItem = Storage.prototype.removeItem;
+            const origClear = Storage.prototype.clear;
+            Storage.prototype.setItem = function (key: string, value: string) {
+                origSetItem.call(this, key, value);
+                if (this === localStorage && MIRRORED_KEYS_SET.has(key)) {
+                    scheduleDebouncedSnapshot();
+                }
+            };
+            Storage.prototype.removeItem = function (key: string) {
+                origRemoveItem.call(this, key);
+                if (this === localStorage && MIRRORED_KEYS_SET.has(key)) {
+                    scheduleDebouncedSnapshot();
+                }
+            };
+            Storage.prototype.clear = function () {
+                if (this === localStorage && pendingDebounceTimer !== null) {
+                    clearTimeout(pendingDebounceTimer);
+                    pendingDebounceTimer = null;
+                }
+                origClear.call(this);
+            };
+        }
     }
-    return restored;
+    return [...restored, ...restoredHwms];
 }

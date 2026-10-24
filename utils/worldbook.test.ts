@@ -9,6 +9,7 @@ import {
     splitWorldbookSections,
     toMountedWorldbook,
     upsertMountedWorldbooks,
+    setMountedWorldbookGroupPaused,
 } from './worldbook';
 
 const book = (overrides: Partial<MountedWorldbook> = {}): MountedWorldbook => ({
@@ -20,6 +21,31 @@ const book = (overrides: Partial<MountedWorldbook> = {}): MountedWorldbook => ({
 });
 
 describe('worldbook activation', () => {
+    it('pauses a selected mount group without changing its entries or original disable rules', () => {
+        const group = Array.from({ length: 55 }, (_, i) => book({ id: `a-${i}`, category: 'A', disable: i === 1, constant: true, key: ['月亮'] }));
+        const other = book({ id: 'b', category: 'B' });
+        const mounted = [...group, other];
+        const ids = new Set(group.map(entry => entry.id));
+        const paused = setMountedWorldbookGroupPaused(mounted, ids, true);
+        expect(paused.map(entry => entry.id)).toEqual(mounted.map(entry => entry.id));
+        expect(paused.map(({ mountPaused, ...entry }) => entry)).toEqual(mounted);
+        expect(paused.slice(0, 55).every(entry => entry.mountPaused)).toBe(true);
+        expect(resolveWorldbookEntries(paused)).toHaveLength(1);
+        const restored = setMountedWorldbookGroupPaused(paused, ids, false);
+        expect(restored).toEqual(mounted);
+        expect(resolveWorldbookEntries(restored)).toHaveLength(55);
+        expect(resolveWorldbookEntries(restored).some(entry => entry.book.id === 'a-1')).toBe(false);
+    });
+
+    it('keeps pause on an idempotent install of the same ID but leaves new mounts active', () => {
+        const old = book({ id: 'same', mountPaused: true });
+        const source = { ...book({ id: 'same', content: '更新' }), category: '新分类', createdAt: 1, updatedAt: 1 } as Worldbook;
+        const added = { ...source, id: 'new' };
+        const result = upsertMountedWorldbooks([old], [source, added]);
+        expect(result).toMatchObject([{ id: 'same', mountPaused: true, content: '更新' }, { id: 'new' }]);
+        expect(result[1].mountPaused).toBeUndefined();
+        expect(upsertMountedWorldbooks(result, [source, added])).toEqual(result);
+    });
     it('keeps legacy entries constantly active after character definitions', () => {
         const resolved = resolveWorldbookEntries([book()], [], '阿澈', '小雨');
         expect(resolved).toHaveLength(1);

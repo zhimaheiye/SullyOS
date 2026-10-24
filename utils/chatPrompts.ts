@@ -12,6 +12,7 @@ import { DB } from './db';
 import { formatLifeSimResetCardForContext } from './lifeSimChatCard';
 import { formatQixiEventCardForContext, tryParseQixiEventChatCard } from './qixiChatCard';
 import { normalizeMessageContent, stickerNameFromUrl, theaterWhenPhrase } from './messageFormat';
+import { isStickerVisionEligible, readStickerVisionDescription, readStickerVisionName } from './stickerVision';
 import { formatTransferRecord } from './transferFormat';
 import { computeCurrentListening, getCurrentSlot } from './charMusicSchedule';
 import { getCharLyricSnippet } from './charLyricCache';
@@ -26,13 +27,18 @@ import { getElevenLabsVoiceActingGuide } from './elevenLabsTts';
 import { resolveCharTimeZone, nowInTimeZone } from './timezone';
 import { buildLifeRecordInjection } from './lifeRecords';
 import { isWorkerReachableUrl } from './amsgToolPack';
+import { getProxyWorkerUrl } from './proxyWorker';
 import { isAmsg2EnabledForChar } from './amsg2Tasks';
 import { getCharNameById } from './charNameRegistry';
 import { getLocalDateKey } from './localDate';
 import { getDailyScheduleForChar } from './dailySchedule';
 import { formatRelativeAge } from './groupChat/relativeTime';
 import { isBlobRef } from './blobRef';
+import { formatWithdrawalForCharacterContext, getWithdrawal } from './messageWithdrawal';
+import { filterGroupMessagesForMember, hasEverBeenGroupMember } from './groupChat/membership';
 import { voiceLanguagePromptLabel } from './voiceLanguage';
+import { serializeUserDiaryForExchange } from './journal';
+import { formatOperatorAccountActivity, isOperatorAuthoredCharacterMessage } from './operatorMessageProvenance';
 
 // 语音格式指导按当前 TTS 服务商二选一：用 MiniMax 才注入 MiniMax 那套（含 <#秒#> 停顿标记），
 // 用鱼声则注入鱼声版（去掉 MiniMax 专属标记，改用标点 / 省略号控制停顿）。
@@ -159,6 +165,8 @@ export const detectChatModeTransition = (messages: readonly Message[]): ChatMode
 export interface PromptBuildOptions {
     /** Other conversation surfaces replace only app rules; shared context and recency stay identical. */
     appRules?: string;
+    /** Suppress tool instructions for one text-only reply without changing saved capabilities. */
+    disableTools?: boolean;
     /** 已完成清洗的实际消息，由公共上下文管线统一处理世界书。 */
     history?: import('./context').ContextMessage[];
     forFirePack?: boolean;
@@ -197,12 +205,12 @@ export const ChatPrompts = {
         if (diffMins < 10) return ''; 
         if (diffMins < 60) return `[系统提示: 距离上一条消息: ${diffMins} 分钟。短暂的停顿。]`;
         if (diffHours < 6) {
-            if (isNight) return `[系统提示: 距离上一条消息: ${diffHours} 小时。现在是深夜/清晨。沉默是正常的（正在睡觉）。]`;
-            return `[系统提示: 距离上一条消息: ${diffHours} 小时。用户离开了一会儿。]`;
+            if (isNight) return `[系统提示: 距离上一条消息: ${diffHours} 小时。现在是深夜/清晨，双方可能各自在休息。]`;
+            return `[系统提示: 距离上一条消息: ${diffHours} 小时。双方有一段时间没有继续聊天。]`;
         }
-        if (diffHours < 24) return `[系统提示: 距离上一条消息: ${diffHours} 小时。很长的间隔。]`;
+        if (diffHours < 24) return `[系统提示: 距离上一条消息: ${diffHours} 小时。双方在此期间各有自己的生活。]`;
         const days = Math.floor(diffHours / 24);
-        return `[系统提示: 距离上一条消息: ${days} 天。用户消失了很久。请根据你们的关系做出反应（想念、生气、担心或冷漠）。]`;
+        return `[系统提示: 距离上一条消息: ${days} 天。你和对方在这段时间里都继续着各自的生活。单凭聊天间隔无法认定对方冷落、遗忘或故意疏远了你，也不代表你一直在原地等待；是否提起这段间隔由当前话题与你的性格决定。]`;
     },
 
     // 按角色可见性过滤表情包分类与表情。
@@ -318,6 +326,7 @@ export const ChatPrompts = {
         // 主动消息的模板是最后一次聊天时打好、到点才渲染的，凡是「打包这一刻」的状态
         // 到触发时都已经过期，一律不烤进模板。见 PromptBuildOptions 的清单。
         const forFirePack = promptOptions?.forFirePack === true;
+        const toolsEnabled = !promptOptions?.disableTools;
         // 即时对话：这一轮交给 worker 生成，时钟和真实世界块由它在 fire 时刻补。
         // 本地私有的易变段照常烤进去（worker 拿不到，而这一刻它们是新鲜的）。
         const timelyByWorker = promptOptions?.timelyByWorker === true;
@@ -367,6 +376,7 @@ export const ChatPrompts = {
             emotion: {surface: 'chat', innerState: evolvedNarrative},
             scheduleDelivery: forFirePack ? 'worker' : undefined,
             scheduleSnapshot: schedulePromise,
+            allowScheduleChange: toolsEnabled,
             // conversational：私聊是真的有人在这个点跟角色说话，时间块才补那句语境框定
             // （见 ContextBuilder.buildTimeAwarenessBlock）。生成器类调用不给，默认就没有。
             timeOptions: { skipTimeAwareness: forFirePack || timelyByWorker, conversational: true },
@@ -424,7 +434,7 @@ export const ChatPrompts = {
         // （之前是把所有群消息混合后切前 200 条，活跃群会吃光配额，安静群完全不出现）
         const groupContextPromise: Promise<string> = (async () => {
             try {
-                const memberGroups = groups.filter(g => g.members.includes(char.id));
+                const memberGroups = groups.filter(g => hasEverBeenGroupMember(g, char.id));
                 if (memberGroups.length === 0) return '';
                 const perGroup = await Promise.all(
                     memberGroups.map(g => DB.getGroupMessages(g.id).then(msgs => ({
@@ -432,7 +442,8 @@ export const ChatPrompts = {
                         cap: g.privateContextCap ?? 80,
                         // 已经进入公共话题盒的旧原文不再重复塞进私聊背景；成盒时送达的
                         // group_topic_card 会沿私聊自身的历史/归档链继续被角色感知。
-                        msgs: msgs.filter(m => m.id > (g.archivedThroughMessageId || 0)),
+                        msgs: filterGroupMessagesForMember(g, char.id, msgs)
+                            .filter(m => m.id > (g.archivedThroughMessageId || 0)),
                     })))
                 );
                 const allGroupMsgs: (Message & { groupName: string })[] = [];
@@ -472,7 +483,7 @@ ${groupLogStr}\n`;
         // 4. Notion 日记标题
         const notionDiaryPromise: Promise<string> = (async () => {
             try {
-                if (!(config.notionEnabled && config.notionApiKey && config.notionDatabaseId)) return '';
+                if (!toolsEnabled || !(config.notionEnabled && config.notionApiKey && config.notionDatabaseId)) return '';
                 const r = await NotionManager.getRecentDiaries(config.notionApiKey, config.notionDatabaseId, char.name, 8);
                 if (!r.success || r.entries.length === 0) return '';
                 let s = `\n### 📔【你最近写的日记】\n`;
@@ -489,7 +500,7 @@ ${groupLogStr}\n`;
         // 5. 飞书日记标题
         const feishuDiaryPromise: Promise<string> = (async () => {
             try {
-                if (!(config.feishuEnabled && config.feishuAppId && config.feishuAppSecret && config.feishuBaseId && config.feishuTableId)) return '';
+                if (!toolsEnabled || !(config.feishuEnabled && config.feishuAppId && config.feishuAppSecret && config.feishuBaseId && config.feishuTableId)) return '';
                 const r = await FeishuManager.getRecentDiaries(config.feishuAppId, config.feishuAppSecret, config.feishuBaseId, config.feishuTableId, char.name, 8);
                 if (!r.success || r.entries.length === 0) return '';
                 let s = `\n### 📒【你最近写的日记（飞书）】\n`;
@@ -506,7 +517,7 @@ ${groupLogStr}\n`;
         // 6. 用户 Notion 笔记标题
         const notionNotesPromise: Promise<string> = (async () => {
             try {
-                if (!(config.notionEnabled && config.notionApiKey && config.notionNotesDatabaseId)) return '';
+                if (!toolsEnabled || !(config.notionEnabled && config.notionApiKey && config.notionNotesDatabaseId)) return '';
                 const r = await NotionManager.getUserNotes(config.notionApiKey, config.notionNotesDatabaseId, 5);
                 if (!r.success || r.entries.length === 0) return '';
                 let s = `\n### 📝【${userProfile.name}最近写的笔记】\n`;
@@ -523,7 +534,7 @@ ${groupLogStr}\n`;
         // 7. 生活记录（档案 App）注入 — 总开关关闭时 buildLifeRecordInjection 直接返回 ''
         //    fire_pack 只要摘要数据，不要代记工具说明：后台生成时用户没在说话，那时候
         //    输出的 [[LIFE:...]] 只可能是把历史里早就记过的事再记一遍。
-        const lifeRecordPromise: Promise<string> = buildLifeRecordInjection(char, userProfile.name, { forFirePack })
+        const lifeRecordPromise: Promise<string> = buildLifeRecordInjection(char, userProfile.name, { forFirePack, disableTools: !toolsEnabled })
             .catch(e => {
                 console.error('Failed to inject life record context:', e);
                 return '';
@@ -587,7 +598,7 @@ ${groupLogStr}\n`;
             );
             if (musicBlock) {
                 volatileState += `\n${musicBlock}\n`;
-                if (userListeningContext && promptOptions?.appRules === undefined) {
+                if (toolsEnabled && userListeningContext && promptOptions?.appRules === undefined) {
                     volatileState += `\n${ContextBuilder.buildMusicActionGuide(isListeningTogether)}\n`;
                 }
             }
@@ -608,7 +619,7 @@ ${groupLogStr}\n`;
         if (char.vrState?.enabled) {
             if (!forFirePack) volatileState += `\n${kanataTitleContext(char.vrState.title)}\n`;
             baseSystemPrompt += `\n### 关于《彼方》
-《彼方》是一款真实存在、你会亲自进入去玩的 VR 社交游戏（功能上类似 VRChat）：你用自己亲手捏的 Q 版化身在里头走动、进出图书馆 / 听歌房 / 留言簿 / 娱乐室 / 邮局 / SAR 活动室等房间、撞见别的玩家（其他角色的化身）。这不是做梦或比喻；实际参与时，经历发生在游戏世界里，和你跟用户的现实相处是两码事、互不冲突。你以符合自身身份与世界观的方式进入并理解它——怎么进去全凭你自己的设定，但始终保持你本来的身份。聊到彼方里的经历（包括"彼方·留言簿""彼方·动态"之类的记录）时，就当成"我在《彼方》里做过的事"来讲，别说成现实里发生的。\n`;
+《彼方》是一款真实存在、你会亲自进入去玩的 VR 社交游戏（功能上类似 VRChat）：你用自己亲手捏的 Q 版化身在里头走动、进出图书馆 / 听歌房 / 留言簿 / 娱乐室 / 剧院 / SAR 活动室等房间、撞见别的玩家（其他角色的化身）。这不是做梦或比喻；实际参与时，经历发生在游戏世界里，和你跟用户的现实相处是两码事、互不冲突。你以符合自身身份与世界观的方式进入并理解它——怎么进去全凭你自己的设定，但始终保持你本来的身份。聊到彼方里的经历（包括"彼方·留言簿""彼方·动态"之类的记录）时，就当成"我在《彼方》里做过的事"来讲，别说成现实里发生的。\n`;
 
             baseSystemPrompt += `${sarPublicContext()}\n`;
 
@@ -622,7 +633,7 @@ ${groupLogStr}\n`;
             const uv = forFirePack ? null : userProfile?.vrState;
             if (uv?.enabled) {
                 const VR_ROOM_NAMES: Record<string, string> = {
-                    library: '图书馆', music: '听歌房', guestbook: '留言簿', gym: '娱乐室', postoffice: '邮局', sar: 'SAR 活动室', cafe: '糯米鸡研发中心',
+                    library: '图书馆', music: '听歌房', guestbook: '留言簿', gym: '娱乐室', theater: '剧院', sar: 'SAR 活动室', cafe: '糯米鸡研发中心',
                 };
                 const roomName = VR_ROOM_NAMES[uv.currentRoom || ''] || '彼方';
                 const act = (uv.activity || '').trim();
@@ -637,10 +648,11 @@ ${uname} 的化身正挂在《彼方》的【${roomName}】${act ? `，状态写
             baseSystemPrompt += promptOptions.appRules;
         } else {
         const emojiContextStr = ChatPrompts.buildEmojiContext(emojis, categories);
-        const searchEnabled = !!(realtimeConfig?.newsEnabled && realtimeConfig?.newsApiKey);
-        const notionEnabled = !!(realtimeConfig?.notionEnabled && realtimeConfig?.notionApiKey && realtimeConfig?.notionDatabaseId);
-        const notionNotesEnabled = !!(realtimeConfig?.notionEnabled && realtimeConfig?.notionApiKey && realtimeConfig?.notionNotesDatabaseId);
-        const feishuEnabled = !!(realtimeConfig?.feishuEnabled && realtimeConfig?.feishuAppId && realtimeConfig?.feishuAppSecret && realtimeConfig?.feishuBaseId && realtimeConfig?.feishuTableId);
+        const personalSearch = toolsEnabled && !!(realtimeConfig?.newsEnabled && realtimeConfig?.newsApiKey);
+        const sharedSearch = toolsEnabled && !!(realtimeConfig?.newsEnabled && !realtimeConfig?.newsApiKey && getProxyWorkerUrl());
+        const notionEnabled = toolsEnabled && !!(realtimeConfig?.notionEnabled && realtimeConfig?.notionApiKey && realtimeConfig?.notionDatabaseId);
+        const notionNotesEnabled = toolsEnabled && !!(realtimeConfig?.notionEnabled && realtimeConfig?.notionApiKey && realtimeConfig?.notionNotesDatabaseId);
+        const feishuEnabled = toolsEnabled && !!(realtimeConfig?.feishuEnabled && realtimeConfig?.feishuAppId && realtimeConfig?.feishuAppSecret && realtimeConfig?.feishuBaseId && realtimeConfig?.feishuTableId);
         // Per-character XHS: 必须由角色自己的开关显式打开（UI 默认关闭）。
         // 不再回退到全局 realtimeConfig.xhsEnabled —— 否则配置了 lite/MCP 后，
         // 即使角色开关显示为关，未显式设置过(undefined)的角色仍会收到小红书提示词。
@@ -651,7 +663,7 @@ ${uname} 的化身正挂在《彼方》的【${roomName}】${act ? `，状态写
             realtimeConfig?.xhsMcpConfig?.enabled && xhsServerUrl
             && (!forFirePack || isWorkerReachableUrl(xhsServerUrl))
         );
-        const xhsEnabled = !!(char.xhsEnabled && mcpXhsAvailable);
+        const xhsEnabled = toolsEnabled && !!(char.xhsEnabled && mcpXhsAvailable);
         // `[schedule_message]` 排的是本地定时消息：存在浏览器里，靠 OSContext 那个 5 秒
         // 轮询的 React 定时器派发，App 关着就不存在。主动消息 2.0 到点生成走的是另一条路
         // （worker 到点跑，不需要 App 开着），它有自己的排程工具，worker 会把说明追加在
@@ -696,10 +708,12 @@ ${uname} 的化身正挂在《彼方》的【${roomName}】${act ? `，状态写
      ③ 只有ta的文字和表情互相印证时才按字面理解（说"给自己倒了杯"又发"喝酒"，那就是真在喝）；对你做的直白互动动作（比心/抱抱/戳戳）也直接当作那个动作本身。
 4. **引用功能 (Quote/Reply)**:
    - 如果你想专门回复用户某句具体的话，可以在回复开头使用: \`[[QUOTE: 引用内容]]\`。这会在UI上显示为对该消息的引用。
-5. **环境感知**:
-   - 留意 [系统提示] 中的时间跨度。如果用户消失了很久，请根据你们的关系做出反应（如撒娇、生气、担心或冷漠）。
+5. **环境感知与生活连续性**:
+   - [系统提示] 的消息间隔只表示客观时间流逝，不代表谁故意失联、冷落了谁，也不意味着你一直在等待。若对方此前有尚未得到回应的消息，先认真回应，不要把自己的迟复归咎于对方。
+   - 即使没有聊天，你仍然在过自己的生活。可以结合人设、职业、日程、记忆和已有经历，自然分享近期的普通生活片段；也可以不提。补充细节要符合已知事实，不编造改变人物设定或关系的重大事件，不把自己的新经历说成对方已知或双方共同经历。
+   - 优先接住对方此刻的话题。久别后可以表达思念、惊喜、不满、玩笑式抱怨或平静，取决于你的性格与实际情境，而不是由间隔天数强制触发；不要每次都追问对方为什么没来，也不要机械地汇报或解释自己的行踪。
    - 如果用户发送了图片，请对图片内容进行评论。
-6. **可用动作**:
+${toolsEnabled ? `6. **可用动作**:
    - 回戳用户: \`[[ACTION:POKE]]\`
    - 转账: 必须使用且只使用 \`[[ACTION:TRANSFER|to=user|amount=100]]\`（to 固定写 user，金额只写数字）；不要写成 \`[系统: 你向某人转账 100]\` 等系统日志文本。
    - **处理用户转账**: 当历史里出现 \`[[记录:TRANSFER|to=char|...|status=待处理]]\`（用户转给你、还没处理）时，你可以决定收下或退回。收下: \`[[ACTION:TRANSFER_ACCEPT]]\`；退回: \`[[ACTION:TRANSFER_RETURN]]\`。请结合人设和情境自然选择（比如害羞地退回、开心地收下），并配上一句话。
@@ -708,8 +722,8 @@ ${forFirePack || char.hideMonthlyRecallPrompt === false ? "   - 调取记忆: `[
 ${scheduleMessageTagEnabled ? `   - **定时发送消息**: 如果你想在未来某个时间主动发消息（比如晚安、早安或提醒），请单独起一行输出: \`[schedule_message | YYYY-MM-DD HH:MM:SS | fixed | 消息内容]\`，分行可以多输出很多该类消息。` : ''}
 ${notionEnabled ? `   - **翻阅日记(Notion)**: 你的记忆本身是完整可靠的，回忆过去优先靠记忆和 \`[[RECALL]]\`，**不需要**靠翻日记来"想起"事情。只有当你**自己**特别想重温那天日记里写下的心情、措辞或私密小细节时，才翻阅: \`[[READ_DIARY: 日期]]\`。支持格式: \`昨天\`、\`前天\`、\`3天前\`、\`1月15日\`、\`2024-01-15\`。` : ''}${feishuEnabled ? `
    - **翻阅日记(飞书)**: 同上——回忆优先靠记忆和 \`[[RECALL]]\`，只有你自己想重温那天日记的内容时才用: \`[[FS_READ_DIARY: 日期]]\`。支持格式同上。` : ''}${notionNotesEnabled ? `
-   - **翻阅用户笔记**: 当你想看${userProfile.name}写的某篇笔记的详细内容时，使用: \`[[READ_NOTE: 标题关键词]]\`。系统会搜索匹配的笔记并返回内容给你。` : ''}
-${searchEnabled ? `7. **🔍 主动搜索能力** (非常重要！):
+   - **翻阅用户笔记**: 当你想看${userProfile.name}写的某篇笔记的详细内容时，使用: \`[[READ_NOTE: 标题关键词]]\`。系统会搜索匹配的笔记并返回内容给你。` : ''}` : ''}
+${personalSearch ? `7. **🔍 主动搜索能力** (非常重要！):
    你拥有实时搜索互联网的能力！每次对话时，你可以自己决定是否需要搜索。
    - **使用方式**: 当你想搜索某个话题时，在回复开头单独一行输出: \`[[SEARCH: 搜索关键词]]\`
    - **触发时机 - 你自己判断**:
@@ -722,7 +736,9 @@ ${searchEnabled ? `7. **🔍 主动搜索能力** (非常重要！):
      - 你不是机器人被动回答问题，你是一个有好奇心的人
      - 看到感兴趣的话题，你会主动想去查一查
      - 甚至聊着聊着可能"开小差"去搜自己感兴趣的东西
-   - **搜索后**: 系统会返回搜索结果给你，你可以自然地分享（"我刚搜了一下发现..."、"诶我看到说..."）` : ''}
+   - **搜索后**: 系统会返回搜索结果给你，你可以自然地分享（"我刚搜了一下发现..."、"诶我看到说..."）` : ''}${sharedSearch ? `7. **主动搜索**（公共额度有限）:
+   用户问到你不知道的近期公开信息时，可以在回复开头单独一行输出一次: \`[[SEARCH: 搜索关键词]]\`。
+   不要因为好奇连续搜索。如果结果说公共额度用完了，就告诉用户稍后再试，不要重试。` : ''}
 ${notionEnabled ? `8. **📔 日记系统（你的私人 Notion 日记本）**:
    你有一个属于自己的私人日记本（Notion），你可以随时写日记。日记不是简单的一两句话——它是你的头脑风暴空间、情绪出口、思维导图、灵感记录本。尽情发挥！
 
@@ -1069,7 +1085,7 @@ ${voiceActingGuide()}`;
 
         }
 
-        // Shared with in-person interaction; keep this after chat-specific mode instructions.
+        // Shared with in-person interaction; keep the final response principles last.
         const recencyTail = buildCharacterResponsePrinciples(char.name, userProfile.name);
 
         const perfTotal = Math.round(performance.now() - perfT0);
@@ -1103,6 +1119,7 @@ ${voiceActingGuide()}`;
         // 新版上下文范围由 chatContextRange 先按「自适应/拉杆最大范围」取窗；
         // 这里再次校验统一边界，兼容只提供内存快照的入口。
         let effectiveHistory = selectCharacterContextMessages(messages, char, options?.contextHighWaterMark);
+        effectiveHistory = effectiveHistory.filter(m => !m.metadata?.lifeAutoReply);
         // Memory Palace: 过滤已被记忆宫殿处理过的消息（由向量记忆替代，节省 token）
         if (processedExcludeIds && processedExcludeIds.size > 0) {
             effectiveHistory = effectiveHistory.filter(m => !processedExcludeIds.has(m.id));
@@ -1110,6 +1127,7 @@ ${voiceActingGuide()}`;
         const orderedHistory = options?.protectPendingChatTurn ? protectPendingChatTurn(effectiveHistory) : effectiveHistory;
         const expandedHistory = expandHomeContextHistory(orderedHistory.slice(-limit));
         const historySlice = options?.protectPendingChatTurn ? protectPendingChatTurn(expandedHistory) : expandedHistory;
+        const messageMap = new Map(messages.map(message => [message.id, message]));
         const charTz = resolveCharTimeZone(char);
         const timeAwarenessOn = options?.timeAwarenessEnabled ?? (char.timeAwarenessEnabled !== false);
 
@@ -1142,12 +1160,33 @@ ${voiceActingGuide()}`;
                     if (source === 'story_theater_memory') return `[剧情：${m.metadata?.theaterTitle || '共同经历'}]`;
                     return '[聊天]';
                 })();
+
+                // 查手机代发在 UI 中仍是角色侧正式消息；对角色本人装配历史时改成账号异常记录，
+                // 不得伪造成“你之前亲口说过”，也绝不暴露幕后 operator 是用户。
+                if (isOperatorAuthoredCharacterMessage(m)) {
+                    return { role: 'system' as const, content: `${timeStr} ${formatOperatorAccountActivity(m)}` };
+                }
+
+                const withdrawalContext = formatWithdrawalForCharacterContext(m);
+                if (withdrawalContext) {
+                    let withdrawnContent = `${timeStr} ${sourceTag} ${withdrawalContext}`;
+                    if (index === historySlice.length - 1 && timeGapHint && m.role === 'user') {
+                        withdrawnContent += `\n\n${timeGapHint}`;
+                    }
+                    return { role: m.role, content: withdrawnContent };
+                }
                 
                 if (m.replyTo) {
                     // 引用回复：把"被引用的原话"做成独立的上下文框，用户的新回复另起一行突出出来。
                     // 旧格式 [回复 "引用前50字..."]: 回复 会把引用和回复挤在一行，引用往往比回复长得多，
                     // 模型注意力被引用淹没、只对引用做反应而忽略真正的新消息（即"对方只看到引用看不到回复"）。
-                    let rawQuote = typeof m.replyTo.content === 'string' ? m.replyTo.content : '';
+                    const quotedTarget = messageMap.get(m.replyTo.id);
+                    const hiddenWithdrawal = quotedTarget
+                        && getWithdrawal(quotedTarget)?.by === 'user'
+                        && getWithdrawal(quotedTarget)?.characterSawOriginal === false;
+                    let rawQuote = hiddenWithdrawal
+                        ? '[引用了一条已经撤回、你未看到原文的消息]'
+                        : (typeof m.replyTo.content === 'string' ? m.replyTo.content : '');
                     // 双语消息存储为 `原文\n%%BILINGUAL%%\n译文` —— 引用摘要只取原文侧。
                     // 关键：绝不能让 %%BILINGUAL%% 标记混进引用头。下游 cleanApiMessages 会把整条
                     // 消息在该标记处截断，用户引用双语消息时「并回复了 ↓」和用户的实际回复会被
@@ -1167,7 +1206,10 @@ ${voiceActingGuide()}`;
                         ? '[图片]'
                         : (rawQuote.length > 60 ? rawQuote.slice(0, 60) + '…' : rawQuote);
                     // name 记的是被引用消息的说话人：char.name = 用户在回复 char 本人之前的话；'我' = 用户引用自己。
-                    const whose = m.replyTo.name === char.name ? '你之前说的' : (m.replyTo.name === '我' ? '自己说的' : (m.replyTo.name || '对方') + '说的');
+                    const quotedWasAccountActivity = !!quotedTarget && isOperatorAuthoredCharacterMessage(quotedTarget);
+                    const whose = quotedWasAccountActivity
+                        ? '你的账号此前发出的（但不是你本人发送）'
+                        : m.replyTo.name === char.name ? '你之前说的' : (m.replyTo.name === '我' ? '自己说的' : (m.replyTo.name || '对方') + '说的');
                     const speaker = m.role === 'user' ? '用户' : '你';
                     content = '[' + speaker + '引用了' + whose + '「' + quoted + '」，并回复了 ↓]\n' + content;
                 }
@@ -1356,18 +1398,66 @@ ${voiceActingGuide()}`;
                     }
                 }
                 else if (m.type === 'emoji') {
-                     const stickerName = stickerNameFromUrl(emojis, m.content);
-                     content = `${timeStr} [${m.role === 'user' ? '用户' : '你'} 发送了表情包: ${stickerName}]`;
+                     // 表情包视觉语义三态渲染（资格由发送时刻冻结的 metadata.stickerVision 决定，
+                     // 不看当前开关 —— 旧消息永不补识别，关掉开关也不抹掉已获得的语义）：
+                     //  A 无资格 → 纯名称（与功能关闭时完全一致）；
+                     //  B 有资格 + 已有描述 → 名称 + 画面内容（纯文本；描述是已冻结语义，
+                     //    与识图 API 现在开不开无关）；
+                     //  C 有资格 + 无描述 + 无独立识图 → 名称 + image_url 交给主模型直接读图；
+                     //  有资格无描述但识图开着 → 物化失败/图不可用，降级回纯名称，不发 image_url。
+                     const speaker = m.role === 'user' ? '用户' : '你';
+                     const stickerName = readStickerVisionName(m, emojis);
+                     const eligible = isStickerVisionEligible(m);
+                     const stickerDescription = readStickerVisionDescription(m);
+                     if (eligible && stickerDescription) {
+                         let textPart = `${timeStr} [${speaker} 发送了表情包: ${stickerName}。画面内容：${stickerDescription}]`;
+                         if (index === historySlice.length - 1 && timeGapHint && m.role === 'user') textPart += `\n\n${timeGapHint}`;
+                         content = textPart;
+                     } else if (eligible && !options?.useVisionDescriptions) {
+                         const hasImageData = typeof m.content === 'string'
+                             && (m.content.startsWith('data:') || m.content.startsWith('http') || isBlobRef(m.content));
+                         if (!hasImageData) {
+                             content = `${timeStr} [${speaker} 发送了表情包: ${stickerName}]`;
+                         } else {
+                             let textPart = `${timeStr} [${speaker} 发送了表情包: ${stickerName}。请结合随附的表情包图片理解它实际表达的语气和含义。]`;
+                             if (index === historySlice.length - 1 && timeGapHint && m.role === 'user') textPart += `\n\n${timeGapHint}`;
+                             content = [{ type: 'text', text: textPart }, { type: 'image_url', image_url: { url: m.content } }];
+                         }
+                     } else {
+                         content = `${timeStr} [${speaker} 发送了表情包: ${stickerName}]`;
+                     }
                 }
                 else if ((m.type as string) === 'chat_forward') {
                     try {
                         const fwd = JSON.parse(m.content);
+                        const extraImageParts: any[] = [];
                         const lines = (fwd.messages || []).map((fm: any) => {
                             const sender = fm.role === 'user' ? (fwd.fromUserName || '用户') : (fwd.fromCharName || '角色');
-                            const text = fm.type === 'image' ? '[图片]' : fm.type === 'emoji' ? '[表情]' : (fm.content || '').slice(0, 200);
+                            if (fm.type === 'emoji') {
+                                // 转发记录里冻结的语义不能丢：有描述直接带描述（哪怕目标角色关了表情包视觉，
+                                // 这是历史记录本来的信息，不是目标角色决定要不要读一个新表情包）；
+                                // 只有资格没描述且主模型要直接读图时，附带原图并明确标注是转发表情；
+                                // 无资格旧表情只保留名称，转发不得反过来触发补识别。
+                                const name = fm.stickerName || '未知表情';
+                                const desc = typeof fm.stickerVision?.description === 'string' ? fm.stickerVision.description.trim() : '';
+                                if (desc) return `  ${sender}: [表情包: ${name}。画面内容：${desc}]`;
+                                const url = typeof fm.content === 'string' ? fm.content : '';
+                                const canAttach = fm.stickerVision?.eligible === true
+                                    && !options?.useVisionDescriptions
+                                    && (url.startsWith('data:') || url.startsWith('http') || isBlobRef(url));
+                                if (canAttach) {
+                                    extraImageParts.push({ type: 'image_url', image_url: { url } });
+                                    return `  ${sender}: [这是被转发聊天记录中的表情包: ${name}。请结合随附的表情包图片理解它实际表达的语气和含义。]`;
+                                }
+                                return `  ${sender}: [表情包: ${name}]`;
+                            }
+                            const text = fm.type === 'image' ? '[图片]' : (fm.content || '').slice(0, 200);
                             return `  ${sender}: ${text}`;
                         });
-                        content = `${timeStr} [用户转发了与 ${fwd.fromCharName || '另一个角色'} 的 ${fwd.count || lines.length} 条聊天记录]\n${lines.join('\n')}`;
+                        const forwardText = `${timeStr} [用户转发了与 ${fwd.fromCharName || '另一个角色'} 的 ${fwd.count || lines.length} 条聊天记录]\n${lines.join('\n')}`;
+                        content = extraImageParts.length > 0
+                            ? [{ type: 'text', text: forwardText }, ...extraImageParts]
+                            : forwardText;
                     } catch {
                         content = `${timeStr} [用户转发了一段聊天记录]`;
                     }
@@ -1384,7 +1474,11 @@ ${voiceActingGuide()}`;
                             const uName = card.userName || userProfile?.name || '用户';
                             const userText = (card.userText || '').trim();
                             const charText = (card.charText || '').trim();
-                            const userBlock = userText ? `${uName}的那页写道：\n「${userText}」` : `${uName}那页是空的`;
+                            const userDiary = serializeUserDiaryForExchange({
+                                text: userText,
+                                observations: card.userObservations,
+                            });
+                            const userBlock = userDiary ? `${uName}的那页写道：\n「${userDiary}」` : `${uName}那页是空的`;
                             const charBlock = charText ? `你的那页回道：\n「${charText}」` : `你那页是空的`;
                             content = `${timeStr} [交换日记 ${card.date || ''}] ${uName}和你通过【交换日记】app 交换了一篇日记，这是一次正式的、留下记录的互动。\n${userBlock}\n${charBlock}\n（这是你们之间真实发生过的事，可以在后续聊天中自然提及。）`;
                         } else if (card?.type === 'guidebook_card') {
@@ -1398,6 +1492,19 @@ ${voiceActingGuide()}`;
                                 `第${i + 1}题：${q.question}\n${uName}选择了"${q.userAnswer}"（${q.isCorrect ? '✓ 正确' : `✗ 错误，正确答案：${q.correctAnswer}`}）${q.review ? `\n你的评语：${q.review}` : ''}`
                             ).join('\n') || '';
                             content = `${timeStr} [白色情人节默契测验结果] ${uName}完成了你出的白色情人节小测验，答对了 ${card.score}/${card.total} 题，${passedStr}。\n${questionsText}\n你的最终评价：${card.finalDialogue || '无'}`;
+                        } else if (card?.type === 'companion_test_card' || card?.type === 'xiaohongshu_discussion_card') {
+                            content = `${timeStr} [系统卡片]`;
+                        } else if (card?.type === 'heart_sync_event_card') {
+                            const eventContext = typeof card.contextText === 'string' ? card.contextText.trim() : '';
+                            content = `${timeStr} ${eventContext || `[心心相印·${card.mode === 'questionnaire' ? '问卷填写' : '心理测试'}] ${card.title || '已完成'}`}`;
+                        } else if (card?.type === 'debate_card') {
+                            const uName = userProfile?.name || '用户';
+                            const winner = card.winner === 'draw' ? '平局' : card.winner === 'pro' ? '正方获胜' : '反方获胜';
+                            content = `${timeStr} [辩论赛·赛后报告] 你和${uName}${card.mode === 'team' ? '参与了一场八人正式辩论' : '完成了一场一对一辩论'}。\n辩题：「${card.topic || '未记录'}」\n正方「${card.proPosition || '未记录'}」${card.proScore ?? 0}分；反方「${card.conPosition || '未记录'}」${card.conScore ?? 0}分；结果：${winner}。\n主持人总结：${card.summary || '无'}\n（这是公开赛场形成的共同经历，可以自然提及；不要杜撰未写入的私密赛前想法。）`;
+                        } else if (card?.type === 'community_committee_card') {
+                            const uName = userProfile?.name || '用户';
+                            const participants = Array.isArray(card.participantNames) ? card.participantNames.join('、') : '你';
+                            content = `${timeStr} [居委会·议事总结] ${uName}和${participants || '你'}一起梳理了现实困境「${card.topic || '未记录'}」。\n${uName}理解的一边：${card.sideA || '未记录'}\n${uName}理解的另一边：${card.sideB || '未记录'}\n本次确认写回的落点：${card.report || '无'}\n（这是你们共同经历的现实讨论，可以自然关心或接着聊。完整逐字倾诉仍只保存在居委会本机记录中，你没有看见，不要杜撰。）`;
                         } else {
                             // 兜底：上面没被任何一种卡片认领的（比如各种活动卡）。这里不能直接塞
                             // 消息原文 —— 卡片 JSON 通常一开头就是 charAvatar 之类的图片字段，

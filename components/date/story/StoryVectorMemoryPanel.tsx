@@ -30,7 +30,7 @@ const StoryVectorMemoryPanel: React.FC<Props> = ({ entry, onBack }) => {
     useEffect(() => {
         let active = true;
         setLoading(true);
-        void listStoryVectorMemories(entry.id).then(rows => {
+        void listStoryVectorMemories(entry).then(rows => {
             if (active) setNodes(rows);
         }).catch((error: any) => {
             if (active) addToastRef.current(error?.message || '读取剧情向量记忆失败', 'error');
@@ -38,7 +38,7 @@ const StoryVectorMemoryPanel: React.FC<Props> = ({ entry, onBack }) => {
             if (active) setLoading(false);
         });
         return () => { active = false; };
-    }, [entry.id]);
+    }, [entry]);
     useEffect(() => {
         const maxPage = Math.max(0, Math.ceil(nodes.length / PAGE_SIZE) - 1);
         if (page > maxPage) setPage(maxPage);
@@ -128,7 +128,7 @@ const StoryVectorMemoryPanel: React.FC<Props> = ({ entry, onBack }) => {
                         className='select-none py-5 flex items-start gap-4'
                     >
                         <div className='shrink-0 pt-0.5 text-[10px] font-serif text-violet-500'>{String(page * PAGE_SIZE + index + 1).padStart(2, '0')}</div>
-                        <div className='min-w-0 flex-1'><p className='whitespace-pre-wrap text-[12px] leading-6'>{node.content}</p><div className='mt-3 flex flex-wrap gap-x-3 gap-y-1 text-[9px] text-slate-400'><span>{new Date(node.createdAt).toLocaleString()}</span><span>重要度 {node.importance}/10</span><span>{node.embedded ? '向量已就绪' : '等待向量化'}</span>{node.tags?.slice(0, 3).map(tag => <span key={tag}>#{tag}</span>)}</div></div>
+                        <div className='min-w-0 flex-1'><p className='whitespace-pre-wrap text-[12px] leading-6'>{node.content}</p><div className='mt-3 flex flex-wrap gap-x-3 gap-y-1 text-[9px] text-slate-400'><span>{new Date(node.createdAt).toLocaleString()}</span><span>重要度 {node.importance}/10</span><span>{node.embedded ? '向量已就绪' : '等待向量化'}</span>{node.storyTimelineScope?.branchId && <span>分支 {entry.timeline?.branches.find(branch => branch.id === node.storyTimelineScope?.branchId)?.name || '已删除分支'}</span>}{node.tags?.slice(0, 3).map(tag => <span key={tag}>#{tag}</span>)}</div></div>
                         <button onClick={() => setMenuNode(node)} onPointerDown={event => event.stopPropagation()} className='w-9 h-9 shrink-0 rounded-full grid place-items-center text-slate-400' aria-label='记忆操作'><DotsThree size={18} weight='bold' /></button>
                     </article>)}</div>
                     {pageCount > 1 && <nav className='pt-6 border-t border-slate-200 flex items-center justify-between'><button disabled={page === 0} onClick={() => setPage(current => Math.max(0, current - 1))} className='w-10 h-10 rounded-full bg-white border border-slate-200 grid place-items-center disabled:opacity-25'><CaretLeft size={15} /></button><span className='text-[10px] text-slate-500'>第 {page + 1} / {pageCount} 页</span><button disabled={page + 1 >= pageCount} onClick={() => setPage(current => Math.min(pageCount - 1, current + 1))} className='w-10 h-10 rounded-full bg-white border border-slate-200 grid place-items-center disabled:opacity-25'><CaretRight size={15} /></button></nav>}

@@ -338,7 +338,7 @@ export const fetchWorkerDiagnostics = async (): Promise<AmsgDiagnosticsProbe> =>
     return {
       reachable: false,
       unsupported: true,
-      reason: 'Worker 上跑的代码还没有体检端点。回你 fork 的 sullyos-workers 点一下 Sync fork，或者用上面的「更新 Worker」，之后再来看。',
+      reason: 'Worker 上跑的代码还没有体检端点。回你 fork 的本项目仓库点一下 Sync fork，或者用上面的「更新 Worker」，之后再来看。',
     };
   } catch (error: any) {
     // fetchWithAuthRaw 抛出来的已经是人话了（见 amsgDiagnostics 的 describeAmsgFetchFailure）。
@@ -1109,7 +1109,7 @@ export const describeInstantChatFailure = (status: number, body: any): string =>
     return '即时对话没发出去：共享密钥和 Worker 上的对不上，去「主动消息 2.0」设置里核对一下。';
   }
   if (status === 405 || status === 404) {
-    return '即时对话没发出去：Worker 上还没有这个端点，去你 fork 的 sullyos-workers 点一下 Sync fork 更新。';
+    return '即时对话没发出去：Worker 上还没有这个端点，去你 fork 的本项目仓库点一下 Sync fork 更新。';
   }
   if (status === 503) {
     return '即时对话没发出去：Worker 的环境变量没配齐（设置页点「重新连接并验证」能看到缺什么）。';
@@ -2412,6 +2412,9 @@ export const ActiveMsgClient = {
 
   async scheduleCharacterTask(params: {
     signal?: AbortSignal;
+    /** 调用方持久化的排程幂等键；重试同一意图时不得换 UUID。 */
+    taskUuid?: string;
+    clientTaskId?: string;
     char: CharacterProfile;
     /** 角色级共享设置（maxTokens）。 */
     config: ActiveMsg2CharacterConfig;
@@ -2466,10 +2469,11 @@ export const ActiveMsgClient = {
       : await buildFirePack(char, userProfile, groups, realtimeConfig);
     // 任务身份：客户端自造 clientTaskId——远端 uuid 要创建成功后才有，而 metadata
     // 必须在创建时就带上归属键；push 原样透传，送达归属全靠它。
-    const clientTaskId = crypto.randomUUID();
+    const clientTaskId = params.clientTaskId || crypto.randomUUID();
 
     const remoteAvatarUrl = toRemoteAvatarUrl(char.avatar);
     const payload: Record<string, any> = {
+      ...(params.taskUuid ? { uuid: params.taskUuid } : {}),
       contactName: char.name,
       // 本地 base64 头像过不了 worker 的校验，不合格干脆不带这个字段（见 toRemoteAvatarUrl）。
       ...(remoteAvatarUrl ? { avatarUrl: remoteAvatarUrl } : {}),
@@ -2593,6 +2597,12 @@ export const ActiveMsgClient = {
     }
 
     if (!response?.success) {
+      if (params.taskUuid && response?.error?.code === 'TASK_UUID_CONFLICT') {
+        const existing = await this.getRemoteTaskStatus(params.taskUuid);
+        if (existing.state === 'pending' && existing.nextSendAt === firstSendTime) {
+          return { uuid: params.taskUuid, status: 'scheduled', clientTaskId, replacedCancelFailed: false, firstSendAt: firstSendTime };
+        }
+      }
       throw new Error(response?.error?.message || '主动消息 2.0 任务创建失败。');
     }
 

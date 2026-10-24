@@ -12,7 +12,10 @@ vi.mock('./ttsCache', async (importOriginal) => ({
   ...await importOriginal<typeof import('./ttsCache')>(),
   getCachedTts: vi.fn(), saveCachedTts: vi.fn(),
 }));
-vi.mock('./proxyWorker', () => ({ getProxyWorkerUrl: () => 'https://proxy.example.test' }));
+vi.mock('./proxyWorker', () => ({
+  getProxyWorkerUrl: () => 'https://proxy.example.test',
+  requireProxyWorkerUrl: () => 'https://proxy.example.test',
+}));
 
 const character = { id: 'char-v4', voiceProfile: { elevenLabsVoiceId: '21m00Tcm4TlvDq8ikWAM', speed: 0.85 } } as CharacterProfile;
 const config = { baseUrl: '', apiKey: '', model: '', elevenLabsApiKey: 'test-only-key', elevenLabsModel: 'eleven_v4' } as APIConfig;

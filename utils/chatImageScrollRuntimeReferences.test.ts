@@ -16,11 +16,13 @@ describe('chat image bottom anchoring wiring', () => {
 
   it('re-anchors only while the user is still following the newest message', () => {
     const source = readFileSync(path.resolve(__dirname, '../apps/Chat.tsx'), 'utf8');
+    const scroll = readFileSync(path.resolve(__dirname, '../hooks/useChatScroll.ts'), 'utf8');
 
-    expect(source).toContain('pendingMediaAutoScrollIdRef.current = currentLastId');
-    expect(source).toContain('if (distanceFromBottom > 96) pendingMediaAutoScrollIdRef.current = null');
-    expect(source).toContain('pendingMediaAutoScrollIdRef.current !== messageId');
+    expect(source).toContain('useChatScroll(');
     expect(source).toContain('onScroll={handleChatScroll}');
-    expect(source).toContain('onMediaLoad={handleMessageMediaLoad}');
+    expect(source).toContain('ref={contentRef}');
+    expect(scroll).toContain('!followingLatestRef.current');
+    expect(scroll).toContain('new ResizeObserver(followBottom)');
+    expect(scroll).toContain('observer.observe(content)');
   });
 });

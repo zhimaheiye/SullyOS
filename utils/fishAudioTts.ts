@@ -15,7 +15,7 @@ import { CharacterProfile, APIConfig } from '../types';
 import { Capacitor, CapacitorHttp } from '@capacitor/core';
 import { hashTtsParams, getCachedTts, saveCachedTts } from './ttsCache';
 import { normalizeApiKey } from './minimaxApiKey';
-import { getProxyWorkerUrl } from './proxyWorker';
+import { requireProxyWorkerUrl } from './proxyWorker';
 import type { TtsResult } from './minimaxTts';
 import { isStaticWebDeployment } from './staticWebDeployment';
 
@@ -324,7 +324,7 @@ const fishFetchAudio = async (
   let url: string;
   let headers: Record<string, string>;
   if (shouldBypassWebProxy()) {
-    url = `${getProxyWorkerUrl()}/fishaudio/tts?model=${encodeURIComponent(model)}`;
+    url = `${requireProxyWorkerUrl()}/fishaudio/tts?model=${encodeURIComponent(model)}`;
     headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` };
   } else {
     url = FISH_PROXY_PATH;

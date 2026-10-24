@@ -35,7 +35,7 @@ describe('journalAppearance', () => {
         }
     });
 
-    it('gives every non-original preset its own layout language instead of a shared recolored shell', () => {
+    it('gives every non-original preset its own visual language without owning the notebook columns', () => {
         const themed = JOURNAL_APPEARANCE_PRESETS.filter(preset => preset.id !== 'original');
         expect(new Set(themed.map(preset => preset.layout)).size).toBe(themed.length);
 
@@ -52,10 +52,20 @@ describe('journalAppearance', () => {
         expect(resolveJournalPreset('forest').css).toContain('.sully-journal-field-rings');
         expect(resolveJournalPreset('midnight').css).toContain('.sully-journal-memory-circuit');
 
-        expect(resolveJournalPreset('letterpress').css).toContain('grid-template-columns:repeat(auto-fit,minmax(220px,1fr))');
-        expect(resolveJournalPreset('sakura').css).toContain('.sully-journal-notebook:first-child{grid-column:1/-1');
-        expect(resolveJournalPreset('forest').css).toContain('grid-template-columns:1fr!important');
-        expect(resolveJournalPreset('midnight').css).toContain('grid-template-columns:repeat(3,minmax(0,1fr))');
+        for (const preset of themed) {
+            const notebookGridRules = [...preset.css.matchAll(/\.sully-journal-notebook-grid\s*\{([^}]*)\}/g)];
+            expect(notebookGridRules.length, preset.name).toBeGreaterThan(0);
+            for (const [, declarations] of notebookGridRules) {
+                expect(declarations, preset.name).not.toContain('grid-template-columns');
+            }
+        }
+
+        expect(resolveJournalPreset('letterpress').css).not.toContain('repeat(auto-fit,minmax(220px,1fr))');
+        expect(resolveJournalPreset('sakura').css).not.toContain('.sully-journal-notebook:first-child{grid-column:1/-1');
+        expect(resolveJournalPreset('forest').css).not.toContain('.sully-journal-notebook-grid{position:relative;z-index:5;grid-template-columns:1fr');
+        expect(resolveJournalPreset('midnight').css).not.toContain('.sully-journal-notebook-grid{position:relative;z-index:3;grid-template-columns:repeat(3');
+        expect(resolveJournalPreset('letterpress').css).not.toContain('.sully-journal-notebook:nth-child(even){transform:');
+        expect(resolveJournalPreset('sakura').css).not.toContain('.sully-journal-notebook:nth-child(even){transform:');
     });
 
     it('places custom CSS after the selected preset so users can override it', () => {
@@ -110,6 +120,8 @@ describe('journalAppearance', () => {
             expect(JOURNAL_AI_CSS_PROMPT, selector).toContain(selector);
         }
         expect(JOURNAL_AI_CSS_PROMPT).toContain('不得用 display:none');
+        expect(JOURNAL_AI_CSS_PROMPT).toContain('固定两列属于系统结构');
+        expect(JOURNAL_AI_CSS_PROMPT).toContain('transform、translate 或 scale');
     });
 
     it('ships a final safety layer that keeps every Journal escape control reachable', () => {
@@ -127,6 +139,55 @@ describe('journalAppearance', () => {
         expect(JOURNAL_APPEARANCE_SAFETY_CSS).toContain('pointer-events:auto!important');
         expect(JOURNAL_APPEARANCE_SAFETY_CSS).toContain('pointer-events:none!important');
         expect(JOURNAL_APPEARANCE_SAFETY_CSS).toContain('env(safe-area-inset-top,0px)');
+    });
+
+    it('locks the notebook selector to a two-column scrolling grid with content-sized rows', () => {
+        const gridRule = JOURNAL_APPEARANCE_SAFETY_CSS
+            .match(/\.sully-journal-notebook-grid\{([^}]*)\}/)?.[1] || '';
+
+        for (const declaration of [
+            'display:grid!important',
+            'position:relative!important',
+            'grid-template-columns:repeat(2,minmax(0,1fr))!important',
+            'grid-auto-flow:row!important',
+            'grid-auto-rows:max-content!important',
+            'align-content:start!important',
+            'flex:1 1 0%!important',
+            'min-height:0!important',
+            'overflow-y:auto!important',
+            'overflow-x:hidden!important',
+        ]) {
+            expect(gridRule).toContain(declaration);
+        }
+    });
+
+    it('keeps every notebook inside its own grid cell', () => {
+        const notebookRule = JOURNAL_APPEARANCE_SAFETY_CSS
+            .match(/\.sully-journal-notebook\{([^}]*)\}/)?.[1] || '';
+
+        for (const declaration of [
+            'position:relative!important',
+            'grid-column:auto!important',
+            'grid-row:auto!important',
+            'margin-top:0!important',
+            'min-width:0!important',
+            'max-width:100%!important',
+            'transform:none!important',
+            'translate:none!important',
+            'rotate:none!important',
+            'scale:none!important',
+        ]) {
+            expect(notebookRule).toContain(declaration);
+        }
+    });
+
+    it('makes the JournalApp notebook grid the fixed two-column scrolling flex child', () => {
+        const journalApp = readFileSync(fileURLToPath(new URL('../apps/JournalApp.tsx', import.meta.url)), 'utf8');
+        const className = journalApp.match(/className="([^"]*sully-journal-notebook-grid[^"]*)"/)?.[1] || '';
+
+        for (const classToken of ['grid', 'grid-cols-2', 'auto-rows-max', 'content-start', 'flex-1', 'min-h-0', 'overflow-y-auto']) {
+            expect(className).toContain(classToken);
+        }
     });
 
     it('wires a non-persistent, cross-page preview with a body-level one-click rescue', () => {

@@ -1,6 +1,8 @@
 # 美化分享码
 
-提供私有投稿、人工审核和凭码领取。聊天装扮新增「装扮库（测试版）」：仅作者主动同意公开、且已通过人工审核的作品进入静态目录；不提供评论或关注。
+> 本公开版不填写 `VITE_BEAUTY_SHARE_URL`。`utils/beautyShareConfig.ts` 会拒绝上游美化域名。本机装扮、制作和导入仍可用。没有自己的分享服务时，不要把投稿发到上游的美化站。
+
+提供私有投稿、人工审核和凭码领取。聊天装扮新增「装扮库（测试版）」：仅作者主动同意公开、且已通过人工审核的作品进入静态目录；不提供评论或关注。自己部署时才填写自己的分享服务地址。
 
 ## 封面绘制
 
@@ -78,7 +80,7 @@
 - Worker：`worker/beauty-share/src/index.ts`，服务 `sullyos-beauty-share`。
 - D1：`sullyos-beauty-share`，维护作者、会话、投稿版本、审核指针及额度；迁移位于 `worker/beauty-share/migrations`。
 - R2：`sullyos-beauty-share-private`，不得打开公开访问或绑定公开存储域名。所有下载经 Worker 校验已审核指针或作者/管理员身份。
-- 正式服务域名：`https://beauty.friedsully.com`；管理界面：`https://beauty.friedsully.com/admin/`。域名已在 Cloudflare Dashboard 绑定，也记录于 Wrangler routes。地址不是安全边界，所有管理员 API 独立鉴权。页面只渲染文本，不注入投稿 CSS/HTML，也不自动加载投稿里的素材地址。
+- 分享服务地址来自构建变量 `VITE_BEAUTY_SHARE_URL`。本公开版留空，并拒绝上游美化域名。自己部署时使用自己的域名和管理界面。地址不是安全边界，所有管理员 API 独立鉴权。页面只渲染文本，不注入投稿 CSS/HTML，也不自动加载投稿里的素材地址。
 - 客户端默认服务地址在 `utils/beautyShareClient.ts`，自部署可用构建环境变量 `VITE_BEAUTY_SHARE_URL` 覆盖。不能在前端配置中放管理员密码、Cloudflare Token 或 Worker secrets。
 - 作者会话在本地 `sully-beauty-author-session-v1`，常用说明在 `sully-beauty-author-defaults-v1`。这些不写入预设包。作者会话 30 天，管理员会话 8 小时；服务端仅保存会话 token 的 SHA-256。
 - 密码用 PBKDF2-SHA256、独立随机盐和服务端 pepper。不要无意轮换 `AUTH_PEPPER`，否则已有密码无法验证。忘记作者密码暂不提供自助重置；管理员也看不到原密码。
@@ -106,7 +108,7 @@ R2 与 D1 没有跨服务事务。一般写入失败会立即清理对象并归�
 
 ## 验证
 
-- `pnpm vitest run utils/beautyUsage.test.ts utils/beautyPreview.test.ts utils/beautyShare.test.ts utils/chatDecoration.test.ts`：提醒计时、停用和去重、Repo 同意与字段白名单、预览模板转义、分享格式、ZIP 解压实际大小限制、聊天导入验证。
+- `.\node_modules\.bin\vitest.cmd run utils/beautyUsage.test.ts utils/beautyPreview.test.ts utils/beautyShare.test.ts utils/chatDecoration.test.ts`：提醒计时、停用和去重、Repo 同意与字段白名单、预览模板转义、分享格式、ZIP 解压实际大小限制、聊天导入验证。
 - `pnpm exec tsc --noEmit`；`pnpm build`。
 - 本地 D1 迁移后，设置 `.dev.vars` 的测试 `AUTH_PEPPER` 与 `BOOTSTRAP_HASH=SHA256('local-bootstrap-test-only')`，运行 `pnpm dlx wrangler dev --config worker/beauty-share/wrangler.jsonc --port 8793 --var UPLOADS_ENABLED:true`。
 - 在**全新本地数据库**上运行 `node scripts/test-beauty-share.mjs`：59 项 HTTP 检查，覆盖账户恢复、未审私有性、越权、审核并发、更新保留已发布版本、删除撤销、私密 Repo 权限与幂等。默认 localhost:8793，环境变量 `BEAUTY_TEST_PORT=8794` 可改为另一隔离本地实例，不允许切到生产环境。
@@ -142,19 +144,19 @@ R2 与 D1 没有跨服务事务。一般写入失败会立即清理对象并归�
 - `0003_public_catalog.sql` 追加每个版本的封面及作品撤回标记。审核只替换通过后的 published 指针；待审、退回版不进入目录。作者可「取消公开展示」，不会让分享码失效；同时取消当前待审版的公开授权，避免后续审核又暴露。之后重新公开需要新一次明确授权和审核。
 - 新增 `CATALOG` **独立公共桶**，绝不能公开现有私有 `FILES` 桶。审核、撤回和删除通过 `CATALOG_REFRESH` Durable Object 安排一次性更新，连续操作延后约 20 秒合并处理（最长合并窗口 60 秒）。没有周期性快照 Cron；每日私有数据清理保留。管理员可查看任务状态或手动「更新公开快照」。
 - 数据变更前先持久化任务预留，变更后释放；请求中断时预留最多 120 秒后过期，任务仍会补做。使用 D1 租约避免重叠构建，构建失败保留上一份目录，并最多追加 6 次退避重试；构建中授权变化则丢弃该次目录并重试。目录发布后的旧公开文件清理失败也会重试，私有投稿不受影响。
-- 前端从 `VITE_BEAUTY_CATALOG_URL`（默认 `https://beauty-library.friedsully.com`）读取静态目录。每次进入或点击「刷新目录」都以 `cache: no-cache` 校验 `catalog.json`；仅合并正在进行的请求，不再保存 10 分钟内存目录。目录响应必须重新验证，版本化包与小封面可缓存 600 秒。列表每页 12 款，只懒加载当前页小图；进入/刷新时随机一次，搜索、筛选和翻页全在本地，「换一批」只重排。打开中的页面不自动轮询或跳动。交互预览才读取单份公开包并校验大小和 SHA-256，不访问分享 Worker 或 D1。
+- 前端只在构建变量 `VITE_BEAUTY_CATALOG_URL` 指向自己的 https 装扮库时读取静态目录。本公开版不填这个变量；指向上游美化域名时会当成未配置，并提示不会连接作者的公共装扮库。本地美化仍可用。配置了自己的地址后，每次进入或点击「刷新目录」都以 `cache: no-cache` 校验 `catalog.json`；仅合并正在进行的请求，不再保存 10 分钟内存目录。目录响应必须重新验证，版本化包与小封面可缓存 600 秒。列表每页 12 款，只懒加载当前页小图；进入/刷新时随机一次，搜索、筛选和翻页全在本地，「换一批」只重排。打开中的页面不自动轮询或跳动。交互预览才读取单份公开包并校验大小和 SHA-256，不访问分享 Worker 或 D1。
 - 领取仍重新请求现行分享码和私有下载接口：版本或规范变化要求再次确认；下架立即阻止领取。公开快照不承担实时撤回检查，目录和文件需等待事件任务完成及既有资源缓存过期；旧标签页可能继续显示已取到的内容，已下载副本不能收回。快照内容更新不需要重新部署前端。
 - 快照只降低浏览带来的动态后端压力，不等于零成本：R2 存储与读操作、CDN 流量以及作者提交/审核/领取仍有各自费用/配额。较多作品时需监控快照构建耗时及 Worker 子请求限额，再改增量队列；构建失败保留旧目录。
 
 ### 装扮库部署顺序
 
 1. 先建独立 R2 桶 `sullyos-beauty-catalog`，按本目录 `catalog-cors.json` 配置只读跨域。不要修改私有桶的公开状态。
-2. 将 `beauty-library.friedsully.com` 绑定到公共桶（或替换前端环境变量）。`catalog.json` 尊重 `public, no-cache, max-age=0, must-revalidate`，禁止用 CDN 强制 TTL 覆盖；`items/*` 可缓存 600 秒。禁止缓存授权 API。CORS 使用 `*`，不携带凭据。
+2. 把你自己的公共域名绑定到这个桶，并把该 https 地址写入 `VITE_BEAUTY_CATALOG_URL`。不要绑定或请求上游的装扮库域名。`catalog.json` 尊重 `public, no-cache, max-age=0, must-revalidate`，禁止用 CDN 强制 TTL 覆盖；`items/*` 可缓存 600 秒。禁止缓存授权 API。CORS 使用 `*`，不携带凭据。
 3. 先对 D1 应用 `0003` 迁移，再部署带 `CATALOG`、`CATALOG_REFRESH` 绑定及 `catalog-refresh-v1` SQLite Durable Object 迁移的 Worker。新版 Worker 依赖新字段，不能先部署 Worker 再迁移。
 4. 管理员点击「更新公开快照」初始化目录，核验公共域名 GET `/catalog.json` 的状态、CORS 和缓存头，再发布前端。旧作品不会自动入库；真实公开投稿由作者勾选后人工审核。
 5. 不要把管理员身份、密码、会话、待审文件或私人 Repo 放入公共桶。紧急撤回需同时清理公共对象与 CDN 缓存；分享码撤回接口已立即阻断新领取。
 
-回归：`pnpm vitest run utils/beautyCatalog.test.ts worker/beauty-share/src/catalog.test.ts utils/beautyShare.test.ts`。Worker 测试使用 Node 22.13+ 的 SQLite，执行真实迁移和审批 SQL，覆盖无授权/待审隔离、更新指针、取消公开、删除、封面权限、构建失败与并发撤回；不会接触远端数据库。
+回归：`.\node_modules\.bin\vitest.cmd run utils/beautyCatalog.test.ts worker/beauty-share/src/catalog.test.ts utils/beautyShare.test.ts`。Worker 测试使用 Node 22.13+ 的 SQLite，执行真实迁移和审批 SQL，覆盖无授权/待审隔离、更新指针、取消公开、删除、封面权限、构建失败与并发撤回；不会接触远端数据库。
 
 
 ### 作者修改使用协议
@@ -168,10 +170,9 @@ R2 与 D1 没有跨服务事务。一般写入失败会立即清理对象并归�
 
 前端首次打开聊天装扮会介绍装扮库；提交过作品的作者打开分享页面、取回已有投稿后，另外介绍公开展示与单条/批量协议修改。两类公告分别确认一次，确认记录随个人完整备份迁移。公告不自动修改作品授权，不在普通用户浏览时额外请求作者接口。
 
-- 已创建独立 `sullyos-beauty-catalog` 桶、绑定 `beauty-library.friedsully.com`、配置只读 CORS；`0003` 已应用。Worker 已改用审核事件触发的 Durable Object，一次性任务完成后不再唤醒；只保留每日私有数据清理 Cron。
-- 线上审核一批 5 份后自动生成目录，仅其中 1 份明确授权公开的作品进入目录，另外 4 份仍只凭码领取。任务完成且无错误。`catalog.json` 返回 200、`Cache-Control: public, no-cache, max-age=0, must-revalidate`；相同 ETag 条件请求返回 304。
-- **CDN 缓存规则尚未配置**：现有 Wrangler OAuth 对 Cache Rules API 返回权限错误，不能宣称 JSON 已命中 CDN。浏览不经过分享 Worker/D1。今后配置规则时，版本化 `items/*` 可缓存 600 秒，目录必须尊重重新验证响应头，不能强制旧目录缓存；不要匹配 `beauty.friedsully.com` 的授权 API。
-- 后端已先行部署，前端随 master 合并后的既有发布流程上线。Worker 部署版本 `9a108165-faf1-431c-bd53-a7fc3504936a`。
+- 装扮库要使用自己的公共桶和自己的域名。本公开版没有绑定上游装扮库，构建时也不填写目录地址。
+- 自己的目录上线后，核验 `catalog.json` 的状态、CORS 和 `Cache-Control`。未授权公开的作品不应进入目录。
+- 配置 CDN 时，版本化 `items/*` 可缓存 600 秒，目录必须尊重重新验证响应头。不要缓存授权 API，也不要指向上游美化域名。
 
 ### 外观分享范围与图床封面兼容（2026-10-12）
 

@@ -63,7 +63,9 @@ describe('renderRealtimeWorldBlock', () => {
     it('热点带来源与简介，并教一遍新闻卡片的写法', () => {
         const out = renderRealtimeWorldBlock({ news });
         expect(out).toContain('- 某某官宣（微博）：一句简介');
-        expect(out).toContain('[[NEWS_CARD: 来源|标题]]');
+        expect(out).toContain('[[NEWS_CARD: 实际来源|完整标题]]');
+        expect(out).toContain('就必须先单独输出一行');
+        expect(out).toContain('没有输出这个标签时，不要声称已经');
     });
 });
 

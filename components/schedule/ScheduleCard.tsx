@@ -8,6 +8,7 @@ import { resolveScheduleCardPalette } from '../../utils/scheduleAppearance';
 import ScheduleAppearanceButton, { ScheduleCustomCssStyle } from './ScheduleAppearanceButton';
 import TokenImg from '../os/TokenImg';
 import {homePositionLabel} from '../../utils/homeSchedule';
+import { amapPlaceUrl } from '../../utils/scheduleRealPlaces';
 
 import { putImageBlob } from '../../utils/blobRef';
 
@@ -65,6 +66,7 @@ export const ScheduleCardView: React.FC<ScheduleCardProps & {theme:OSTheme;previ
     const [editActivity, setEditActivity] = useState('');
     const [editDesc, setEditDesc] = useState('');
     const [editEmoji, setEditEmoji] = useState('');
+    const [editLocation, setEditLocation] = useState('');
     const [editHomePosition, setEditHomePosition] = useState('');
     const coverInputRef = useRef<HTMLInputElement>(null);
     const [coverUploadError, setCoverUploadError] = useState('');
@@ -120,17 +122,25 @@ export const ScheduleCardView: React.FC<ScheduleCardProps & {theme:OSTheme;previ
         setEditDesc(slot.description || '');
         setEditHomePosition(slot.homePosition?.kind === 'away' ? '__away' : slot.homePosition?.kind === 'home' ? slot.homePosition.roomId : '');
         setEditEmoji(slot.emoji || '');
+        setEditLocation(slot.location || '');
     };
 
     const saveEdit = () => {
         if (editingIdx !== null && onEdit) {
+            const prior = schedule?.slots[editingIdx];
+            const room = character?.home3D?.rooms.find(item => item.id === editHomePosition);
+            const location = room?.name || editLocation.trim() || (editHomePosition === '__away' ? '外出' : undefined);
             onEdit(editingIdx, {
                 startTime: editTime,
                 activity: editActivity,
                 description: editDesc || undefined,
                 emoji: editEmoji || undefined,
-                homePosition: editHomePosition === '__away' ? {kind: 'away'} : character?.home3D?.rooms.some(room => room.id === editHomePosition) ? {kind: 'home', roomId: editHomePosition} : undefined,
-                location: editHomePosition === '__away' ? '外出' : character?.home3D?.rooms.find(room => room.id === editHomePosition)?.name,
+                homePosition: editHomePosition === '__away' ? {kind: 'away'} : room ? {kind: 'home', roomId: editHomePosition} : undefined,
+                location,
+                ...(prior?.realPlace && !room && location === prior.realPlace.name
+                    && editActivity === prior.activity && editDesc === (prior.description || '')
+                    && editHomePosition === (prior.homePosition?.kind === 'away' ? '__away' : '')
+                    ? { realPlace: prior.realPlace } : {}),
             });
         }
         setEditingIdx(null);
@@ -305,6 +315,13 @@ export const ScheduleCardView: React.FC<ScheduleCardProps & {theme:OSTheme;previ
                                             placeholder="描述 (可选)"
                                             className="w-full bg-white/10 rounded-lg px-2 py-1 text-xs border border-white/10 focus:outline-none opacity-70"
                                         />
+                                        <input
+                                            aria-label="日程地点"
+                                            value={editLocation}
+                                            onChange={e => setEditLocation(e.target.value)}
+                                            placeholder="地点（可选；修改后移除真实认证）"
+                                            className="w-full bg-white/10 rounded-lg px-2 py-1 text-xs border border-white/10 focus:outline-none mt-2"
+                                        />
                                         {!!character?.home3D?.rooms.length && <select aria-label="日程所在房间" value={editHomePosition} onChange={event => setEditHomePosition(event.target.value)} className="w-full text-slate-800 bg-white rounded-lg px-2 py-2 text-xs mt-2"><option value="">位置待补全</option><option value="__away">外出</option>{character.home3D.rooms.map(room => <option key={room.id} value={room.id}>{room.name}</option>)}</select>}
                                         <div className="flex gap-2 mt-2">
                                             <button onClick={saveEdit} className="text-[10px] font-bold px-3 py-1 rounded-lg bg-white/20 hover:bg-white/30 transition-colors">保存</button>
@@ -315,6 +332,7 @@ export const ScheduleCardView: React.FC<ScheduleCardProps & {theme:OSTheme;previ
                             }
 
                             const editable = !compact && !!onEdit;
+                            const opensTheater = compact && !!onPlayTheater;
                             const pressHandlers = editable ? {
                                 onPointerDown: (e: React.PointerEvent) => {
                                     // 只对主指针（鼠标左键 / 触屏首指）起反应，忽略右键
@@ -334,13 +352,28 @@ export const ScheduleCardView: React.FC<ScheduleCardProps & {theme:OSTheme;previ
                                 },
                                 // 屏蔽原生长按右键菜单，避免与自定义长按冲突
                                 onContextMenu: (e: React.MouseEvent) => e.preventDefault(),
+                            } : opensTheater ? {
+                                onClick: () => {
+                                    if (isFuture) { showLockedHint(idx); return; }
+                                    onPlayTheater(idx);
+                                },
+                                onKeyDown: (e: React.KeyboardEvent) => {
+                                    if (e.key !== 'Enter' && e.key !== ' ') return;
+                                    e.preventDefault();
+                                    if (isFuture) { showLockedHint(idx); return; }
+                                    onPlayTheater(idx);
+                                },
                             } : {};
                             return (
                                 <div
                                     key={idx}
+                                    data-testid={`schedule-slot-${idx}`}
+                                    role={opensTheater ? 'button' : undefined}
+                                    tabIndex={opensTheater ? 0 : undefined}
+                                    aria-label={opensTheater ? (isFuture ? `${slot.activity}还没开始` : `查看${slot.activity}的具体时间段`) : undefined}
                                     className={`sully-schedule-item ${isCurrent ? 'sully-schedule-item-current' : ''} relative flex items-start gap-3 py-2 px-3 rounded-xl transition-all ${
                                         isCurrent ? 'border' : 'border border-transparent'
-                                    } ${editable ? 'cursor-pointer hover:bg-white/5 select-none' : ''}`}
+                                    } ${editable || opensTheater ? 'cursor-pointer hover:bg-white/5 select-none' : ''}`}
                                     style={isCurrent ? { background: accentBg, borderColor: palette.line } : {}}
                                     {...pressHandlers}
                                 >
@@ -376,7 +409,13 @@ export const ScheduleCardView: React.FC<ScheduleCardProps & {theme:OSTheme;previ
                                             {slot.emoji && <span className="text-sm flex-shrink-0">{slot.emoji}</span>}
                                             <span className="sully-schedule-activity text-sm font-bold">{slot.activity}</span>
                                         </div>
-                                        {slot.homePosition && <p className="text-[11px] opacity-60 mt-1">{homePositionLabel(slot, character)}</p>}
+                                        {(slot.homePosition || slot.location) && <p className="text-[11px] opacity-60 mt-1 break-words">{slot.homePosition ? homePositionLabel(slot, character) : slot.location}</p>}
+                                        {slot.realPlace && amapPlaceUrl(slot.realPlace) && <a
+                                            href={amapPlaceUrl(slot.realPlace)} target="_blank" rel="noopener noreferrer"
+                                            aria-label={`高德查看${slot.realPlace.name}`}
+                                            className="inline-flex mt-1 rounded-full bg-white/10 px-2 py-1 text-[10px] leading-none"
+                                            onPointerDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}
+                                        >⌖ 高德地点</a>}
                                         {slot.description && (
                                             <p className="sully-schedule-description text-[11px] opacity-50 mt-0.5 leading-tight">{slot.description}</p>
                                         )}
@@ -384,9 +423,12 @@ export const ScheduleCardView: React.FC<ScheduleCardProps & {theme:OSTheme;previ
 
                                     {/* 小剧场播放按钮：全程都在，已过去/正在进行的可点（▶ 生成 / ↻ 重看）；
                                         还没到的时段灰着，点了冒个「还没到这个时间哦」的小提示。 */}
-                                    {!compact && onPlayTheater && (
+                                    {onPlayTheater && (
                                         <div className="relative flex-shrink-0 mt-0.5">
                                             <button
+                                                type="button"
+                                                data-testid={`schedule-theater-${idx}`}
+                                                aria-label={isFuture ? `${slot.activity}还没开始` : `${slot.theater ? '重看' : '查看'}${slot.activity}的小剧场`}
                                                 className={`w-7 h-7 rounded-full flex items-center justify-center text-xs transition-all ${isFuture ? 'cursor-not-allowed' : 'active:scale-90'}`}
                                                 style={{
                                                     background: isFuture ? 'color-mix(in srgb, var(--schedule-text) 6%, transparent)' : (slot.theater ? accentHsl : 'color-mix(in srgb, var(--schedule-text) 12%, transparent)'),

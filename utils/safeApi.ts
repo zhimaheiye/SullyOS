@@ -14,6 +14,7 @@ import { appendDevDebugApiLog, makeDebugLogger } from './devDebug';
 import { getApiCallAmbientContext, recordApiCall, type ApiCallMeta } from './apiCallLog';
 import { resolveBlobRefsInRequestBody } from './apiBlobRefs';
 import { waitForPalaceRequest } from './memoryPalace/maintenanceMode';
+import { isManualRelayCompletionUrl, maybeInterceptTextCompletion } from './manualModelRelay';
 
 const log = makeDebugLogger('api', 'SafeAPI');
 
@@ -367,7 +368,29 @@ export async function safeFetchJson(
     meta?: ApiCallMeta,
     /** 可选：流式增量回调（请求体带 stream:true 时传入才有意义；响应不是 SSE 时静默不触发）。 */
     streamHooks?: StreamHooks,
+    /** Read-only request timing hooks; never include response contents or credentials. */
+    observation?: { requestId?: string; onHeaders?: (status: number) => void; onBody?: (status: number) => void; privateTransient?: boolean },
 ): Promise<any> {
+    if (isManualRelayCompletionUrl(String(url)) && options.method?.toUpperCase() === 'POST' && typeof options.body === 'string') {
+        let relayBody: unknown;
+        try { relayBody = JSON.parse(options.body); } catch { /* leave malformed requests to the existing path */ }
+        const manual = maybeInterceptTextCompletion({ body: relayBody, meta, signal: options.signal || undefined, priority: meta?.relayPriority });
+        if (manual) {
+            const result = await manual;
+            const content = result.choices[0].message.content as string;
+            streamHooks?.onFirstDelta?.();
+            streamHooks?.onDelta?.(content, content);
+            return result;
+        }
+    }
+    if (meta?.featureId) {
+        const { isMarkedFeatureApiId, routeMarkedFeatureRequest } = await import('./featureApi');
+        if (isMarkedFeatureApiId(meta.featureId)) {
+            const routed = routeMarkedFeatureRequest(meta.featureId, url, options);
+            url = routed.url;
+            options = routed.options;
+        }
+    }
     const retryableStatuses = new Set([429, 500, 502, 503, 504]);
     let lastError: Error | null = null;
     const urlStr = String(url);
@@ -378,13 +401,13 @@ export async function safeFetchJson(
 
     // 显式 meta 挂到 RequestInit 给全局 fetch 兜底；同时快照环境标签，避免长响应期间
     // 用户切 App 后被错标。safeFetchJson 与全局拦截器以 requestId 原子去重。
-    const metaOptions: RequestInit = meta ? { ...options, __sullyMeta: meta } as RequestInit : options;
+    const metaOptions: RequestInit = { ...options, ...(meta ? { __sullyMeta: meta } : {}), ...(observation?.privateTransient ? { __sullyPrivateTransient: true } : {}) } as RequestInit;
     const logMeta = meta || getApiCallAmbientContext();
 
     // 图片在本机存成 `blobref:` 令牌，发出去对面读不懂——在这里统一还原成 data URL。
     // 各处构造请求的地方就不用各记一遍这件事了（详见 utils/apiBlobRefs.ts）。
     // 循环外做一次：重试用的是同一份 body。
-    const resolvedBody = await resolveBlobRefsInRequestBody(metaOptions.body);
+    const resolvedBody = observation?.privateTransient ? metaOptions.body : await resolveBlobRefsInRequestBody(metaOptions.body);
     const sendOptions: RequestInit = resolvedBody === metaOptions.body
         ? metaOptions
         : { ...metaOptions, body: resolvedBody as BodyInit };
@@ -393,7 +416,7 @@ export async function safeFetchJson(
         if (meta?.appName === '记忆宫殿') await waitForPalaceRequest(options.signal ?? undefined);
         // 全局 fetch 拦截器和这里的“已解析响应兜底”共享 ID。前者覆盖裸 fetch，
         // 后者不依赖 Response.clone()，避免部分 iOS/WebView 克隆流不结束时漏记。
-        const requestId = `api-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+        const requestId = observation?.requestId || `api-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
         // 每次 attempt 建一个独立的 AbortController（仅用于 timeout）
         // 调用方自己的 options.signal 仍然有效，两者任一触发就 abort
         let attemptOptions = { ...sendOptions, __sullyApiCallId: requestId } as RequestInit;
@@ -416,6 +439,7 @@ export async function safeFetchJson(
             const response = await fetch(url, attemptOptions);
             if (timeoutHandle) clearTimeout(timeoutHandle);
             lastStatus = response.status;
+            try { observation?.onHeaders?.(response.status); } catch { /* diagnostics must not affect requests */ }
             const headersMs = Date.now() - attemptStartedAt;
 
             if (!response.ok) {
@@ -428,8 +452,9 @@ export async function safeFetchJson(
                 }
                 // Non-retryable or last attempt: parse body for error details
                 const data = await safeResponseJson(response);
+                try { observation?.onBody?.(response.status); } catch { /* diagnostics must not affect requests */ }
                 // If we somehow got valid JSON with error info, wrap it
-                const errMsg = data?.error?.message || data?.error || `HTTP ${response.status}`;
+                const errMsg = data?.error?.message || data?.error || (typeof data?.detail === 'string' ? data.detail : '') || `HTTP ${response.status}`;
                 throw new Error(`API Error ${response.status}: ${errMsg}`);
             }
 
@@ -437,13 +462,14 @@ export async function safeFetchJson(
             const data = streamHooks
                 ? await readBodyWithStreaming(response, streamHooks, timing, attemptStartedAt)
                 : await safeResponseJson(response);
+            try { observation?.onBody?.(response.status); } catch { /* diagnostics must not affect requests */ }
             if (isChatCompletionUrl(urlStr)) {
                 // TTFT 拆分埋点：headers = 首包响应头到达（≈排队+prefill 起点），
                 // firstDelta = 第一段正文增量（≈真正的 TTFT，仅流式路径有），
                 // total = 整包收完。定位「API 慢 20s」到底慢在 prefill 还是生成。
                 const totalMs = Date.now() - attemptStartedAt;
                 console.log(`⏱ [API timing] headers=${headersMs}ms${timing.firstDeltaMs != null ? ` firstDelta=${timing.firstDeltaMs}ms` : ''} total=${totalMs}ms${streamHooks ? ' streamed=1' : ''}`);
-                appendDevDebugApiLog({
+                if (!observation?.privateTransient) appendDevDebugApiLog({
                     url: urlStr,
                     method: options.method,
                     status: response.status,
@@ -455,7 +481,7 @@ export async function safeFetchJson(
                 });
                 // 已解析响应是最可靠的日志来源：不再把记账成败押在异步
                 // response.clone().text() 上。全局拦截器仍负责裸 fetch，并以 requestId 去重。
-                recordApiCall({
+                if (!observation?.privateTransient) recordApiCall({
                     requestId,
                     url: urlStr,
                     body: attemptOptions.body,
@@ -491,7 +517,7 @@ export async function safeFetchJson(
             }
 
             if (isChatCompletionUrl(urlStr)) {
-                appendDevDebugApiLog({
+                if (!observation?.privateTransient) appendDevDebugApiLog({
                     url: urlStr,
                     method: options.method,
                     status: lastStatus,
@@ -507,35 +533,46 @@ export async function safeFetchJson(
     throw lastError || new Error('API请求失败');
 }
 
+const responseValueToText = (value: unknown): string => {
+    if (typeof value === 'string') return value;
+    if (Array.isArray(value)) {
+        return value.map(part => {
+            if (typeof part === 'string') return part;
+            if (!part || typeof part !== 'object') return '';
+            const record = part as Record<string, unknown>;
+            return responseValueToText(record.text ?? record.content ?? record.value ?? record.thinking);
+        }).filter(Boolean).join('');
+    }
+    if (value && typeof value === 'object') {
+        const record = value as Record<string, unknown>;
+        return responseValueToText(record.text ?? record.content ?? record.value ?? record.thinking);
+    }
+    return '';
+};
+
+/** Read the three reasoning field names used by OpenAI-compatible providers. */
+export function extractReasoningContent(data: any): string {
+    const message = data?.choices?.[0]?.message ?? data;
+    for (const candidate of [message?.reasoning_content, message?.reasoning, message?.thinking]) {
+        const text = responseValueToText(candidate).trim();
+        if (text) return text;
+    }
+    return '';
+}
+
 /**
  * Safely extract the AI content string from an OpenAI-compatible response.
  * Returns '' instead of crashing when the structure is unexpected.
  *
  * Handles thinking models (DeepSeek-R1, GLM-4.5, QwQ, Qwen3, ...):
- *  - Falls back to `reasoning_content` when `content` is missing/empty
+ *  - Falls back to `reasoning_content` / `reasoning` / `thinking` when content is empty
  *  - Strips hidden <think>...</think> chain-of-thought blocks
  */
 export function extractContent(data: any): string {
     const msg = data?.choices?.[0]?.message;
-    const contentToText = (value: unknown): string => {
-        if (typeof value === 'string') return value;
-        if (Array.isArray(value)) {
-            return value.map(part => {
-                if (typeof part === 'string') return part;
-                if (!part || typeof part !== 'object') return '';
-                const record = part as Record<string, unknown>;
-                return contentToText(record.text ?? record.content ?? record.value);
-            }).filter(Boolean).join('');
-        }
-        if (value && typeof value === 'object') {
-            const record = value as Record<string, unknown>;
-            return contentToText(record.text ?? record.content ?? record.value);
-        }
-        return '';
-    };
 
-    let text = contentToText(msg?.content);
-    if (!text.trim()) text = contentToText(msg?.reasoning_content);
+    let text = responseValueToText(msg?.content);
+    if (!text.trim()) text = extractReasoningContent(data);
     // Strip hidden chain-of-thought blocks: <think> / <thinking> / <thought>
     text = text.replace(/<(think|thinking|thought)>[\s\S]*?<\/\1>/gi, '');
     text = text.replace(/<(?:think|thinking|thought)>[\s\S]*$/gi, '');

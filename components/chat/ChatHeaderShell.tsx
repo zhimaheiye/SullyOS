@@ -25,8 +25,9 @@ interface ChatHeaderShellProps {
     isSummarizing: boolean;
     /** 覆盖状态区的 "Online" 文案（群聊传 "N 成员"）。不传 = 原行为 */
     statusText?: string;
+    hideStatus?: boolean;
     /** 可选的附加操作，群聊用来放置“记忆规则”帮助入口。 */
-    extraAction?: { label: string; icon: React.ReactNode; onClick: () => void };
+    extraAction?: { label: string; icon: React.ReactNode; onClick: () => void; tone?: 'default' | 'action' };
     /** 触发按钮图标：生成中想显示"停止"时传 'stop'。不传 = 原行为（闪电） */
     triggerIcon?: 'lightning' | 'stop';
     /** 私聊启用底部生成入口时隐藏顶栏闪电。 */
@@ -83,6 +84,7 @@ const ChatHeaderShell: React.FC<ChatHeaderShellProps> = ({
     onShowCharsPanel,
     onDeleteBuff,
     statusText,
+    hideStatus = false,
     extraAction,
     triggerIcon = 'lightning',
     hideTrigger = false,
@@ -253,9 +255,10 @@ const ChatHeaderShell: React.FC<ChatHeaderShellProps> = ({
         : isPixelHeader
           ? 'text-[#fff7ed] hover:bg-[#f8f0e0]/20 rounded-[4px] border-2 border-[#8f674a] bg-[#f8f0e0]/10'
           : 'text-indigo-500 hover:bg-indigo-50 rounded-full';
+    const extraActionButtonClass = extraAction?.tone === 'action' ? `sully-chat-trigger ${actionButtonClass}` : iconButtonClass;
 
     // 在线状态由独立的外观设置决定，头部风格不能覆盖它。
-    const onlineStatusNode = statusStyle === 'pill' ? (
+    const onlineStatusNode = hideStatus ? null : statusStyle === 'pill' ? (
             <div className={`text-[9px] px-1.5 py-0.5 rounded-full font-semibold border ${isDarkHeader ? 'bg-emerald-500/20 text-emerald-200 border-emerald-400/20' : isPixelHeader ? 'bg-[#fff7ed] text-[#8f674a] border-[#8f674a]/25' : 'bg-emerald-50 text-emerald-500 border-emerald-100'}`}>
                 {statusText ?? 'online'}
             </div>
@@ -423,11 +426,11 @@ const ChatHeaderShell: React.FC<ChatHeaderShellProps> = ({
                         {renderCenteredInfo()}
                     </div>
 
-                    {!hideTrigger && <button data-guide="generate" onClick={onTriggerAI} className={`sully-chat-trigger absolute right-0 bottom-2 p-2 ${actionButtonClass}`} title={triggerIcon === 'stop' ? '停止生成' : '触发 AI'}>
+                    {!hideTrigger && <button data-guide="generate" data-manual-relay-action={triggerIcon === 'stop' ? undefined : true} onClick={onTriggerAI} className={`sully-chat-trigger absolute right-0 bottom-2 p-2 ${actionButtonClass}`} title={triggerIcon === 'stop' ? '停止生成' : '触发 AI'}>
                         {triggerIconNode}
                     </button>}
                     {extraAction && (
-                        <button onClick={extraAction.onClick} className={`absolute right-10 bottom-2 p-2 ${iconButtonClass}`} title={extraAction.label} aria-label={extraAction.label}>
+                        <button onClick={extraAction.onClick} className={`absolute right-10 bottom-2 p-2 ${extraActionButtonClass}`} title={extraAction.label} aria-label={extraAction.label}>
                             {extraAction.icon}
                         </button>
                     )}
@@ -444,11 +447,11 @@ const ChatHeaderShell: React.FC<ChatHeaderShellProps> = ({
                     </div>
 
                     {extraAction && (
-                        <button onClick={extraAction.onClick} className={`p-2 ml-auto ${iconButtonClass}`} title={extraAction.label} aria-label={extraAction.label}>
+                        <button onClick={extraAction.onClick} className={`p-2 ml-auto ${extraActionButtonClass}`} title={extraAction.label} aria-label={extraAction.label}>
                             {extraAction.icon}
                         </button>
                     )}
-                    {!hideTrigger && <button data-guide="generate" onClick={onTriggerAI} className={`sully-chat-trigger p-2 ${extraAction ? '' : 'ml-auto'} ${actionButtonClass}`} title={triggerIcon === 'stop' ? '停止生成' : '触发 AI'}>
+                    {!hideTrigger && <button data-guide="generate" data-manual-relay-action={triggerIcon === 'stop' ? undefined : true} onClick={onTriggerAI} className={`sully-chat-trigger p-2 ${extraAction ? '' : 'ml-auto'} ${actionButtonClass}`} title={triggerIcon === 'stop' ? '停止生成' : '触发 AI'}>
                         {triggerIconNode}
                     </button>}
                 </div>

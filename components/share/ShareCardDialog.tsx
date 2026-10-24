@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { embedShareInPng, MAX_SHARE_BYTES, safeShareFileName, SHARE_KINDS, type ShareCardMetadata, type ShareCardOptions, type ShareCardStyle } from '../../utils/pngShare';
 import { canvasToPng, loadCardImage, renderShareCard } from '../../utils/shareCardCanvas';
-import { fetchBlobForShare, shareOrDownloadBlob, type ShareOrDownloadBlobOptions } from '../../utils/shareExport';
+import { BROWSER_SHARE_FILE_LIMIT, downloadBlobLocally, fetchBlobForShare, isDesktopWeb, shareOrDownloadBlob, type ShareOrDownloadBlobOptions } from '../../utils/shareExport';
 import './shareCard.css';
 
 type Result = 'shared' | 'downloaded' | 'cancelled';
@@ -33,6 +33,7 @@ function ShareCardDialog({ options, card, onDone }: Props) {
     const [renderError, setRenderError] = useState('');
     const [settingsOpen, setSettingsOpen] = useState(false);
     const [settingsTab, setSettingsTab] = useState<'style' | 'text'>('style');
+    const [manualDownload, setManualDownload] = useState<{ blob: Blob; fileName: string } | null>(null);
     const tooLarge = options.blob.size > MAX_SHARE_BYTES;
     const design = { kind: card.kind, title, author, restrictions, style };
 
@@ -114,7 +115,7 @@ function ShareCardDialog({ options, card, onDone }: Props) {
 
     const save = async (asPng: boolean) => {
         if (working.current) return;
-        working.current = true; setBusy(true); setError('');
+        working.current = true; setBusy(true); setError(''); setManualDownload(null);
         try {
             let blob = options.blob;
             let fileName = safeShareFileName(options.fileName);
@@ -128,10 +129,26 @@ function ShareCardDialog({ options, card, onDone }: Props) {
                 blob = new Blob([new Uint8Array(bytes).buffer], { type: 'image/png' });
                 fileName = `${safeShareFileName(title)}.sully.png`;
             }
-            const result = await shareOrDownloadBlob({ ...options, card: undefined, blob, fileName, nativeChunked: true });
+            // 先记下最终文件：分享失败时用户可直接手动下载，不必重新渲染。
+            setManualDownload({ blob, fileName });
+            // 桌面网页不拉系统分享面板——Windows 上面板一拉起 promise 就 resolve，失败无法感知；
+            // 最终文件超过 Chromium 单文件分享上限时同样直接下载，避免必然失败的面板。
+            const preferDownload = isDesktopWeb() || blob.size > BROWSER_SHARE_FILE_LIMIT;
+            const result = await shareOrDownloadBlob({ ...options, card: undefined, blob, fileName, nativeChunked: true, preferDownloadOnWeb: preferDownload });
             if (result !== 'cancelled') onDone(result);
         } catch (e) {
             if (mounted.current) setError((e as Error).message || '导出失败，请重试');
+        } finally { working.current = false; if (mounted.current) setBusy(false); }
+    };
+
+    const downloadManually = async () => {
+        if (!manualDownload || working.current) return;
+        working.current = true; setBusy(true); setError('');
+        try {
+            await downloadBlobLocally(manualDownload.blob, manualDownload.fileName);
+            onDone('downloaded');
+        } catch (e) {
+            if (mounted.current) setError((e as Error).message || '下载失败，请重试');
         } finally { working.current = false; if (mounted.current) setBusy(false); }
     };
     return <dialog ref={dialog} className="sully-share-dialog" aria-labelledby="sully-share-heading"
@@ -181,7 +198,9 @@ function ShareCardDialog({ options, card, onDone }: Props) {
             </fieldset>
             </section>
         </div>
-        {(tooLarge || error || renderError) && <p role="alert" className="sully-share-status sully-share-error">{error || renderError || '内容超过 64 MB，请使用原格式导出。'}</p>}
+        {(tooLarge || error || renderError) && <p role="alert" className="sully-share-status sully-share-error">{error || renderError || '内容超过 64 MB，请使用原格式导出。'}
+            {error && manualDownload && <button type="button" className="sully-share-fallback-download" disabled={busy} onClick={() => void downloadManually()}>保存到本地</button>}
+        </p>}
         <footer className="sully-share-footer"><button type="button" disabled={busy} onClick={() => void save(false)}>导出原格式</button>
             <button type="button" className="sully-share-primary" disabled={busy || loadingImage || !title.trim() || tooLarge || !!renderError} onClick={() => void save(true)}>{busy ? '正在导出…' : '导出 PNG 分享图'}</button></footer>
     </dialog>;

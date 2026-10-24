@@ -13,7 +13,7 @@ import React, {
 } from 'react';
 import { cachedCall as _cachedCall, invalidate as _invalidateCache, clearAll as _clearAllCache } from '../utils/musicCache';
 import { DB } from '../utils/db';
-import { getProxyWorkerUrl, DEFAULT_PROXY_WORKER, PROXY_WORKER_CHANGED_EVENT, isLegacyProxyWorkerUrl } from '../utils/proxyWorker';
+import { getProxyWorkerUrl, PROXY_WORKER_CHANGED_EVENT, PROXY_WORKER_UNCONFIGURED_MESSAGE, isAuthorProxyWorkerUrl } from '../utils/proxyWorker';
 import type { PostProcessMusicHooks } from '../utils/applyAssistantPostProcessing';
 import { resolveRefToDataUrl } from '../utils/blobRef';
 
@@ -104,21 +104,22 @@ const normalizeHost = (u: string): string => (u || '').trim().replace(/\/+$/, ''
 export const resolveMusicWorkerUrl = (
   cfg?: Pick<MusicCfg, 'workerUrl'> | null,
   central?: string,
-): string => normalizeHost(cfg?.workerUrl || '') || normalizeHost(central || '') || getProxyWorkerUrl();
+): string => {
+  const own = normalizeHost(cfg?.workerUrl || '');
+  if (own && !isAuthorProxyWorkerUrl(own)) return own;
+  const center = normalizeHost(central || '') || getProxyWorkerUrl();
+  if (!center || isAuthorProxyWorkerUrl(center)) return '';
+  return center;
+};
 
-// 存量迁移：把"其实是跟着中心走"的地址收敛成空串（= 跟随）。命中三种：
-//   1. 已死的两个历史公共实例（sully-n.qegj567.workers.dev 国内超时、
-//      sullymeow.ccwu213.cc 域名注册过期，2026-07 起 DNS 都解析不到）；
-//   2. 当前的公共默认实例；
-//   3. 跟当前中心地址一模一样的——老版本会把中心地址抄一份存进音乐配置。
-// 只有跟以上都不同的地址才原样保留。读到需要改写时落盘一次。
+// 存量迁移：把「其实是跟着中心走」或「还指着作者公共实例」的地址收敛成空串。
+// 只有玩家单独填写、且不是作者公共地址的值才原样保留。
 const migrateWorkerUrl = (url: string | undefined): string => {
   const own = normalizeHost(url || '');
   if (!own) return '';
-  const lower = own.toLowerCase();
-  if (lower === normalizeHost(DEFAULT_PROXY_WORKER).toLowerCase()) return '';
-  if (lower === normalizeHost(getProxyWorkerUrl()).toLowerCase()) return '';
-  if (isLegacyProxyWorkerUrl(own)) return '';
+  if (isAuthorProxyWorkerUrl(own)) return '';
+  const center = normalizeHost(getProxyWorkerUrl());
+  if (center && own.toLowerCase() === center.toLowerCase()) return '';
   return own;
 };
 
@@ -192,7 +193,10 @@ const loadState = (): { queue: Song[]; idx: number } => {
 };
 
 const saveState = (queue: Song[], idx: number) => {
-  try { localStorage.setItem(LS_STATE_KEY, JSON.stringify({ queue, idx })); } catch {}
+  try {
+    if (queue.length === 0 && idx === -1 && !localStorage.getItem(LS_STATE_KEY)) return;
+    localStorage.setItem(LS_STATE_KEY, JSON.stringify({ queue, idx }));
+  } catch {}
 };
 
 export const parseLyric = (txt: string): LyricLine[] => {
@@ -236,7 +240,9 @@ export const musicApi = {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     const cookie = normalizeCookie(cfg.cookie);
     if (cookie) headers['X-Netease-Cookie'] = cookie;
-    const url = `${resolveMusicWorkerUrl(cfg)}/netease${path.startsWith('/') ? path : '/' + path}`;
+    const base = resolveMusicWorkerUrl(cfg);
+    if (!base) throw new Error(PROXY_WORKER_UNCONFIGURED_MESSAGE);
+    const url = `${base}/netease${path.startsWith('/') ? path : '/' + path}`;
     const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body || {}) });
     const j = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(j?.error || j?.message || `HTTP ${res.status}`);
@@ -459,6 +465,25 @@ export const MusicProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   // 队列持久化
   useEffect(() => { saveState(queue, idx); }, [queue, idx]);
+
+  // 响应 localStorage 镜像自愈（lsMirror 回填后派发 storage 事件）或跨标签页同步
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === null || e.key === LS_CFG_KEY) {
+        setCfgState(loadCfg());
+      }
+      if (e.key === null || e.key === LS_STATE_KEY) {
+        const nextState = loadState();
+        setQueueState(nextState.queue);
+        setIdx(nextState.idx);
+      }
+      if (e.key === null || e.key === LS_LOCAL_ALBUM_KEY) {
+        setLocalAlbumSongs(loadLocalAlbum());
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
 
   // 播放
   const audioRef = useRef<HTMLAudioElement | null>(null);

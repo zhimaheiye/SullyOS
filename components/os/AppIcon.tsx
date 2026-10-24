@@ -126,9 +126,8 @@ const AppIcon: React.FC<AppIconProps> = React.memo(({ app, onClick, size = 'md',
     </button>
   );
 }, (prev, next) => {
-    // Custom comparison to prevent re-render unless specific props change
-    // We don't check 'onClick' deeply assuming it's stable or we want to ignore function ref changes
     return prev.app.id === next.app.id && 
+           prev.onClick === next.onClick &&
            prev.size === next.size && 
            prev.hideLabel === next.hideLabel &&
            prev.variant === next.variant;

@@ -78,7 +78,7 @@ const EmotionSettingsPanel: React.FC<EmotionSettingsPanelProps> = ({
                         原版情绪 buff 就在这里。与日程<b>强制同步</b>：日程开 → 自动启用；日程关 → 一起停。
                     </p>
                     <p className="text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">
-                        ⚙️ 下方不填 = 自动用主 API。想细腻点就填个 <b>Claude 系列</b>模型。
+                        ⚙️ 下方是当前角色的专属覆盖。留空并保存后会使用「系统设置 → 副 API 管理」中的情绪配置；该功能继续沿用原有来源时才使用主 API。
                     </p>
                 </div>
             </div>

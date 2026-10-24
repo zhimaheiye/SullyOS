@@ -444,6 +444,7 @@ const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
                     </div>
                 </Section>
 
+
                 <Section title="背景 (Background)">
                     <div 
                         onClick={() => triggerUpload('bg')}

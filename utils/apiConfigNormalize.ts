@@ -17,9 +17,10 @@ export const normalizeApiModel = (value: unknown): string =>
   cleanEdgeCharacters(value);
 
 export function normalizeApiConfig(config: APIConfig): APIConfig {
+  const { imageGeneration: _removedImageApi, ...supported } = config as APIConfig & { imageGeneration?: unknown };
   const visionApi = config.visionApi;
   return {
-    ...config,
+    ...supported,
     baseUrl: normalizeApiBaseUrl(config.baseUrl),
     apiKey: normalizeApiCredential(config.apiKey),
     model: normalizeApiModel(config.model),

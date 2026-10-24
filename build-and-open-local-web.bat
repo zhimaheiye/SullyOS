@@ -2,29 +2,45 @@
 setlocal
 cd /d "%~dp0"
 
-set "NODE_EXE=C:\Program Files\nodejs\node.exe"
-if not exist "%NODE_EXE%" (
-  echo Node.js not found: %NODE_EXE%
+where node >nul 2>nul
+if errorlevel 1 (
+  echo Node.js is required to build this workspace.
   pause
   exit /b 1
 )
 
-if not exist "node_modules" (
-  echo Installing dependencies for the first time...
-  call npm install --cache .npm-cache
+if not exist "node_modules\.bin\vite.cmd" (
+  echo Installing dependencies in %CD% ...
+  call pnpm install --frozen-lockfile --ignore-scripts
   if errorlevel 1 (
-    echo npm install failed.
+    echo Dependency installation failed.
     pause
     exit /b 1
   )
 )
 
-echo Building project...
-call npm run build
+node scripts\build-chat-preview-css.mjs
+if errorlevel 1 (
+  echo Chat styles could not be prepared.
+  pause
+  exit /b 1
+)
+
+call "node_modules\.bin\vite.cmd" build
 if errorlevel 1 (
   echo Build failed.
   pause
   exit /b 1
 )
 
-call "%~dp0open-local-web.bat"
+set "HOST=127.0.0.1"
+set "PORT=4183"
+echo Serving this workspace from %CD%
+echo Address: http://127.0.0.1:4183/
+echo This address has its own browser data, separate from ports 5173 and 4173.
+node scripts\local-static-server.cjs dist --open
+if errorlevel 1 (
+  echo Preview failed. If port 4183 is occupied, close its window and try again.
+  pause
+  exit /b 1
+)

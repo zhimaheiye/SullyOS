@@ -1,0 +1,26 @@
+# 待公开版的公共网络代理。
+#
+# 2026-10-20 已首次部署为新建 Worker。地址：
+#   https://zhima-public-proxy.sullyos-sxy10.workers.dev
+# 前端默认值写在 utils/proxyWorker.ts 的 PUBLISHER_PUBLIC_PROXY_URL。
+# 不要把这份配置部署到正在运行的私人服务上。付费变更和改现有资源前先确认。
+#
+# 名字必须和同一 Cloudflare 账号里已有的 Worker 错开：
+#   instant-push、proactive-push、sullyos-amsg、damp-dust-153a、sullyos-sfworker、sullyos-mcp-proxy
+# 这里用 zhima-public-proxy。不绑自定义域名，不建 D1，不挂定时任务。
+# 不要把原作者的代理地址填进去。
+#
+# 在 worker 目录执行（先登录你自己的 Cloudflare 账号）：
+#   npx wrangler deploy --config wrangler.public-proxy.toml
+#
+# 可选密钥，确认费用后再设。当前都还没设。密钥只放在 Cloudflare，不要写进前端或这个文件：
+#   npx wrangler secret put BRAVE_API_KEY --config wrangler.public-proxy.toml
+#   npx wrangler secret put JINA_API_KEY --config wrangler.public-proxy.toml
+# 不要设置 XHS_COOKIE。玩家的小红书登录不能放到这台公共代理上。
+
+name = "zhima-public-proxy"
+main = "index.js"
+compatibility_date = "2026-06-14"
+
+[observability]
+enabled = true

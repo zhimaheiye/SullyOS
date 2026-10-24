@@ -7,7 +7,10 @@ import { useStreamingVoice } from '../hooks/useStreamingVoice';
 import type { APIConfig, CharacterProfile } from '../types';
 import { DB } from './db';
 vi.mock('./db', () => ({ DB: { getAssetRaw: vi.fn(async () => null), saveAssetRaw: vi.fn(async () => {}) } }));
-vi.mock('./proxyWorker', () => ({ getProxyWorkerUrl: () => 'https://proxy.example.test' }));
+vi.mock('./proxyWorker', () => ({
+  getProxyWorkerUrl: () => 'https://proxy.example.test',
+  requireProxyWorkerUrl: () => 'https://proxy.example.test',
+}));
 const char = { id: 'a', voiceProfile: { elevenLabsVoiceId: 'voice_abcdefgh' } } as CharacterProfile;
 const config = { elevenLabsApiKey: 'test-only', elevenLabsModel: 'eleven_v4' } as APIConfig;
 const frame = JSON.stringify({ audio_base64: btoa(String.fromCharCode(...new Uint8Array(4800))), alignment: { characters: ['你'], character_start_times_seconds: [0], character_end_times_seconds: [.1] } }) + '\n';

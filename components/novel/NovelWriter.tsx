@@ -5,7 +5,8 @@ import { NovelBook, NovelSegment, CharacterProfile, UserProfile } from '../../ty
 import {
     NOVEL_THEMES, GenerationOptions, extractWritingTags,
     analyzeWriterPersonaSimple, generateWriterPersonaDeep,
-    buildPrompt, parsePersonaMarkdown
+    buildNovelInteractionContext, buildPrompt, createUserNovelSegment,
+    hasSelectedGenerationTask, parsePersonaMarkdown
 } from '../../utils/novelUtils';
 import Modal from '../os/Modal';
 import ConfirmDialog from '../os/ConfirmDialog';
@@ -34,7 +35,6 @@ interface NovelWriterProps {
 // Moving this outside ensures React doesn't re-mount it on every render of parent, preserving scroll state.
 interface PersonaPanelProps {
     char: CharacterProfile;
-    userProfile: UserProfile;
     targetCharId: string | null;
     isTyping: boolean;
     setIsTyping: (v: boolean) => void;
@@ -45,7 +45,7 @@ interface PersonaPanelProps {
 }
 
 const PersonaPanel: React.FC<PersonaPanelProps> = ({
-    char, userProfile, targetCharId, isTyping, setIsTyping, setConfirmDialog, addToast, apiConfig, updateCharacter
+    char, targetCharId, isTyping, setIsTyping, setConfirmDialog, addToast, apiConfig, updateCharacter
 }) => {
     const rawPersona = char.writerPersona || analyzeWriterPersonaSimple(char);
     const sections = parsePersonaMarkdown(rawPersona);
@@ -104,7 +104,7 @@ const PersonaPanel: React.FC<PersonaPanelProps> = ({
                             addToast('正在分析...', 'info'); 
                             setIsTyping(true); 
                             try { 
-                                await generateWriterPersonaDeep(char, userProfile, apiConfig, updateCharacter, true); 
+                                await generateWriterPersonaDeep(char, apiConfig, updateCharacter, true);
                                 addToast('风格已更新', 'success'); 
                             } catch (e) { 
                                 addToast(e instanceof Error ? e.message : '分析失败，请重试', 'error');
@@ -172,7 +172,8 @@ const NovelWriter: React.FC<NovelWriterProps> = ({
 
     const chapterCount = useMemo(() => segments.filter(s => s.focus === 'chapter_summary').length + 1, [segments]);
     const targetChar = characters.find(c => c.id === targetCharId);
-    const canReroll = segments.length > 0 && segments[segments.length - 1].authorId !== 'user';
+    const hasGenerationTask = hasSelectedGenerationTask(genOptions);
+    const canReroll = hasGenerationTask && segments.length > 0 && segments[segments.length - 1].authorId !== 'user';
 
     const displaySegments = useMemo(() => {
         let lastSummaryIdx = -1;
@@ -208,32 +209,12 @@ const NovelWriter: React.FC<NovelWriterProps> = ({
     // --- Actions ---
 
     const runGeneration = async (char: CharacterProfile, userPrompt: string, contextSegments: NovelSegment[]) => {
-
+        if (!hasSelectedGenerationTask(genOptions)) return;
         setIsTyping(true);
         setLastTokenUsage(null);
 
         try {
-            const allSummaries = contextSegments.filter(s => s.focus === 'chapter_summary');
-            let currentChapterStart = 0;
-            if (allSummaries.length > 0) {
-                const lastSummary = allSummaries[allSummaries.length - 1];
-                currentChapterStart = contextSegments.findIndex(s => s.id === lastSummary.id) + 1;
-            }
-            const currentChapterSegs = contextSegments.slice(currentChapterStart).filter(s => s.role === 'writer' || s.type === 'story');
-            
-            let storyContext = '';
-            if (allSummaries.length > 0) {
-                storyContext += '【前情回顾 / Chapter Recaps】\n';
-                allSummaries.forEach((summary, idx) => storyContext += `\n第${idx + 1}章总结：\n${summary.content}\n`);
-                storyContext += '\n---\n\n【当前章节 / Current Chapter】\n';
-            } else {
-                storyContext += '【当前章节 / Current Chapter】\n';
-            }
-            
-            currentChapterSegs.forEach(s => {
-                const authorName = s.authorId === 'user' ? userProfile.name : (characters.find(c => c.id === s.authorId)?.name || 'AI');
-                storyContext += `\n[${authorName}]: ${s.content}\n`;
-            });
+            const storyContext = buildNovelInteractionContext(contextSegments, characters, userProfile);
 
             const prompt = await buildPrompt(char, userProfile, activeBook, userPrompt, storyContext, genOptions, contextSegments, characters);
             // Sampling is a writing-task default, not inferred from the user's personality.
@@ -281,13 +262,14 @@ const NovelWriter: React.FC<NovelWriterProps> = ({
     };
 
     const handleSend = async () => {
+        if (!hasGenerationTask) return;
         if (!targetCharId) { addToast('请先选择一个角色', 'error'); return; }
         const selectedChar = characters.find(c => c.id === targetCharId);
         if (!selectedChar) return;
 
         let currentSegments = segments;
-        if (inputText.trim()) {
-            const userSegment: NovelSegment = { id: `seg-${Date.now()}`, role: 'writer', type: 'story', authorId: 'user', content: inputText, timestamp: Date.now() };
+        const userSegment = createUserNovelSegment(inputText, genOptions);
+        if (userSegment) {
             currentSegments = [...segments, userSegment];
             setSegments(currentSegments);
             updateNovel(activeBook.id, { segments: currentSegments });
@@ -547,7 +529,6 @@ ${chapterText.substring(0, 200000)}
                 <div className={`transition-all duration-300 ease-out overflow-hidden ${isStyleExpanded ? 'max-h-[60vh] opacity-100' : 'max-h-0 opacity-0'}`}>
                     {targetChar ? <PersonaPanel 
                         char={targetChar} 
-                        userProfile={userProfile}
                         targetCharId={targetCharId}
                         isTyping={isTyping}
                         setIsTyping={setIsTyping}
@@ -609,7 +590,7 @@ ${chapterText.substring(0, 200000)}
                 <div className="p-3 flex gap-2 items-end">
                     <textarea value={inputText} onChange={e => setInputText(e.target.value)} placeholder={genOptions.write ? (inputText.trim() ? "输入剧情大纲..." : "输入指令或留空AI续写...") : "输入讨论内容..."} className="flex-1 bg-slate-100 rounded-2xl px-4 py-3 text-sm text-slate-700 outline-none resize-none max-h-32 placeholder:text-slate-400 focus:bg-white focus:ring-2 focus:ring-slate-200 transition-all" rows={1} style={{ minHeight: '44px' }} />
                     {canReroll && !isTyping && !inputText.trim() && <button onClick={handleReroll} className={`w-11 h-11 rounded-full flex items-center justify-center text-slate-500 bg-slate-100 hover:bg-slate-200 active:scale-95 transition-all shrink-0`}><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" /></svg></button>}
-                    <button onClick={handleSend} disabled={isTyping || (!inputText.trim() && !genOptions.write)} className={`w-11 h-11 rounded-full flex items-center justify-center text-white shadow-md active:scale-95 transition-all shrink-0 ${inputText.trim() || genOptions.write ? activeTheme.button : 'bg-slate-300'}`}><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5"><path d="M3.478 2.404a.75.75 0 0 0-.926.941l2.432 7.905H13.5a.75.75 0 0 1 0 1.5H4.984l-2.432 7.905a.75.75 0 0 0 .926.94 60.519 60.519 0 0 0 18.445-8.986.75.75 0 0 0 0-1.218A60.517 60.517 0 0 0 3.478 2.404Z" /></svg></button>
+                    <button onClick={handleSend} disabled={isTyping || !hasGenerationTask} className={`w-11 h-11 rounded-full flex items-center justify-center text-white shadow-md active:scale-95 transition-all shrink-0 ${hasGenerationTask ? activeTheme.button : 'bg-slate-300'}`}><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5"><path d="M3.478 2.404a.75.75 0 0 0-.926.941l2.432 7.905H13.5a.75.75 0 0 1 0 1.5H4.984l-2.432 7.905a.75.75 0 0 0 .926.94 60.519 60.519 0 0 0 18.445-8.986.75.75 0 0 0 0-1.218A60.517 60.517 0 0 0 3.478 2.404Z" /></svg></button>
                 </div>
             </div>
 

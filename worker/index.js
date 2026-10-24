@@ -21,14 +21,56 @@ function corsHeaders(origin) {
   };
 }
 
-function jsonResponse(obj, { status = 200, origin } = {}) {
+function jsonResponse(obj, { status = 200, origin, extra } = {}) {
   return new Response(JSON.stringify(obj), {
     status,
     headers: {
       "Content-Type": "application/json; charset=utf-8",
       ...corsHeaders(origin),
+      ...(extra || {}),
     },
   });
+}
+
+// 公共额度只活在当前 isolate 里，换一台或冷启动会重新计数。
+// 这是免费方案下的软限制，用来挡住单点刷接口；不是跨全球的硬账本。
+// 不要把 Key、Cookie、Token 或完整目标网址写进这里。
+const quotaBuckets = new Map();
+const SHARED_BRAVE_PER_IP_PER_DAY = 6;
+const SHARED_BRAVE_GLOBAL_PER_DAY = 30;
+const CF_API_PER_IP_PER_HOUR = 120;
+const WEBPAGE_PER_IP_PER_HOUR = 40;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
+
+function clientAddress(request) {
+  const cf = request.headers.get("CF-Connecting-IP");
+  if (cf) return cf.trim().slice(0, 80);
+  const fwd = request.headers.get("X-Forwarded-For");
+  if (fwd) return fwd.split(",")[0].trim().slice(0, 80);
+  return "unknown";
+}
+
+function takeQuota(bucket, limit, windowMs) {
+  const now = Date.now();
+  let row = quotaBuckets.get(bucket);
+  if (!row || now - row.start >= windowMs) {
+    row = { start: now, count: 0 };
+    quotaBuckets.set(bucket, row);
+  }
+  row.count += 1;
+  if (quotaBuckets.size > 5000) {
+    const oldest = quotaBuckets.keys().next().value;
+    if (oldest) quotaBuckets.delete(oldest);
+  }
+  return row.count <= limit;
+}
+
+function quotaResponse(origin, message) {
+  return jsonResponse(
+    { error: message },
+    { status: 429, origin, extra: { "Retry-After": "3600" } },
+  );
 }
 
 // ---- /fetch-webpage 用: SSRF 防护 + body 大小上限 ----
@@ -1852,9 +1894,18 @@ const XHSLite = (() => {
   }
 
   function pickCover(nc) {
-    const cover = nc?.cover || {};
-    const url = cover.url_default || cover.url_pre || cover.url || (cover.info_list?.[0]?.url) || '';
-    return url ? url.replace(/^http:\/\//, 'https://') : '';
+    const cover = nc?.cover;
+    const image = nc?.image_list?.[0] || nc?.imageList?.[0];
+    const pick = (value) => typeof value === 'string' ? value : (
+      value?.url_default || value?.urlDefault || value?.url_pre || value?.urlPre || value?.url
+      || value?.info_list?.[0]?.url || value?.infoList?.[0]?.url || ''
+    );
+    let url = String(pick(cover) || pick(image) || '').trim()
+      .replace(/\\u0026/gi, '&')
+      .replace(/\\\//g, '/')
+      .replace(/&amp;/gi, '&');
+    if (url.startsWith('//')) url = `https:${url}`;
+    return url.replace(/^http:\/\//i, 'https://');
   }
   function normItem(item) {
     const nc = item.note_card || item.noteCard || item;
@@ -2428,7 +2479,8 @@ export default {
           hint: 'Use a disposable test cookie; the normal Lite path never calls this endpoint.',
         }, { status: 403, origin });
       }
-      const cookie = request.headers.get('x-xhs-cookie') || body.cookie || (env && env.XHS_COOKIE) || '';
+      // 公共代理不读取 env.XHS_COOKIE。那是某一个人的登录态，不能借给所有玩家。
+      const cookie = request.headers.get('x-xhs-cookie') || body.cookie || '';
       if (!cookie) return jsonResponse({ error: '未配置 cookie。请在 SullyOS 设置里粘贴小红书 cookie。' }, { status: 401, origin });
       if (!cookie.includes('a1=')) return jsonResponse({ error: 'cookie 缺少 a1 字段，请复制完整的小红书 cookie。' }, { status: 400, origin });
       try {
@@ -2490,7 +2542,7 @@ export default {
           headers: forwardHeaders,
           body,
         });
-        console.log('webdav', webdavMethod, targetUrl, '→', upstream.status);
+        console.log('webdav', webdavMethod, parsedTarget.host, '→', upstream.status);
         const respHeaders = new Headers(corsHeaders(origin));
         const rct = upstream.headers.get('Content-Type');
         if (rct) respHeaders.set('Content-Type', rct);
@@ -2545,6 +2597,11 @@ export default {
       }
       if (request.method !== 'POST') {
         return jsonResponse({ error: 'Method not allowed' }, { status: 405, origin });
+      }
+      // 一次一键部署大约十几次调用。120 次/小时够重试，挡不住把这里当无限 Cloudflare 中继。
+      // GET 探针不计数，否则设置页检查“支不支持部署”也会把额度吃掉。
+      if (!takeQuota(`cf:ip:${clientAddress(request)}`, CF_API_PER_IP_PER_HOUR, HOUR_MS)) {
+        return quotaResponse(origin, '部署中转太频繁了，请过一会儿再试。');
       }
       const apiPath = url.searchParams.get('path') || '';
       if (!apiPath.startsWith('/') || apiPath.includes('://') || apiPath.includes('..')) {
@@ -2607,7 +2664,8 @@ export default {
         });
         // 日志只留方法 / 路径 / 状态码，排障够用。token 在 header 里、不打；
         // query 也不打（pathname 已经把它切掉了）。路径里的账号 id 会留下。
-        console.log('cf-api', cfMethod, parsedCf.pathname, '→', upstream.status);
+        const cfLogPath = `/${(parsedCf.pathname.split('/').filter(Boolean)[0] || '')}`;
+        console.log('cf-api', cfMethod, cfLogPath, '→', upstream.status);
         const respHeaders = new Headers(corsHeaders(origin));
         respHeaders.set('Content-Type', upstream.headers.get('Content-Type') || 'application/json; charset=utf-8');
         // 状态码原样透传，前端能直接分辨 401（token 不对）和 403（权限不够）。
@@ -2696,6 +2754,9 @@ export default {
       if (isUnsafeFetchTarget(target)) {
         return jsonResponse({ error: '只允许抓取公网 http(s) 网页' }, { status: 400, origin });
       }
+      if (!takeQuota(`page:ip:${clientAddress(request)}`, WEBPAGE_PER_IP_PER_HOUR, HOUR_MS)) {
+        return quotaResponse(origin, '网页读取太频繁了，请过一会儿再试。');
+      }
 
       // 1) Jina Reader 优先（渲染 + 正文提取）。失败静默回退裸抓，不影响整体。
       {
@@ -2710,7 +2771,7 @@ export default {
             const d = jj && jj.data;
             const content = (d && typeof d.content === 'string') ? d.content.trim() : '';
             if (content) {
-              console.log('fetch-webpage[jina]', target.toString(), '→', content.length, 'chars');
+              console.log('fetch-webpage[jina]', target.host, '→', content.length, 'chars');
               return jsonResponse({ success: true, data: { mode: 'reader', title: (d.title || '').trim(), content, finalUrl: d.url || target.toString() } }, { origin });
             }
           }
@@ -2741,7 +2802,7 @@ export default {
           return jsonResponse({ error: `不支持的内容类型: ${ct}` }, { status: 415, origin });
         }
         const html = await readBodyCapped(upstream, 2 * 1024 * 1024);
-        console.log('fetch-webpage[raw]', target.toString(), '→', upstream.status, html.length, 'chars');
+        console.log('fetch-webpage[raw]', target.host, '→', upstream.status, html.length, 'chars');
         return jsonResponse({ success: true, data: { mode: 'raw', html, finalUrl: upstream.url || target.toString(), contentType: ct } }, { origin });
       } catch (e) {
         const aborted = e && e.name === 'AbortError';
@@ -2803,7 +2864,7 @@ export default {
           body: ghBody,
           redirect: 'follow',
         });
-        console.log('github', ghMethod, targetUrl, '→', ghUpstream.status);
+        console.log('github', ghMethod, parsedGh.host, '→', ghUpstream.status);
         const ghRespHeaders = new Headers(corsHeaders(origin));
         const ghForwardedResponseHeaders = [
           'Content-Type', 'Content-Length', 'Content-Range', 'Retry-After',
@@ -4076,9 +4137,26 @@ export default {
       return jsonResponse({ error: "Missing query param: q" }, { status: 400, origin });
     }
 
-    const userKey = request.headers.get("X-Brave-API-Key")?.trim();
+    // 玩家自己带了 Key，就用玩家的额度，不占公共额度，也不把 Key 写进日志。
+    // 没带 Key 时才用服务器上的 BRAVE_API_KEY。两个都没有就拒绝，不能回落到作者的账号。
+    const userKey = request.headers.get("X-Brave-API-Key")?.trim() || "";
+    const sharedKey = !userKey && env && typeof env.BRAVE_API_KEY === "string"
+      ? env.BRAVE_API_KEY.trim()
+      : "";
+    const braveKey = userKey || sharedKey;
+    if (!braveKey) {
+      return jsonResponse({
+        error: "搜索需要 Key。公共代理还没有配置共享额度，可以在设置里填写自己的 Brave API Key。",
+      }, { status: 401, origin });
+    }
     if (!userKey) {
-      return jsonResponse({ error: "Missing header: X-Brave-API-Key" }, { status: 401, origin });
+      const ip = clientAddress(request);
+      if (!takeQuota(`brave:ip:${ip}`, SHARED_BRAVE_PER_IP_PER_DAY, DAY_MS)) {
+        return quotaResponse(origin, "公共搜索额度暂时用完了。可以明天再试，或在设置里填写自己的 Brave API Key，那样不占用公共额度。");
+      }
+      if (!takeQuota("brave:all", SHARED_BRAVE_GLOBAL_PER_DAY, DAY_MS)) {
+        return quotaResponse(origin, "公共搜索额度暂时用完了。可以明天再试，或在设置里填写自己的 Brave API Key，那样不占用公共额度。");
+      }
     }
 
     const braveUrl = new URL(`${BRAVE_ENDPOINT}/${r.kind}/search`);
@@ -4090,7 +4168,7 @@ export default {
 
     try {
       const braveRes = await fetch(braveUrl.toString(), {
-        headers: { "Accept": "application/json", "X-Subscription-Token": userKey }
+        headers: { "Accept": "application/json", "X-Subscription-Token": braveKey }
       });
       const text = await braveRes.text();
       return new Response(text, {

@@ -12,6 +12,7 @@ import React, { useState, useEffect, useRef, useLayoutEffect, useMemo, useCallba
 import { createPortal } from 'react-dom';
 import { useOS } from '../context/OSContext';
 import { DB } from '../utils/db';
+import { planHtmlFormatRepair } from '../utils/htmlFormatRepair';
 import { isVisibleChatMessage } from '../utils/chatMessageVisibility';
 import { chatCharacterDisplayName } from '../utils/characterRemark';
 import { AppID, Message, MessageType, MemoryFragment, Emoji, EmojiCategory, DailySchedule, ScheduleSlot } from '../types';
@@ -19,11 +20,13 @@ import { processImageToBlob } from '../utils/file';
 import { safeResponseJson, extractContent } from '../utils/safeApi';
 import { buildChatFineTuneCss, mergeChatFineTune } from '../utils/chatFineTuneCss';
 import TokenImg from '../components/os/TokenImg';
+import { ChatCircle, FadersHorizontal } from '@phosphor-icons/react';
 import { generateDailyScheduleForChar, isScheduleFeatureOn } from '../utils/scheduleGenerator';
 import { getDailyScheduleForChar } from '../utils/dailySchedule';
 import { useLocalDateKey } from '../hooks/useLocalDateKey';
 import { resolveCharTimeZone } from '../utils/timezone';
 import { generateSlotTheater } from '../utils/theaterGenerator';
+import { persistScheduleTheaterCard } from '../utils/scheduleTheater';
 import TheaterPlayer from '../components/schedule/TheaterPlayer';
 import { buildSARMemoryBoundaryInstruction, formatMessageWithTime, normalizeMessageContent } from '../utils/messageFormat';
 import { getRoomLabel } from '../utils/memoryPalace/types';
@@ -31,10 +34,12 @@ import { XhsMcpClient, extractNotesFromMcpData, normalizeXhsLiteDetail } from '.
 import { extractWebpageContent, detectFirstUrl, detectXhsShortUrl, extractXhsShareTitle, isXhsUrl, extractXhsNoteLink, expandShortUrl, type ExtractedWebpage } from '../utils/webpageExtractor';
 import { isVideoShareUrl, parseVideoShareUrl } from '../utils/videoParser';
 import { isDevDebugAvailable } from '../utils/devDebug';
-import { isImageValue, migrateDataUrlToRef, putImageBlob, putImageBlobDeduped, useBlobRefUrl } from '../utils/blobRef';
+import { getBlobForRef, isImageValue, migrateDataUrlToRef, putImageBlob, putImageBlobDeduped, useBlobRefUrl } from '../utils/blobRef';
+import { MAX_INDIVIDUAL_FORWARD, planIndividualForward, validateIndividualForwardMedia, type IndividualForwardPlan } from '../utils/chatForwardIndividual';
 import { buildReplySnapshotContent } from '../utils/applyAssistantPostProcessing';
 import { resolveLifeRecordCard } from '../utils/lifeRecords';
 import { isMcdConfigured } from '../utils/mcdMcpClient';
+import { buildStickerVisionMetadata, loadGlobalStickerVisionEnabled, readStickerVision, readStickerVisionDescription, readStickerVisionName, resolveStickerVisionEnabled } from '../utils/stickerVision';
 import { isMcdActivatedInMessages, MCD_ACTIVATE_TRIGGER, MCD_DEACTIVATE_TRIGGER } from '../utils/mcdToolBridge';
 import { isLuckinConfigured } from '../utils/luckinMcpClient';
 import { isLuckinActivatedInMessages, LUCKIN_ACTIVATE_TRIGGER, LUCKIN_DEACTIVATE_TRIGGER } from '../utils/luckinToolBridge';
@@ -46,11 +51,14 @@ import LuckinHelpModal from '../components/luckin/LuckinHelpModal';
 import { PRESET_THEMES, DEFAULT_ARCHIVE_PROMPTS } from '../components/chat/ChatConstants';
 import { resolveChatTheme } from '../utils/groupChat/theme';
 import ChatHeader from '../components/chat/ChatHeaderShell';
+import ChatReplyDots from '../components/chat/ChatReplyDots';
 import CharacterEntryTransition from '../components/chat/CharacterEntryTransition';
 import {resolveDecorationTheme} from '../utils/chatDecoration';
 import {DecorationTab} from '../components/chat/ChatDecorationPanel';
 import ChatAppearanceWardrobe from '../components/chat/ChatAppearanceWardrobe';
 import ChatInputArea from '../components/chat/ChatInputArea';
+import CardCreationModal from '../components/chat/CardCreationModal';
+import SideStoryModal from '../components/chat/SideStoryModal';
 import ConfirmDialog from '../components/os/ConfirmDialog';
 import { loadChatInputPreferences, saveChatInputPreferences } from '../utils/chatInputPreferences';
 import InstantChatRouteNotice from '../components/chat/InstantChatRouteNotice';
@@ -67,6 +75,7 @@ import ThinkingChainSettingsModal from '../components/chat/ThinkingChainSettings
 import ScheduleChangeNotice from '../components/chat/ScheduleChangeNotice';
 import { useChatAI } from '../hooks/useChatAI';
 import { useChatAutoReply } from '../hooks/useChatAutoReply';
+import { BOTTOM_FOLLOW_THRESHOLD, useChatScroll } from '../hooks/useChatScroll';
 import { cleanTextForTts, parseVoiceOutput } from '../utils/minimaxTts';
 import { collectVoiceBatchSubtitle, isPoisonedVoiceSubtitle } from '../utils/voiceSubtitle';
 import {
@@ -87,6 +96,7 @@ import { CollaborationStore } from '../features/collaboration/store';
 import { resolveTtsProvider } from '../utils/ttsProvider';
 import { resolveActiveSound, playWhiteboxSound, unlockWhiteboxAudio } from '../utils/whiteboxSound';
 import { normalizeTranslationLangLabel, isTranslationLangPreset } from '../utils/translationLang';
+import { freshForeignThinkingMessages, loadThinkingAutoTranslate, saveThinkingAutoTranslate, requestThinkingTranslation } from '../utils/thinkingTranslation';
 import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
 import { trackEvent, noteMessageSent, presetOrCustom } from '../utils/analytics';
 import { markAmsgStateDirty, markAmsgStateDirtyForAll } from '../utils/amsgStateSync';
@@ -110,6 +120,8 @@ import {
     saveConversationContentFavorite,
 } from '../utils/contentFavorites';
 import { SCHEDULE_CHANGE_EVENT, type ScheduleChangeEventDetail } from '../utils/scheduleChange';
+import { announceChatGen, CHAT_GEN_EVENTS, setChatViewSnapshot } from '../utils/chatGenEvents';
+import RecentConversationsView from '../components/chat/RecentConversationsView';
 import {
     CONTEXT_RANGE_POLICY_VERSION,
     computeContextRangeSnapshot,
@@ -145,7 +157,7 @@ const INSTANT_VOICE_SCAN_WINDOW_MS = 30_000;
 
 export interface HomePhoneChatProps {characterId:string;getContext:()=>string;onBack:()=>void}
 const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
-    const { activeApp, characters, activeCharacterId: osActiveCharacterId, setActiveCharacterId, addCharacter, updateCharacter, updateUserProfile, apiConfig, apiPresets, availableModels, addApiPreset, closeApp, openApp, customThemes, addCustomTheme, removeCustomTheme, addWorldbook, updateTheme, saveAppearancePreset, addToast, showError, userProfile, lastMsgTimestamp, groups, characterGroups, clearUnread, unreadMessages, realtimeConfig, memoryPalaceConfig, updateMemoryPalaceConfig, remoteVectorConfig, syncEmotionApiToAllCharacters, theme: baseOsTheme, proactiveComposingChars, openDateWithChar } = useOS();
+    const { activeApp, characters, activeCharacterId: osActiveCharacterId, setActiveCharacterId, addCharacter, updateCharacter, updateUserProfile, apiConfig, apiPresets, availableModels, addApiPreset, closeApp, openApp, customThemes, addCustomTheme, removeCustomTheme, addWorldbook, updateTheme, saveAppearancePreset, addToast, showError, userProfile, lastMsgTimestamp, groups, characterGroups, clearUnread, unreadMessages, realtimeConfig, memoryPalaceConfig, updateMemoryPalaceConfig, remoteVectorConfig, syncEmotionApiToAllCharacters, theme: baseOsTheme, proactiveComposingChars, openDateWithChar, openGroupChatFromRecent, chatLandingIntent, clearChatLandingIntent } = useOS();
     const activeCharacterId=homePhone?.characterId??osActiveCharacterId;
     const osTheme = useMemo(()=>homePhone?homePhoneAppearance(baseOsTheme):resolveDecorationTheme(baseOsTheme,characters.find(c=>c.id===activeCharacterId)||characters[0]),[baseOsTheme,characters,activeCharacterId,!!homePhone]);
     const isProactiveComposing = !!(activeCharacterId && proactiveComposingChars[activeCharacterId]);
@@ -159,6 +171,23 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
         } catch { return 0; }
     }, []);
     const [messages, setMessages] = useState<Message[]>([]);
+    const [chatView, setChatView] = useState<'conversation' | 'recent'>(() => chatLandingIntent === 'recent' ? 'recent' : 'conversation');
+    useEffect(() => {
+        if (chatLandingIntent !== 'recent') return;
+        setChatView('recent');
+        clearChatLandingIntent();
+    }, [chatLandingIntent, clearChatLandingIntent]);
+    useLayoutEffect(() => {
+        setChatViewSnapshot(true, chatView === 'conversation' ? activeCharacterId ?? null : null);
+    }, [chatView, activeCharacterId]);
+    useLayoutEffect(() => () => setChatViewSnapshot(false, null), []);
+    useEffect(() => {
+        if (chatView !== 'conversation' || !activeCharacterId) return;
+        clearUnread(activeCharacterId);
+    }, [chatView, activeCharacterId, clearUnread]);
+    // Instant Push 路径："准备中"三个点 = 消息正在拼接+发送; 消失 = SSE POST 已排进
+    // 浏览器网络栈. 页面关闭时会主动 abort SSE, 让 worker 尽量走 Web Push fallback。
+    const [instantSendingActive, setInstantSendingActive] = useState(false);
     // 即时对话：这一轮已经交给云端、还没等到回复。它跟 isTyping 不一样——生成不在这台
     // 设备上跑，所以要扛得住关页面重开（记录落在 localStorage，见 amsgInstantChat）。
     const [instantChatPending, setInstantChatPending] = useState(false);
@@ -173,7 +202,12 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
     const [showEntry, setShowEntry] = useState(false);
     const [input, setInput] = useState('');
     const [isInputFocused, setIsInputFocused] = useState(false);
+    const [screenCaptureActive, setScreenCaptureActive] = useState(false);
+    const screenCaptureStreamRef = useRef<MediaStream | null>(null);
+    const screenCaptureVideoRef = useRef<HTMLVideoElement | null>(null);
     const [showPanel, setShowPanel] = useState<'none' | 'actions' | 'emojis' | 'chars'>('none');
+    const [cardCreationCharId, setCardCreationCharId] = useState<string | null>(null);
+    const [sideStoryCharId, setSideStoryCharId] = useState<string | null>(null);
     const [collaborationOpen, setCollaborationOpen] = useState(false);
     const [collaborationPreviewAssetId, setCollaborationPreviewAssetId] = useState<string | null>(null);
     const [memoryRepairOpen, setMemoryRepairOpen] = useState(false);
@@ -187,12 +221,9 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
     const [emojiExport, setEmojiExport] = useState<{ emojis: Emoji[]; title: string } | null>(null);
     const [newEmojiName, setNewEmojiName] = useState(''); // 表情包重命名输入框
 
-    const scrollRef = useRef<HTMLDivElement>(null);
-    const lastMsgIdRef = useRef<number | null>(null);
-    // 最新图片在移动端异步解码后会把消息列表继续向下撑开。记录这一条，等真实高度
-    // 确定后再补一次贴底；用户一旦主动向上翻，就清掉它，绝不抢滚动位置。
-    const pendingMediaAutoScrollIdRef = useRef<number | null>(null);
-    const scrollThrottleRef = useRef(0);
+    const messagesRef = useRef(messages);
+    messagesRef.current = messages;
+    const reloadMessagesRef = useRef<(count: number) => Promise<void>>();
     const visibleCountRef = useRef(30);
     const pendingFavoriteJumpRef = useRef<{ charId: string; messageId: number } | null>(null);
     const historyWindowRangeRef = useRef<ChatHistoryWindowRange | null>(null);
@@ -202,6 +233,9 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
     const historyJumpUnlockTimerRef = useRef<number | null>(null);
     const historyWindowScrollEnabledRef = useRef(false);
     const activeCharIdRef = useRef(activeCharacterId);
+    useLayoutEffect(() => { activeCharIdRef.current = activeCharacterId; }, [activeCharacterId]);
+    useEffect(() => { setCardCreationCharId(null); }, [activeCharacterId, chatView]);
+    useEffect(() => { setSideStoryCharId(null); }, [activeCharacterId, chatView]);
     // 流式预览接棒过的正式消息在当前会话内始终跳过入场动画，避免后续 DB 刷新时动画类又被加回来。
     const streamPreviewHandoverIdsRef = useRef<Set<number>>(new Set());
     const registerStreamPreviewHandover = useCallback((charId: string, messageIds: number[]) => {
@@ -290,6 +324,10 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
     const [showProactiveModal, setShowProactiveModal] = useState(false);
     const [showActiveMsg2Modal, setShowActiveMsg2Modal] = useState(false);
     const [showThinkingChainModal, setShowThinkingChainModal] = useState(false);
+    const [autoTranslateThinking, setAutoTranslateThinking] = useState(loadThinkingAutoTranslate);
+    const [thinkingTranslationErrors, setThinkingTranslationErrors] = useState<Record<number, { charId: string; source: string; message: string }>>({});
+    useEffect(() => setThinkingTranslationErrors({}), [activeCharacterId]);
+    const rerollInProgressRef = useRef(false);
 
     // Archive Prompts State
     const [archivePrompts, setArchivePrompts] = useState<{id: string, name: string, content: string}[]>(DEFAULT_ARCHIVE_PROMPTS);
@@ -327,6 +365,109 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
     const [showingTargetIds, setShowingTargetIds] = useState<Set<number>>(new Set());
 
     const char = characters.find(c => c.id === activeCharacterId) || characters[0];
+    const thinkingMountedRef = useRef(true);
+    useEffect(() => {
+        thinkingMountedRef.current = true;
+        return () => { thinkingMountedRef.current = false; };
+    }, []);
+    const thinkingCharactersRef = useRef(characters);
+    thinkingCharactersRef.current = characters;
+    const thinkingContextRef = useRef({ char, memoryPalaceConfig, autoTranslateThinking });
+    thinkingContextRef.current = { char, memoryPalaceConfig, autoTranslateThinking };
+    const translateThinking = useCallback(async (message: Message): Promise<string> => {
+        const context = thinkingContextRef.current;
+        const target = thinkingCharactersRef.current.find(item => item.id === message.charId) || context.char;
+        const result = await requestThinkingTranslation(message, context.memoryPalaceConfig, target);
+        if (thinkingMountedRef.current && activeCharIdRef.current === message.charId) {
+            setThinkingTranslationErrors(previous => {
+                if (!previous[message.id]) return previous;
+                const next = { ...previous };
+                delete next[message.id];
+                return next;
+            });
+            setMessages(previous => previous.map(item => item.id === message.id && item.charId === message.charId
+                && item.metadata?.thinkingChain === message.metadata?.thinkingChain
+                ? { ...item, metadata: { ...(item.metadata || {}), thinkingTranslation: result } } : item));
+        }
+        return result.text;
+    }, []);
+
+    // Only generation-complete events can enqueue automatic work. Loading history or
+    // enabling the switch never scans old messages for translations.
+    useEffect(() => {
+        if (!activeCharacterId) return;
+        let disposed = false;
+        const startedAt = Date.now();
+        let baseline: number | null = null;
+        let earlyEvent = false;
+        let earlyCutoff = 0;
+        let processing = false;
+        let queued = false;
+        const attempted = new Set<number>();
+        const process = async () => {
+            if (processing || baseline === null || disposed) return;
+            processing = true;
+            try {
+                do {
+                    queued = false;
+                    const recent = await DB.getRecentMessagesByCharId(activeCharacterId, 200);
+                    if (disposed) return;
+                    const fresh = freshForeignThinkingMessages(recent, baseline, activeCharacterId, earlyCutoff);
+                    baseline = Math.max(baseline, ...recent.map(message => message.id));
+                    earlyCutoff = 0;
+                    for (let index = 0; index < fresh.length; index += 2) {
+                        if (disposed || !thinkingContextRef.current.autoTranslateThinking) break;
+                        await Promise.all(fresh.slice(index, index + 2).map(async message => {
+                            if (attempted.has(message.id)) return;
+                            attempted.add(message.id);
+                            const context = thinkingContextRef.current;
+                            if (!context.char || context.char.id !== activeCharacterId) return;
+                            try { await translateThinking(message); } catch (error) {
+                                // Missing credentials are deliberately quiet until the user asks manually.
+                                const detail = error instanceof Error ? error.message : '请稍后重试';
+                                if (!disposed && !detail.includes('请先配置') && activeCharIdRef.current === activeCharacterId) {
+                                    setThinkingTranslationErrors(previous => ({ ...previous, [message.id]: {
+                                        charId: message.charId, source: message.metadata.thinkingChain,
+                                        message: /\b401\b/.test(detail) ? '副 API 凭据无效（HTTP 401）'
+                                            : /\b429\b/.test(detail) ? '副 API 暂时限流（HTTP 429）'
+                                            : /\b5\d\d\b/.test(detail) ? '副 API 暂时不可用，请稍后重试'
+                                            : '翻译失败，请点重试',
+                                    } }));
+                                }
+                            }
+                        }));
+                    }
+                } while (queued && !disposed);
+            } catch { /* DB failures must not affect the chat reply */ }
+            finally { processing = false; }
+        };
+        const onGeneration = (event: Event) => {
+            const detail = (event as CustomEvent<{ charId?: string; instantChat?: boolean }>).detail;
+            if (detail?.charId !== activeCharacterId) return;
+            if (event.type === 'active-msg-received' && detail.instantChat !== true) return;
+            if (baseline === null) { earlyEvent = true; return; }
+            queued = true;
+            void process();
+        };
+        window.addEventListener(CHAT_GEN_EVENTS.replyArrived, onGeneration);
+        window.addEventListener('active-msg-received', onGeneration);
+        void DB.getRecentMessagesByCharId(activeCharacterId, 1).then(recent => {
+            if (disposed) return;
+            baseline = recent.reduce((max, message) => Math.max(max, message.id), 0);
+            if (earlyEvent) {
+                // A reply may have landed while the baseline read was pending.
+                baseline = 0;
+                earlyCutoff = startedAt;
+                queued = true;
+                void process();
+            }
+        }).catch(() => { baseline = Number.MAX_SAFE_INTEGER; });
+        return () => {
+            disposed = true;
+            window.removeEventListener(CHAT_GEN_EVENTS.replyArrived, onGeneration);
+            window.removeEventListener('active-msg-received', onGeneration);
+        };
+    }, [activeCharacterId, translateThinking]);
     const memoryRepairRound = useMemo(() => {
         let assistantIndex = -1;
         for (let i = messages.length - 1; i >= 0; i--) {
@@ -426,10 +567,19 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
     // 切角色不卸载组件），迟到的 setMessages 会把旧角色的消息灌进当前会话视图。
     // 按消息 charId 丢弃不属于当前会话的回落——DB 已落库，且 OSContext 会因
     // chat-gen-reply-arrived bump lastMsgTimestamp，切回该角色时自然取回。
+    const { scrollRef, contentRef, followingLatestRef, hasNewMessageBelow, onScroll: updateScrollFollowing, onWheel, onTouchStart, onTouchMove, onKeyDown,
+        pauseFollowing, resumeFollowing, reportNewContent, scrollToLatest, preservePrepend } = useChatScroll(
+        chatView === 'conversation' ? activeCharacterId ?? null : null, messages, selectionMode, windowedFocusMsgId !== null,
+    );
     const setMessagesFromGen = useCallback((msgs: Message[]) => {
         if (msgs.some(m => m.charId && m.charId !== activeCharIdRef.current)) return;
+        // 生成器只回传最近 200 条；阅读历史时按现有窗口重读，不能裁掉正在看的旧内容。
+        if (!followingLatestRef.current) {
+            void reloadMessagesRef.current?.(visibleCountRef.current);
+            return;
+        }
         setMessages(msgs);
-    }, []);
+    }, [followingLatestRef, char, userProfile, groups, realtimeConfig]);
 
     // 即时对话的「正在输入…」：受理 / 收到回复 / 超时判失败都会广播一次，界面跟着它亮灭。
     // 进这个角色时先读一次落盘记录——上一轮的回复可能是在应用关着的时候还没回来。
@@ -466,6 +616,7 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
         updateCharacter,
         updateUserProfile,
     });
+    const replyUiTyping = isTyping || instantChatPending;
 
     // --- Voice TTS for chat messages ---
     interface VoiceData { url: string; originalText: string; spokenText?: string; lang?: string; favorite?: boolean; recording?: StreamedVoice; }
@@ -918,7 +1069,7 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
         }
     }, [isTyping, instantChatPending, messages]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    const canReroll = !isTyping && messages.length > 0 && messages[messages.length - 1].role === 'assistant';
+    const canReroll = !replyUiTyping && messages.length > 0 && messages[messages.length - 1].role === 'assistant';
 
     // --- Translation: pure frontend toggle (no API calls, bilingual data is already in message content) ---
     const handleTranslateToggle = useCallback((msgId: number) => {
@@ -1058,10 +1209,13 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
     // How many messages to load per batch (initial load + each "load more" click)
     const LOAD_BATCH_SIZE = 30;
 
-    const reloadMessages = useCallback(async (requestedVisibleCount: number) => {
+    const reloadMessages = useCallback(async (requestedVisibleCount: number, prepend = false) => {
         if (!activeCharacterId) return;
 
         const charIdAtStart = activeCharacterId;
+        const retainedMessages = messagesRef.current;
+        const keepFromId = !historyWindowRangeRef.current
+            && retainedMessages[0]?.charId === charIdAtStart ? retainedMessages[0].id : undefined;
         // 倒序游标先过滤展示范围再取最近 N 条。缓冲只用于判断是否还有历史，
         // 不能靠固定缓冲抵消见面/通话记录：它们可能连续几百条，挤掉真正的私聊。
         const fetchLimit = requestedVisibleCount >= 100000 ? requestedVisibleCount : requestedVisibleCount + 16;
@@ -1078,10 +1232,17 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
             // 即说明该角色的单聊消息已全部在手，此时把总数钳到实际可展示的条数。
             const exhausted = recent.length < fetchLimit;
             setTotalMsgCount(exhausted ? chatScopeMsgs.length : totalCount);
-            setMessages(chatScopeMsgs.slice(-requestedVisibleCount));
+            const retainedCount = followingLatestRef.current || keepFromId === undefined ? 0 : chatScopeMsgs.filter(m => m.id >= keepFromId).length;
+            const nextMessages = chatScopeMsgs.slice(-Math.max(requestedVisibleCount, retainedCount));
+            if (prepend) preservePrepend();
+            if (nextMessages.length > requestedVisibleCount && keepFromId !== undefined) {
+                visibleCountRef.current = nextMessages.length;
+                setVisibleCount(nextMessages.length);
+            }
+            setMessages(nextMessages);
         };
         try {
-            const { messages: recent, totalCount } = await DB.getRecentMessagesWithCount(activeCharacterId, fetchLimit, accept);
+            const { messages: recent, totalCount } = await DB.getRecentMessagesWithCount(activeCharacterId, fetchLimit, accept, keepFromId);
             // Guard against stale async results: if the user switched characters
             // while the DB query was in flight, discard this result.
             if (activeCharIdRef.current !== charIdAtStart) return;
@@ -1092,15 +1253,16 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
             await new Promise(r => setTimeout(r, 200));
             if (activeCharIdRef.current !== charIdAtStart) return;
             try {
-                const { messages: recent, totalCount } = await DB.getRecentMessagesWithCount(activeCharacterId, fetchLimit, accept);
+                const { messages: recent, totalCount } = await DB.getRecentMessagesWithCount(activeCharacterId, fetchLimit, accept, keepFromId);
                 if (activeCharIdRef.current !== charIdAtStart) return;
                 applyResult(recent, totalCount);
             } catch { /* give up silently */ }
         }
-    }, [activeCharacterId]);
+    }, [activeCharacterId, followingLatestRef, preservePrepend]);
+    reloadMessagesRef.current = reloadMessages;
 
     useEffect(() => {
-        if (activeCharacterId) {
+        if (chatView === 'conversation' && activeCharacterId) {
             // Update ref BEFORE any async work so stale reloadMessages calls
             // from a previous character can detect the switch and bail out.
             activeCharIdRef.current = activeCharacterId;
@@ -1124,7 +1286,6 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
                 setSettingsContextRangeMode(resolveContextRangeMode(char));
                 setSettingsHideSysLogs(char.hideSystemLogs || false);
                 setSettingsHtmlModeCustomPrompt((char as any).htmlModeCustomPrompt || '');
-                clearUnread(char.id);
             }
             // Per-character translation toggle + language pair
             try {
@@ -1145,8 +1306,6 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
             } catch { setTranslationExpanded(false); }
             setVisibleCount(30);
             visibleCountRef.current = 30;
-            lastMsgIdRef.current = null;
-            scrollThrottleRef.current = 0;
             setLastTokenUsage(null);
             setReplyTarget(null);
             setSelectionMode(false);
@@ -1167,7 +1326,7 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
             }
             setFlashMsgId(null);
         }
-    }, [activeCharacterId, reloadMessages]);
+    }, [activeCharacterId, chatView, reloadMessages]);
 
     // 进入/切换角色时触发「登场」过场。useLayoutEffect 在浏览器绘制前置真，
     // 让过场层先盖住，避免一帧闪到新角色的空聊天界面。
@@ -1203,7 +1362,7 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
         getDailyScheduleForChar(char).then(existing => {
             if (!existing) {
                 // Generate in background, don't block chat
-                generateDailySchedule(char, false);
+                generateDailySchedule(char, false, 'background');
             } else {
                 setScheduleData(existing);
             }
@@ -1246,12 +1405,11 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
     }, []);
 
     useEffect(() => {
-        if (activeCharacterId) {
+        if (chatView === 'conversation' && activeCharacterId && lastMsgTimestamp > 0) {
             reloadMessages(visibleCountRef.current);
-            clearUnread(activeCharacterId);
         }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- clearUnread is stable (useCallback with []), omit to prevent stale-dep lint noise
-    }, [lastMsgTimestamp, activeCharacterId, char?.hideSystemLogs, reloadMessages, clearUnread]);
+    }, [chatView, lastMsgTimestamp, activeCharacterId, char?.hideSystemLogs, reloadMessages, clearUnread]);
 
     // 即时对话待收记录的跨标签页补听。同一聊天开两个标签页时，回复推送到达后 SW 把
     // 广播发给所有 client，后台标签页的 flush 可能先抢到并落库——销账的 CustomEvent
@@ -1287,23 +1445,6 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
         if (val.trim()) localStorage.setItem(draftKey, val);
         else localStorage.removeItem(draftKey);
     };
-
-    useLayoutEffect(() => {
-        if (!scrollRef.current || selectionMode) return;
-        const currentLastId = messages.length > 0 ? messages[messages.length - 1].id : null;
-        // Only auto-scroll when a new message is appended (ID changes),
-        // not when loading older history or updating existing messages in-place.
-        // windowed 模式下用户在翻旧消息，不要被新消息打断滚走。
-        if (currentLastId !== lastMsgIdRef.current) {
-            if (windowedFocusMsgId === null) {
-                pendingMediaAutoScrollIdRef.current = currentLastId;
-                scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-            } else {
-                pendingMediaAutoScrollIdRef.current = null;
-            }
-            lastMsgIdRef.current = currentLastId;
-        }
-    }, [messages, activeCharacterId, selectionMode, windowedFocusMsgId]);
 
     const extendHistoryWindow = useCallback((direction: 'older' | 'newer') => {
         const scroller = scrollRef.current;
@@ -1343,36 +1484,20 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
     }, [historyWindowRange]);
 
     const handleChatScroll = useCallback(() => {
+        updateScrollFollowing();
         const scroller = scrollRef.current;
         if (!scroller) return;
         const distanceFromBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-        if (distanceFromBottom > 96) pendingMediaAutoScrollIdRef.current = null;
-
         if (historyWindowScrollEnabledRef.current && historyWindowRangeRef.current) {
-            if (scroller.scrollTop <= 96) extendHistoryWindow('older');
-            else if (distanceFromBottom <= 96) extendHistoryWindow('newer');
+            if (scroller.scrollTop <= BOTTOM_FOLLOW_THRESHOLD) extendHistoryWindow('older');
+            else if (distanceFromBottom <= BOTTOM_FOLLOW_THRESHOLD) extendHistoryWindow('newer');
         }
-    }, [extendHistoryWindow]);
+    }, [extendHistoryWindow, updateScrollFollowing]);
 
-    const handleMessageMediaLoad = useCallback((messageId: number) => {
-        if (windowedFocusMsgId !== null || pendingMediaAutoScrollIdRef.current !== messageId) return;
-        requestAnimationFrame(() => {
-            if (pendingMediaAutoScrollIdRef.current !== messageId) return;
-            const scroller = scrollRef.current;
-            if (scroller) scroller.scrollTop = scroller.scrollHeight;
-            pendingMediaAutoScrollIdRef.current = null;
-        });
-    }, [windowedFocusMsgId]);
-
-    useEffect(() => {
-        if (isTyping && scrollRef.current && !selectionMode && windowedFocusMsgId === null) {
-            const now = Date.now();
-            if (now - scrollThrottleRef.current > 150) {
-                scrollThrottleRef.current = now;
-                scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
-            }
-        }
-    }, [messages, isTyping, streamingBubbles, streamingThinking, inboxStatus, recallStatus, searchStatus, diaryStatus, selectionMode, windowedFocusMsgId]);
+    const streamingBody = streamingBubbles.join('\n');
+    useLayoutEffect(() => {
+        if (streamingBody.trim()) reportNewContent();
+    }, [streamingBody, reportNewContent]);
 
     // 白框提示音：当 char 新发的消息成为会话最后一条时播放一次（用户自己/历史/翻旧消息都不响）。
     // 声音配置编码在白框 CSS 注释里（角色 chromeCustomCss 覆盖全局 chatChromeCustomCss），随白框分享一起走。
@@ -1409,9 +1534,96 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
         return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
     };
 
+    const screenCaptureAvailable = useMemo(() => (
+        typeof navigator !== 'undefined'
+        && typeof navigator.mediaDevices?.getDisplayMedia === 'function'
+        && !/Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+    ), []);
+
+    const stopScreenCapture = useCallback(() => {
+        const stream = screenCaptureStreamRef.current;
+        screenCaptureStreamRef.current = null;
+        const video = screenCaptureVideoRef.current;
+        screenCaptureVideoRef.current = null;
+        if (video) video.srcObject = null;
+        setScreenCaptureActive(false);
+        stream?.getTracks().forEach(track => track.stop());
+    }, []);
+
+    useEffect(() => () => stopScreenCapture(), [stopScreenCapture]);
+    useEffect(() => {
+        if (activeApp !== AppID.Chat) stopScreenCapture();
+    }, [activeApp, stopScreenCapture]);
+
+    const toggleScreenCapture = useCallback(async () => {
+        if (screenCaptureStreamRef.current) {
+            stopScreenCapture();
+            addToast('屏幕伴聊已关闭', 'info');
+            return;
+        }
+        if (!screenCaptureAvailable) {
+            addToast('当前环境不支持屏幕伴聊', 'info');
+            return;
+        }
+        let requestedStream: MediaStream | null = null;
+        try {
+            const stream = await navigator.mediaDevices.getDisplayMedia({
+                video: { cursor: 'always' } as MediaTrackConstraints,
+                audio: false,
+            });
+            requestedStream = stream;
+            const video = document.createElement('video');
+            video.muted = true;
+            video.playsInline = true;
+            video.srcObject = stream;
+            if (video.readyState < HTMLMediaElement.HAVE_METADATA) {
+                await new Promise<void>((resolve, reject) => {
+                    video.addEventListener('loadedmetadata', () => resolve(), { once: true });
+                    video.addEventListener('error', () => reject(new Error('无法读取共享画面')), { once: true });
+                });
+            }
+            await video.play();
+            screenCaptureStreamRef.current = stream;
+            screenCaptureVideoRef.current = video;
+            setScreenCaptureActive(true);
+            const track = stream.getVideoTracks()[0];
+            track?.addEventListener('ended', () => {
+                if (screenCaptureStreamRef.current !== stream) return;
+                screenCaptureStreamRef.current = null;
+                screenCaptureVideoRef.current = null;
+                video.srcObject = null;
+                setScreenCaptureActive(false);
+                addToast('系统已停止屏幕共享，屏幕伴聊随之关闭', 'info');
+            }, { once: true });
+            addToast('屏幕伴聊已开启；发送文字时会附带当前画面', 'success');
+        } catch (error: any) {
+            requestedStream?.getTracks().forEach(track => track.stop());
+            if (error?.name !== 'AbortError' && error?.name !== 'NotAllowedError') {
+                addToast(error?.message || '屏幕伴聊开启失败', 'error');
+            }
+        }
+    }, [addToast, screenCaptureAvailable, stopScreenCapture]);
+
+    const captureCurrentScreenFrame = useCallback((): string => {
+        const stream = screenCaptureStreamRef.current;
+        const video = screenCaptureVideoRef.current;
+        if (!stream || !video || stream.getVideoTracks()[0]?.readyState !== 'live' || !video.videoWidth || !video.videoHeight) {
+            throw new Error('共享画面暂时不可用');
+        }
+        const width = Math.min(600, video.videoWidth);
+        const height = Math.max(1, Math.round(video.videoHeight * width / video.videoWidth));
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('浏览器无法抓取当前画面');
+        context.drawImage(video, 0, 0, width, height);
+        return canvas.toDataURL('image/jpeg', 0.6);
+    }, []);
+
     // --- Actions ---
 
-    const sendText = async (customContent?: string, customType?: MessageType, metadata?: any) => {
+    const sendText = async (customContent?: string, customType?: MessageType, metadata?: any, automaticScreenshot?: string) => {
         if (!char || (!input.trim() && !customContent)) return;
         // 只累加内存里的计数，这里不发任何请求；页面切走时才按区间报一次。见 utils/analytics.ts
         noteMessageSent();
@@ -1423,18 +1635,6 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
         }
         const text = customContent || input.trim();
         const type = customType || 'text';
-
-        // 发消息隐含"回到当前聊天"——退出 windowed 旧消息浏览模式
-        if (windowedFocusMsgId !== null) {
-            setWindowedFocusMsgId(null);
-            setHistoryWindowRange(null);
-            historyWindowRangeRef.current = null;
-            historyWindowTotalRef.current = 0;
-            historyWindowScrollEnabledRef.current = false;
-            visibleCountRef.current = LOAD_BATCH_SIZE;
-            setVisibleCount(LOAD_BATCH_SIZE);
-            setFlashMsgId(null);
-        }
 
         // 用户手打"麦请求"三个字 → 等价于点击麦克风按钮 (拉起麦当劳菜单)
         // 不落库, 跟按钮点击行为完全一致, 避免出现"banner 在但菜单没拉起"的诡异状态
@@ -1655,6 +1855,40 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
             }
         }
 
+        // 屏幕伴聊只在用户发送普通文字时走到这里。文字先落库，截图紧随其后；随后才刷新并触发
+        // 自动回复，保证本地与独立识图 API 都能在同一轮看到两条消息。截图复用现有 Blob 与相册存储。
+        if (automaticScreenshot) {
+            try {
+                const storedScreenshot = await migrateDataUrlToRef(automaticScreenshot);
+                const screenshotMessageId = await DB.saveMessage({
+                    charId: char.id,
+                    role: 'user',
+                    type: 'image',
+                    content: storedScreenshot,
+                    metadata: { screenCapture: true },
+                });
+                try {
+                    await DB.saveGalleryImage({
+                        id: `screen-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                        charId: char.id,
+                        url: storedScreenshot,
+                        timestamp: Date.now(),
+                        sourceMessageId: screenshotMessageId,
+                        savedDate: localDateKey,
+                        chatContext: [...messages.slice(-9).map(message => {
+                            const sender = message.role === 'user' ? userProfile.name : char.name;
+                            return `${sender}: ${buildReplySnapshotContent(message)}`;
+                        }), `${userProfile.name}: ${text.slice(0, 100)}`],
+                    });
+                } catch (error) {
+                    console.warn('[Chat] 屏幕伴聊截图未能写入相册，聊天图片照常保留', error);
+                }
+            } catch (error) {
+                console.warn('[Chat] 屏幕伴聊截图保存失败，本次文字照常发送', error);
+                addToast('截图保存失败，本次文字已正常发送', 'error');
+            }
+        }
+
         await reloadMessages(visibleCountRef.current);
         // 自动回复模式下允许连续挑表情，用户主动收起加号等面板后才计时。
         if (!inputPreferences.autoReply) setShowPanel('none');
@@ -1665,7 +1899,16 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
     const handleSendText = async (customContent?: string, customType?: MessageType, metadata?: any) => {
         const finish = autoReply.beginSend(char?.id || null);
         try {
-            const sent = await sendText(customContent, customType, metadata);
+            let automaticScreenshot: string | undefined;
+            if (!customContent && !customType && input.trim() && screenCaptureActive) {
+                try {
+                    automaticScreenshot = captureCurrentScreenFrame();
+                } catch (error: any) {
+                    addToast(`${error?.message || '屏幕抓帧失败'}，本次仅发送文字`, 'error');
+                    if (screenCaptureStreamRef.current?.getVideoTracks()[0]?.readyState !== 'live') stopScreenCapture();
+                }
+            }
+            const sent = await sendText(customContent, customType, metadata, automaticScreenshot);
             finish(sent === true && (!customType || ['text', 'image', 'emoji'].includes(customType)));
         } catch (error) {
             finish(false);
@@ -1725,33 +1968,36 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
     };
 
     const handleReroll = async () => {
-        if (isTyping || messages.length === 0) return;
-        autoReply.cancel();
+        if (rerollInProgressRef.current || isTyping || instantChatPending || messages.length === 0) return;
+        rerollInProgressRef.current = true;
+        try {
+            autoReply.cancel();
 
-        const lastMsg = messages[messages.length - 1];
-        if (lastMsg.role !== 'assistant') return;
+            const lastMsg = messages[messages.length - 1];
+            if (lastMsg.role !== 'assistant') return;
 
-        const toDeleteIds: number[] = [];
-        let index = messages.length - 1;
-        while (index >= 0 && messages[index].role === 'assistant') {
-            toDeleteIds.push(messages[index].id);
-            index--;
-        }
+            const toDeleteIds: number[] = [];
+            let index = messages.length - 1;
+            while (index >= 0 && messages[index].role === 'assistant') {
+                toDeleteIds.push(messages[index].id);
+                index--;
+            }
 
-        if (toDeleteIds.length === 0) return;
+            if (toDeleteIds.length === 0) return;
 
-        await DB.deleteMessages(toDeleteIds);
-        discardVoiceForMessages(toDeleteIds);
-        // 重 roll 也删了消息：正常路径下这轮生成结束会再打脏一次，这里先打是兜住
-        // 「触发失败没走到生成收尾」的路径，云端 fire_pack 不能停在删除前。
-        markAmsgStateDirty({ char, userProfile, groups, realtimeConfig });
-        const newHistory = messages.slice(0, index + 1);
-        setMessages(newHistory);
-        addToast('回溯对话中...', 'info');
-        trackEvent('重新生成回复');
+            await DB.deleteMessages(toDeleteIds);
+            discardVoiceForMessages(toDeleteIds);
+            // 重 roll 也删了消息：正常路径下这轮生成结束会再打脏一次，这里先打是兜住
+            // 「触发失败没走到生成收尾」的路径，云端 fire_pack 不能停在删除前。
+            markAmsgStateDirty({ char, userProfile, groups, realtimeConfig });
+            const newHistory = messages.slice(0, index + 1);
+            setMessages(newHistory);
+            addToast('回溯对话中...', 'info');
+            trackEvent('重新生成回复');
 
-        // 重 roll：不注入上一轮残留的情绪 buff 与意识流（innerState），两边独立重新生成。
-        triggerAI(newHistory, undefined, { skipEmotionInjection: true });
+            // 重 roll：不注入上一轮残留的情绪 buff 与意识流（innerState），两边独立重新生成。
+            await triggerAI(newHistory, undefined, { skipEmotionInjection: true });
+        } finally { rerollInProgressRef.current = false; }
     };
 
     const handleImageSelect = async (file: File) => {
@@ -1794,7 +2040,20 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
             case 'chrome-sound': setShowPanel('none'); setDecorationTab('sound'); setModalType('chrome-css'); break;
             case 'fine-tune': setShowPanel('none'); setDecorationTab('layout'); setModalType('chrome-css'); break;
             case 'emoji-import': setModalType('emoji-import'); break;
-            case 'send-emoji': if (payload) handleSendText(payload.url, 'emoji'); break;
+            case 'send-emoji':
+                if (payload) {
+                    const lastUsedAt = Date.now();
+                    setEmojis(current => current.map(emoji => emoji.name === payload.name ? { ...emoji, lastUsedAt } : emoji));
+                    void DB.touchEmoji(payload.name, lastUsedAt).catch(error => console.warn('[emoji] failed to save recent use:', error));
+                    // 发送时刻一次性冻结视觉资格（全局开关 + 角色三态覆盖）；功能没开就不带 metadata，
+                    // 这条消息从此永远是"旧消息语义"，之后开开关也不会补识别。
+                    const stickerVisionMeta = buildStickerVisionMetadata(
+                        payload.name,
+                        resolveStickerVisionEnabled(loadGlobalStickerVisionEnabled(), char?.stickerVisionMode),
+                    );
+                    handleSendText(payload.url, 'emoji', stickerVisionMeta);
+                }
+                break;
             case 'delete-emoji-req': setSelectedEmoji(payload); setModalType('delete-emoji'); break;
             case 'emoji-options': setSelectedEmoji(payload); setModalType('emoji-options'); break;
             case 'add-category': setModalType('add-category'); break;
@@ -1830,6 +2089,18 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
                 const next = !((char as any).htmlModeEnabled);
                 updateCharacter(char.id, { htmlModeEnabled: next } as any);
                 addToast(next ? 'HTML 模式已开启' : 'HTML 模式已关闭', next ? 'success' : 'info');
+                break;
+            }
+            case 'card-creation': {
+                if (!char || char.id !== activeCharacterId) break;
+                setShowPanel('none');
+                setCardCreationCharId(char.id);
+                break;
+            }
+            case 'side-story': {
+                if (!char || char.id !== activeCharacterId) break;
+                setShowPanel('none');
+                setSideStoryCharId(char.id);
                 break;
             }
             case 'html-mode-settings': {
@@ -2079,18 +2350,18 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
         if (!char) return;
         if (!isScheduleFeatureOn(char)) { setScheduleData(null); return; }
         const s = await getDailyScheduleForChar(char);
-        setScheduleData(s);
+        if (activeCharIdRef.current === char.id) setScheduleData(s);
     };
 
     // Load schedule when modal opens
     React.useEffect(() => {
         if (modalType === 'schedule') loadSchedule();
-    }, [modalType]);
+    }, [modalType, char?.id]);
 
     // 日程表随 fire_pack 一起上云（角色到点按它说自己在干嘛），改完要让云端那份跟上：
     // 用户把「健身」改成「在家养病」，角色晚上还说「刚从健身房回来」就穿帮了。
     const handleScheduleEdit = async (index: number, slot: ScheduleSlot) => {
-        if (!scheduleData) return;
+        if (!scheduleData || scheduleData.charId !== char?.id) return;
         const newSlots = [...scheduleData.slots];
         newSlots[index] = slot;
         const updated = { ...scheduleData, slots: newSlots };
@@ -2100,7 +2371,7 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
     };
 
     const handleScheduleDelete = async (index: number) => {
-        if (!scheduleData) return;
+        if (!scheduleData || scheduleData.charId !== char?.id) return;
         const newSlots = scheduleData.slots.filter((_, i) => i !== index);
         const updated = { ...scheduleData, slots: newSlots };
         setScheduleData(updated);
@@ -2109,7 +2380,7 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
     };
 
     const handleScheduleCoverChange = async (dataUrl: string) => {
-        if (!scheduleData) return;
+        if (!scheduleData || scheduleData.charId !== char?.id) return;
         const updated = { ...scheduleData, coverImage: dataUrl };
         setScheduleData(updated);
         await DB.saveDailySchedule(updated);
@@ -2117,7 +2388,7 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
 
     // 小剧场：点某个时段的播放按钮。有缓存直接放；没有则先生成再放（forceRegenerate=重演）。
     const runTheater = async (index: number, forceRegenerate: boolean) => {
-        if (!char || !scheduleData) return;
+        if (!char || !scheduleData || scheduleData.charId !== char.id) return;
         const slot = scheduleData.slots[index];
         if (!slot) return;
         trackEvent('打开日程小剧场', { mode: forceRegenerate ? 'replay' : 'play' });
@@ -2154,22 +2425,8 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
     // 发卡片本身不再自动触发对话——只留痕，下次聊天角色自然带着这份记忆。
     const handleSendTheaterCard = async (index: number, exposed: boolean) => {
         if (!char || !scheduleData) return;
-        const slot = scheduleData.slots[index];
-        if (!slot?.theater || slot.theater.lines.length === 0) return;
-        await DB.saveMessage({
-            charId: char.id,
-            role: 'user',
-            type: 'theater_card',
-            content: `${slot.startTime} · ${slot.activity}`,
-            metadata: {
-                theater: slot.theater,
-                slotTime: slot.startTime,
-                activity: slot.activity,
-                emoji: slot.emoji,
-                date: scheduleData.date,
-                exposed,
-            },
-        });
+        const saved = await persistScheduleTheaterCard(scheduleData, index, exposed);
+        if (!saved) return;
         // 关掉播放器 + 日程 modal，回到聊天看到卡片（但不强行触发回复）
         setTheaterSlotIdx(null);
         setModalType('none');
@@ -2177,13 +2434,14 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
         addToast(exposed ? '已让 TA 发现你在看 👀' : '已悄悄记下 · TA 不知道你看了 🙈', 'info');
     };
 
-    const generateDailySchedule = async (targetChar: typeof char, forceRegenerate: boolean = false) => {
+    const generateDailySchedule = async (targetChar: typeof char, forceRegenerate: boolean = false, relayPriority: 'user' | 'background' = 'user') => {
         if (!targetChar || isScheduleGenerating) return;
         setIsScheduleGenerating(true);
         try {
-            const result = await generateDailyScheduleForChar(targetChar, userProfile, apiConfig, forceRegenerate);
+            const result = await generateDailyScheduleForChar(targetChar, userProfile, apiConfig, forceRegenerate,
+                message => addToast(message, 'info'), relayPriority);
             if (result) {
-                setScheduleData(result);
+                if (activeCharIdRef.current === targetChar.id) setScheduleData(result);
                 // 跨天后台重新生成也要刷云端：不刷的话角色到点照着昨天的作息表说话
                 markAmsgStateDirty({ char: targetChar, userProfile, groups, realtimeConfig });
             }
@@ -2206,7 +2464,7 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
         setIsScheduleGenerating(true);
         try {
             const result = await generateDailyScheduleForChar(updatedChar, userProfile, apiConfig, true);
-            if (result) setScheduleData(result);
+            if (result && activeCharIdRef.current === updatedChar.id) setScheduleData(result);
         } catch (e) {
             console.error('[Schedule] Regeneration after style change failed:', e);
         } finally {
@@ -2700,6 +2958,7 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
             targetIndex,
             HISTORY_WINDOW_RADIUS,
         );
+        pauseFollowing();
         setMessages(allMsgs);
         setTotalMsgCount(browseableMessages.length);
         historyWindowTotalRef.current = browseableMessages.length;
@@ -2779,6 +3038,8 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
     }, [activeCharacterId]);
 
     const handleBackToCurrent = async () => {
+        const requestCharId = activeCharacterId;
+        resumeFollowing();
         setWindowedFocusMsgId(null);
         setHistoryWindowRange(null);
         historyWindowRangeRef.current = null;
@@ -2794,8 +3055,9 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
         visibleCountRef.current = LOAD_BATCH_SIZE;
         setVisibleCount(LOAD_BATCH_SIZE);
         await reloadMessages(LOAD_BATCH_SIZE);
+        if (activeCharIdRef.current !== requestCharId) return;
         requestAnimationFrame(() => {
-            scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
+            if (activeCharIdRef.current === requestCharId && followingLatestRef.current) scrollToLatest();
         });
     };
 
@@ -2942,16 +3204,44 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
     },[char?.id,visibleCount,reloadMessages]);
 
     // --- Message Management ---
+    const handleQuickRepairHtml = async () => {
+        const target = selectedMessage;
+        setModalType('none');
+        if (!target) return;
+        if (target.type === 'html_card') {
+            addToast('这条消息已经是 HTML 卡片', 'info');
+            return;
+        }
+        try {
+            // Include processed history: the clicked row may be before the memory-palace high-water mark.
+            const history = await DB.getMessagesByCharId(target.charId, true);
+            const plan = planHtmlFormatRepair(history, target.id);
+            if (!plan) {
+                addToast('未检测到可完整恢复的 HTML 卡片内容', 'info');
+                return;
+            }
+            const repaired = await DB.applyHtmlFormatRepair(plan);
+            setMessages(previous => previous
+                .filter(message => !plan.deleteIds.includes(message.id))
+                .map(message => message.id === repaired.id ? repaired : message));
+            addToast(`已修复 ${plan.cardCount} 张 HTML 卡片`, 'success');
+        } catch (error) {
+            console.error('HTML format repair failed:', error);
+            addToast('修复格式失败，原消息未更改', 'error');
+        }
+    };
+
     const handleDeleteMessage = async () => {
         if (!selectedMessage) return;
         const deletedId = selectedMessage.id;
-        await DB.deleteMessage(deletedId);
+        await DB.deleteMessages([deletedId]);
         discardVoiceForMessages([deletedId]);
         // 满血主动消息：云端 fire_pack 里带最近对话原文，删了消息不打脏的话，角色到点
         // 还会提起这条已经不存在的消息（快照的消息在 flush 时从 DB 重读，这里只管打脏）。
         markAmsgStateDirty({ char, userProfile, groups, realtimeConfig });
-        setMessages(prev => prev.filter(m => m.id !== deletedId));
-        setTotalMsgCount(prev => Math.max(0, prev - 1));
+        const removed = new Set([deletedId]);
+        setMessages(prev => prev.filter(m => !removed.has(m.id)));
+        setTotalMsgCount(prev => Math.max(0, prev - removed.size));
         setModalType('none');
         setSelectedMessage(null);
         addToast('消息已删除', 'success');
@@ -3099,12 +3389,15 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
         });
 
         for (const mig of migrations) {
-            await DB.updateMessageMetadata(mig.targetId, (prev) => ({ ...(prev || {}), thinkingChain: mig.chain }));
+            await DB.updateMessageMetadata(mig.targetId, (prev) => {
+                const { thinkingTranslation, ...rest } = prev || {};
+                return { ...rest, thinkingChain: mig.chain };
+            });
         }
         for (const id of thinkingIdsToClear) {
             await DB.updateMessageMetadata(id, (prev) => {
                 if (!prev || !('thinkingChain' in prev)) return prev;
-                const { thinkingChain, ...rest } = prev;
+                const { thinkingChain, thinkingTranslation, ...rest } = prev;
                 return rest;
             });
         }
@@ -3119,10 +3412,11 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
             .filter(m => !msgIdsToDelete.has(m.id))
             .map(m => {
                 if (migMap.has(m.id)) {
-                    return { ...m, metadata: { ...(m.metadata || {}), thinkingChain: migMap.get(m.id) } };
+                    const { thinkingTranslation, ...rest } = m.metadata || {};
+                    return { ...m, metadata: { ...rest, thinkingChain: migMap.get(m.id) } };
                 }
                 if (thinkingIdsToClear.has(m.id) && m.metadata?.thinkingChain) {
-                    const { thinkingChain, ...rest } = m.metadata;
+                    const { thinkingChain, thinkingTranslation, ...rest } = m.metadata;
                     return { ...m, metadata: rest };
                 }
                 return m;
@@ -3143,6 +3437,24 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
     // --- Forward Chat Records ---
     const [showForwardModal, setShowForwardModal] = useState(false);
     const [forwardGroupId, setForwardGroupId] = useState(GROUP_FILTER_ALL); // 转发弹窗的角色分组筛选
+    const [forwardMode, setForwardMode] = useState<'merged' | 'individual'>('merged');
+    const [forwardConfirmation, setForwardConfirmation] = useState<{
+        sourceCharId: string; targetCharId: string; targetName: string; plan: IndividualForwardPlan;
+    } | null>(null);
+    const [preparingForward, setPreparingForward] = useState(false);
+    const [forwardSubmitting, setForwardSubmitting] = useState(false);
+    const preparingForwardRef = useRef(false);
+    const savingForward = useRef(false);
+    const forwardModalEpoch = useRef(0);
+
+    const closeForwardModal = () => {
+        if (savingForward.current) return;
+        forwardModalEpoch.current += 1;
+        setShowForwardModal(false);
+        setForwardConfirmation(null);
+        setPreparingForward(false);
+        preparingForwardRef.current = false;
+    };
 
     const savingConversationFavorite = useRef(false);
     const handleFavoriteSelected = async () => {
@@ -3165,16 +3477,51 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
 
     const handleForwardSelected = () => {
         if (selectedMsgIds.size === 0) return;
+        forwardModalEpoch.current += 1;
+        setForwardMode('merged');
+        setForwardConfirmation(null);
         setShowForwardModal(true);
     };
 
     const handleForwardToCharacter = async (targetCharId: string) => {
-        if (!char) return;
+        if (!char || savingForward.current || preparingForwardRef.current) return;
+        const sourceCharId = char.id;
+        const targetChar = characters.find(c => c.id === targetCharId && c.id !== sourceCharId);
+        if (!targetChar) { addToast('接收角色已不存在', 'error'); return; }
         const selectedMsgs = messages
-            .filter(m => selectedMsgIds.has(m.id))
+            .filter(m => m.charId === sourceCharId && selectedMsgIds.has(m.id))
             .sort((a, b) => a.id - b.id);
 
         if (selectedMsgs.length === 0) return;
+        if (forwardMode === 'individual') {
+            if (selectedMsgs.length > MAX_INDIVIDUAL_FORWARD) {
+                addToast(`逐条转发一次最多选择 ${MAX_INDIVIDUAL_FORWARD} 条`, 'error');
+                return;
+            }
+            const epoch = forwardModalEpoch.current;
+            preparingForwardRef.current = true;
+            setPreparingForward(true);
+            try {
+                const plan = await validateIndividualForwardMedia(
+                    planIndividualForward(selectedMsgs, sourceCharId, targetCharId, emojis, categories),
+                    getBlobForRef,
+                );
+                if (epoch !== forwardModalEpoch.current || activeCharIdRef.current !== sourceCharId) return;
+                setForwardConfirmation({ sourceCharId, targetCharId, targetName: targetChar.name, plan });
+            } catch (error) {
+                if (epoch === forwardModalEpoch.current) addToast(error instanceof Error ? error.message : '图片检查失败', 'error');
+            } finally {
+                if (epoch === forwardModalEpoch.current) {
+                    preparingForwardRef.current = false;
+                    setPreparingForward(false);
+                }
+            }
+            return;
+        }
+
+        savingForward.current = true;
+        setForwardSubmitting(true);
+        try {
 
         // Build preview text (first few messages)
         const previewLines = selectedMsgs.slice(0, 4).map(m => {
@@ -3189,12 +3536,29 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
             fromCharName: char.name,
             count: selectedMsgs.length,
             preview: previewLines,
-            messages: selectedMsgs.map(m => ({
-                role: m.role,
-                type: m.type,
-                content: m.content,
-                timestamp: m.timestamp || Date.now()
-            }))
+            messages: selectedMsgs.map(m => {
+                const base: any = {
+                    role: m.role,
+                    type: m.type,
+                    content: m.content,
+                    timestamp: m.timestamp || Date.now()
+                };
+                // 表情包只带这次功能需要的稳定快照，不做任意 metadata 搬运：
+                // 发送时刻冻结的名称 + 已获得的视觉语义。有描述时目标角色无论开关如何都能看到；
+                // 只有资格没描述时保留 URL/资格，目标模型支持视觉就还能读到原图；
+                // 无资格旧表情什么都不带，转发不能反过来触发补识别。
+                if (m.type === 'emoji') {
+                    base.stickerName = readStickerVisionName(m, emojis);
+                    const sv = readStickerVision(m);
+                    if (sv) {
+                        base.stickerVision = {
+                            eligible: true,
+                            ...(readStickerVisionDescription(m) ? { description: readStickerVisionDescription(m) } : {}),
+                        };
+                    }
+                }
+                return base;
+            })
         };
 
         // Save forward card to target character's chat
@@ -3206,7 +3570,6 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
         });
 
         // Also save a copy in the current chat so the user can see what they forwarded
-        const targetChar = characters.find(c => c.id === targetCharId);
         if (char.id !== targetCharId) {
             await DB.saveMessage({
                 charId: char.id,
@@ -3219,9 +3582,78 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
         }
 
         addToast(`已转发 ${selectedMsgs.length} 条记录给 ${targetChar?.name || ''}`, 'success');
+        forwardModalEpoch.current += 1;
         setShowForwardModal(false);
         setSelectionMode(false);
         setSelectedMsgIds(new Set());
+        setSelectedThinkingMsgIds(new Set());
+        } catch (error) {
+            addToast(error instanceof Error ? error.message : '合并转发失败，请重试', 'error');
+        } finally {
+            savingForward.current = false;
+            setForwardSubmitting(false);
+        }
+    };
+
+    const handleConfirmIndividualForward = async () => {
+        const confirmation = forwardConfirmation;
+        if (!confirmation || savingForward.current || !confirmation.plan.messages.length) return;
+        if (activeCharIdRef.current !== confirmation.sourceCharId) {
+            closeForwardModal();
+            return;
+        }
+        if (!characters.some(c => c.id === confirmation.targetCharId)
+            || confirmation.sourceCharId === confirmation.targetCharId) {
+            addToast('接收角色已不存在', 'error');
+            return;
+        }
+        savingForward.current = true;
+        setForwardSubmitting(true);
+        try {
+            const verifiedPlan = await validateIndividualForwardMedia(confirmation.plan, getBlobForRef);
+            if (verifiedPlan.messages.length !== confirmation.plan.messages.length) {
+                setForwardConfirmation({ ...confirmation, plan: verifiedPlan });
+                addToast('部分图片引用已失效，请核对数量后再次确认', 'info');
+                savingForward.current = false;
+                setForwardSubmitting(false);
+                return;
+            }
+            if (!await DB.getCharacter(confirmation.targetCharId)) {
+                throw new Error('接收角色已不存在');
+            }
+            const sentAt = Date.now();
+            await DB.saveMessagesAtomic(verifiedPlan.messages.map((message, index) => ({
+                ...message, timestamp: sentAt + index,
+            })));
+        } catch (error) {
+            addToast(error instanceof Error ? error.message : '逐条转发失败，未发送任何消息', 'error');
+            savingForward.current = false;
+            setForwardSubmitting(false);
+            return;
+        }
+        try {
+            const targetChar = characters.find(c => c.id === confirmation.targetCharId);
+            if (targetChar) markAmsgStateDirty({ char: targetChar, userProfile, groups, realtimeConfig });
+        } catch (error) {
+            console.warn('[chat-forward] target AMSG state refresh failed:', error);
+        }
+        try {
+            window.dispatchEvent(new Event('active-msg-progress'));
+        } catch (error) {
+            console.warn('[chat-forward] conversation refresh event failed:', error);
+        }
+        try {
+            addToast(`已向【${confirmation.targetName}】逐条发送 ${confirmation.plan.messages.length} 条`, 'success');
+            forwardModalEpoch.current += 1;
+            setShowForwardModal(false);
+            setForwardConfirmation(null);
+            setSelectionMode(false);
+            setSelectedMsgIds(new Set());
+            setSelectedThinkingMsgIds(new Set());
+        } finally {
+            savingForward.current = false;
+            setForwardSubmitting(false);
+        }
     };
 
     const handleOpenCollaborationFile = useCallback(async (msg: Message) => {
@@ -3532,8 +3964,14 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
     }), [aiVisibleEmojis, activeCategory]);
 
     // Memoize ChatInputArea callbacks
-    const handleSendCallback = useCallback(() => handleSendText(), [char, input, replyTarget, inputPreferences]);
+    const handleSendCallback = useCallback(() => handleSendText(), [char, input, replyTarget, inputPreferences, screenCaptureActive, captureCurrentScreenFrame]);
     const handleCharSelectCallback = useCallback((id: string) => { setActiveCharacterId(id); setShowPanel('none'); }, []);
+    // 聊天细节微调（外观 → 聊天细节，全局打底；角色开了「聊天装扮」时逐字段覆盖）：
+    // CSS 全默认时为空串不注入；chatModuleAlign 不走 CSS，作为布局属性传给 MessageItem。
+    // 家园小手机不带角色装扮，两个 useMemo 必须留在 recent 早退之前，钩子顺序才稳定。
+    const mergedFineTune = useMemo(() => mergeChatFineTune(osTheme, homePhone ? undefined : char?.chatFineTune), [osTheme, char?.chatFineTune, !!homePhone]);
+    const chatFineTuneCss = useMemo(() => buildChatFineTuneCss(mergedFineTune), [mergedFineTune]);
+    const selectedAvatarFrameCss = useMemo(() => avatarFrameLayer([osTheme.chatChromeCustomCss, char?.chromeCustomCss].filter(Boolean).join('\n')), [osTheme.chatChromeCustomCss, char?.chromeCustomCss]);
     const autoReply = useChatAutoReply({
         enabled: inputPreferences.autoReply,
         conversationId: activeCharacterId || null,
@@ -3542,13 +3980,30 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
             || selectionMode || isSummarizing || collaborationOpen || memoryRepairOpen || favoritesOpen
             || showProactiveModal || showActiveMsg2Modal || showThinkingChainModal
             || mcdAppOpen || luckinAppOpen || showForwardModal,
-        generating: isTyping || instantChatPending || isProactiveComposing,
+        generating: replyUiTyping || isProactiveComposing,
         onGenerate: handleManualTrigger,
     });
     // 角色自定义聊天背景：字段值可能是 blobref 令牌（二进制在 IndexedDB），这里解析成能直接
     // 喂进 CSS url() 的地址；data: / http(s) 之类的非令牌值渲染期原样透传。
     // hook 必须在下面的空态早退之前调用，所以用可选链读 char。
-    const resolvedChatBackground = useBlobRefUrl(homePhone?undefined:char?.chatBackground ?? osTheme.chatBackground);
+    const resolvedChatBackground = useBlobRefUrl(homePhone ? undefined : char?.chatBackground ?? osTheme.chatBackground);
+    // 家园小手机固定停在单个会话上，不接管桌面的最近会话视图。
+    if (!homePhone && chatView === 'recent') {
+        return (
+            <RecentConversationsView
+                characters={characters}
+                groups={groups}
+                unreadMessages={unreadMessages}
+                refreshToken={lastMsgTimestamp}
+                onBack={() => setChatView('conversation')}
+                onOpenPrivate={(charId) => {
+                    setActiveCharacterId(charId);
+                    setChatView('conversation');
+                }}
+                onOpenGroup={openGroupChatFromRecent}
+            />
+        );
+    }
     // 兜底：正常情况下 OSContext 启动时一定会保底一个角色，char 不该为空。
     // 但若 init 期间某个 store 读取失败（数据其实还在 IndexedDB 里），characters 可能暂时为空，
     // 此时下面读 char 上的字段会直接抛 "undefined is not an object" 把整个 App 崩到错误页。
@@ -3616,11 +4071,7 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
     // 动森下强制覆盖角色自定义聊天背景，保证整机一致的彩蛋观感
     // 进入/切换的过场由 CharacterEntryTransition 覆盖层负责，根容器不再自己做淡入。
     const finalRootStyle = acnh ? acnhRootStyle : chatRootStyle;
-    // 聊天细节微调（外观 → 聊天细节，全局打底；角色开了「聊天装扮」时逐字段覆盖）：
-    // CSS 全默认时为空串不注入；chatModuleAlign 不走 CSS，作为布局属性传给 MessageItem。
-    const mergedFineTune = useMemo(() => mergeChatFineTune(osTheme, homePhone?undefined:char?.chatFineTune), [osTheme, char?.chatFineTune,!!homePhone]);
-    const chatFineTuneCss = useMemo(() => buildChatFineTuneCss(mergedFineTune), [mergedFineTune]);
-    const selectedAvatarFrameCss=useMemo(()=>avatarFrameLayer([osTheme.chatChromeCustomCss,char?.chromeCustomCss].filter(Boolean).join('\n')),[osTheme.chatChromeCustomCss,char?.chromeCustomCss]);
+    // 聊天细节微调已在 recent 早退之前算好（钩子顺序），此处不再重复声明。
     const chatAvatarSizeClass = osTheme.chatAvatarSize === 'small' ? 'w-7 h-7' : osTheme.chatAvatarSize === 'large' ? 'w-12 h-12' : 'w-9 h-9';
     const chatAvatarRadiusClass = osTheme.chatAvatarShape === 'square' ? 'rounded-sm' : osTheme.chatAvatarShape === 'rounded' ? 'rounded-xl' : 'rounded-full';
     const chatPendingAvatarClass = `${chatAvatarSizeClass} ${chatAvatarRadiusClass} object-cover`;
@@ -3863,7 +4314,8 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
                 settingsContextLimit={settingsContextLimit} setSettingsContextLimit={setSettingsContextLimit}
                 settingsContextRangeMode={settingsContextRangeMode} setSettingsContextRangeMode={setSettingsContextRangeMode}
                 settingsHideSysLogs={settingsHideSysLogs} setSettingsHideSysLogs={setSettingsHideSysLogs}
-                settingsInputPreferences={settingsInputPreferences} setSettingsInputPreferences={setSettingsInputPreferences}
+                settingsInputPreferences={settingsInputPreferences}
+                setSettingsInputPreferences={setSettingsInputPreferences}
                 contextSuiteAnyEnabled={contextSuiteAnyEnabled}
                 contextSuiteAllEnabled={contextSuiteAllEnabled}
                 onToggleContextSuite={handleToggleContextSuite}
@@ -3889,7 +4341,7 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
                 onCreatePrompt={createNewPrompt} onEditPrompt={editSelectedPrompt} onSavePrompt={handleSavePrompt} onDeletePrompt={handleDeletePrompt}
                 onSetHistoryStart={handleSetHistoryStart} onRestoreAdaptiveContext={restoreAdaptiveContext} onJumpToMessageInChat={handleJumpToMessageInChat} onEnterSelectionMode={handleEnterSelectionMode}
                 onReplyMessage={handleReplyMessage} onEditMessageStart={() => { if (selectedMessage) { setEditContent(selectedMessage.content); setModalType('edit-message'); } }}
-                onConfirmEditMessage={confirmEditMessage} onDeleteMessage={handleDeleteMessage} onCopyMessage={handleCopyMessage}
+                onConfirmEditMessage={confirmEditMessage} onDeleteMessage={handleDeleteMessage} onCopyMessage={handleCopyMessage} onQuickRepairHtml={handleQuickRepairHtml}
                 messageFavorited={!!(selectedMessage && contentFavoriteIds.has(contentFavoriteIdForMessage(selectedMessage)))}
                 onToggleMessageFavorite={selectedMessage ? () => handleToggleContentFavorite(selectedMessage) : undefined}
                 onDeleteEmoji={handleDeleteEmoji} onDeleteCategory={handleDeleteCategory} onRenameCategory={handleRenameCategory} onDownloadCategory={handleDownloadCategory}
@@ -3912,6 +4364,8 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
                 onToggleXhs={() => updateCharacter(char.id, { xhsEnabled: !char.xhsEnabled })}
                 htmlModeEnabled={!!(char as any).htmlModeEnabled}
                 onToggleHtmlMode={() => updateCharacter(char.id, { htmlModeEnabled: !((char as any).htmlModeEnabled) } as any)}
+                stickerVisionMode={char.stickerVisionMode || 'inherit'}
+                onSetStickerVisionMode={(mode) => updateCharacter(char.id, { stickerVisionMode: mode } as any)}
                 htmlModeCustomPrompt={settingsHtmlModeCustomPrompt}
                 setHtmlModeCustomPrompt={setSettingsHtmlModeCustomPrompt}
                 chatVoiceEnabled={!!char.chatVoiceEnabled}
@@ -3930,13 +4384,14 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
                 onDownloadVoice={selectedMessage ? () => handleDownloadVoice(selectedMessage) : undefined}
                 voiceFavorited={!!(selectedMessage?.id && chatFavoriteKeys.has(chatFavoriteSourceKey(selectedMessage)))}
                 onToggleVoiceFavorite={selectedMessage ? () => handleToggleVoiceFavorite(selectedMessage) : undefined}
-                scheduleData={scheduleData}
+                scheduleData={scheduleData?.charId === char.id ? scheduleData : null}
                 isScheduleGenerating={isScheduleGenerating}
                 onScheduleEdit={handleScheduleEdit}
                 onScheduleDelete={handleScheduleDelete}
                 onScheduleReroll={() => generateDailySchedule(char, true)}
                 onScheduleCoverChange={handleScheduleCoverChange}
                 onScheduleStyleChange={handleScheduleStyleChange}
+                onRealPlaceScheduleChange={config => updateCharacter(char.id, { realPlaceSchedule: config })}
                 onPlayTheater={handlePlayTheater}
                 isScheduleFeatureEnabled={isScheduleFeatureOn(char)}
                 onToggleScheduleFeature={handleToggleScheduleFeature}
@@ -3980,12 +4435,12 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
                 document.body,
              )}
 
-             {homePhone?<header className="home-phone-chat-header"><span className="home-phone-chat-avatar" aria-hidden="true">{char.name.slice(0,1)}</span><div><strong>{chatCharacterDisplayName(char)}</strong><small>{isTyping||instantChatPending?'正在输入…':'在家，也想给你发消息'}</small></div><button onClick={handleManualTrigger} disabled={isTyping} aria-label="让对方回复">↗</button></header>:<ChatHeader
+             {homePhone?<header className="home-phone-chat-header"><span className="home-phone-chat-avatar" aria-hidden="true">{char.name.slice(0,1)}</span><div><strong>{chatCharacterDisplayName(char)}</strong><small>{replyUiTyping?'正在输入…':'在家，也想给你发消息'}</small></div><button onClick={handleManualTrigger} aria-label={replyUiTyping?'停止回复':'让对方回复'}>{replyUiTyping?'■':'↗'}</button></header>:<ChatHeader
                 selectionMode={selectionMode}
                 selectedCount={selectedMsgIds.size + Array.from(selectedThinkingMsgIds).filter(id => !selectedMsgIds.has(id)).length}
                 onCancelSelection={() => { setSelectionMode(false); setSelectedMsgIds(new Set()); setSelectedThinkingMsgIds(new Set()); }}
                 activeCharacter={char}
-                isTyping={isTyping || instantChatPending}
+                isTyping={replyUiTyping}
                 isSummarizing={isSummarizing}
                 isEmotionEvaluating={emotionStatus === 'evaluating'}
                 isMemoryPalaceProcessing={!!memoryPalaceStatus}
@@ -3994,9 +4449,15 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
                 tokenBreakdown={tokenBreakdown}
                 onClose={closeApp}
                 onTriggerAI={handleManualTrigger}
-                triggerIcon={isTyping || instantChatPending ? 'stop' : 'lightning'}
-                hideTrigger={inputPreferences.sendButtonGenerates}
+                hideTrigger={inputPreferences.sendButtonGenerates && !replyUiTyping}
+                triggerIcon={replyUiTyping ? 'stop' : 'lightning'}
                 onShowCharsPanel={() => setShowPanel('chars')}
+                extraAction={{
+                    label: '最近会话',
+                    icon: <ChatCircle className="h-5 w-5" weight="bold" />,
+                    tone: 'action',
+                    onClick: () => setChatView('recent'),
+                }}
                 onDeleteBuff={(buffId) => {
                     const currentBuffs = char.activeBuffs || [];
                     const newBuffs = currentBuffs.filter(b => b.id !== buffId);
@@ -4009,6 +4470,7 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
                 headerAlign={osTheme.chatHeaderAlign}
                 headerDensity={osTheme.chatHeaderDensity}
                 statusStyle={osTheme.chatStatusStyle}
+
                 chromeStyle={osTheme.chatChromeStyle}
                 hideBuffs={osTheme.chatHideHeaderBuffs}
                 acnh={acnh}
@@ -4135,7 +4597,9 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
             })()}
 
             <StreamingVoiceBar state={streamingVoice.state} onStop={stopStreamingVoice} />
-            <div ref={scrollRef} onScroll={handleChatScroll} onClick={() => { if (inputPreferences.autoReply) setShowPanel('none'); }} className="flex-1 overflow-y-auto overflow-x-hidden pt-6 pb-6 no-scrollbar" style={{ backgroundImage: activeTheme.type === 'custom' && activeTheme.user.backgroundImage ? 'none' : undefined }}>
+            <div className="relative flex-1 min-h-0">
+            <div ref={scrollRef} onScroll={handleChatScroll} onWheel={onWheel} onTouchStart={onTouchStart} onTouchMove={onTouchMove} onKeyDown={onKeyDown} onClick={() => { if (inputPreferences.autoReply) setShowPanel('none'); }} className="h-full overflow-y-auto overflow-x-hidden no-scrollbar" style={{ backgroundImage: activeTheme.type === 'custom' && activeTheme.user.backgroundImage ? 'none' : undefined }}>
+            <div ref={contentRef} className="pt-6 pb-6">
                 {windowedFocusMsgId !== null && (
                     <div className="sticky top-0 z-20 flex justify-center pb-2 pointer-events-none">
                         <button onClick={handleBackToCurrent} className="pointer-events-auto px-4 py-2 bg-primary text-white rounded-full text-xs font-bold shadow-lg active:scale-95 transition-transform flex items-center gap-1.5">
@@ -4150,7 +4614,7 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
                             const nextVisibleCount = visibleCount + LOAD_BATCH_SIZE;
                             visibleCountRef.current = nextVisibleCount;
                             setVisibleCount(nextVisibleCount);
-                            await reloadMessages(nextVisibleCount);
+                            await reloadMessages(nextVisibleCount, true);
                         }} className="px-4 py-2 bg-white/50 backdrop-blur-sm rounded-full text-xs text-slate-500 shadow-sm border border-white hover:bg-white transition-colors">加载历史消息 ({collapsedCount})</button>
                     </div>
                 )}
@@ -4208,7 +4672,6 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
                             charName={char.name}
                             userAvatar={userProfile.perCharAvatars?.[char.id] || userProfile.avatar}
                             isLatestMessage={!nextMessage}
-                            onMediaLoad={handleMessageMediaLoad}
                             moduleAlign={mergedFineTune.chatModuleAlign || 'center'}
                             onLongPress={handleMessageLongPress}
                             onReply={handleQuickReply}
@@ -4238,6 +4701,10 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
                             onResolveLifeRecord={handleResolveLifeRecord}
                             onOpenCollaborationFile={handleOpenCollaborationFile}
                             thinkingChainOptions={thinkingChainOptions}
+                            thinkingTranslationError={thinkingTranslationErrors[m.id]?.charId === m.charId
+                                && thinkingTranslationErrors[m.id]?.source === m.metadata?.thinkingChain
+                                ? thinkingTranslationErrors[m.id].message : undefined}
+                            onTranslateThinking={translateThinking}
                         />
                         {showToolTrace && (
                             <div className={`px-3 mb-4 ${breaksWithNext ? toolTracePullClass : ''}`}>
@@ -4318,7 +4785,7 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
                     </>
                 )}
                 {/* instantChatPending：这一轮在云端跑，本机可以关页面，指示灯靠落盘记录活着。 */}
-                {(isTyping || instantChatPending || recallStatus || searchStatus || diaryStatus || isProactiveComposing) && !selectionMode && (
+                {(replyUiTyping || recallStatus || searchStatus || diaryStatus || isProactiveComposing) && !selectionMode && (
                     <div className="flex items-end gap-3 px-3 mb-6 animate-fade-in">
                         <TokenImg value={char.avatar} className={chatPendingAvatarClass} />
                         <div className="bg-white px-4 py-3 rounded-2xl shadow-sm">
@@ -4327,7 +4794,7 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
                                     <span className="h-3 w-3 shrink-0 rounded-full border-2 border-slate-300 border-t-slate-500 animate-spin" aria-hidden="true" />
                                     {inboxStatus}
                                 </div>
-                            ) : isProactiveComposing && !isTyping && !recallStatus && !searchStatus && !diaryStatus ? (
+                            ) : isProactiveComposing && !replyUiTyping && !recallStatus && !searchStatus && !diaryStatus ? (
                                 <div className="flex items-center gap-2 text-xs text-teal-600 font-medium">
                                     <svg className="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
                                     {char.name} 在给你写消息…
@@ -4348,11 +4815,19 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
                                     📖 {diaryStatus}
                                 </div>
                             ) : (
-                                <div className="flex gap-1"><div className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce"></div><div className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce delay-75"></div><div className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce delay-150"></div></div>
+                                <ChatReplyDots />
                             )}
                         </div>
                     </div>
                 )}
+            </div>
+            </div>
+            {hasNewMessageBelow && !selectionMode && (
+                <button aria-label="查看新消息" onClick={() => windowedFocusMsgId !== null ? void handleBackToCurrent() : scrollToLatest()}
+                    className="absolute right-4 bottom-3 z-30 rounded-full bg-white/90 backdrop-blur-sm border border-primary/20 px-3 py-2 text-xs font-medium text-primary shadow-sm active:scale-95 transition-transform">
+                    ↓ 新消息
+                </button>
+            )}
             </div>
 
             <div className="relative z-40">
@@ -4411,10 +4886,29 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
                 {/* 开关写着「已开启」、这一轮却在本地生成时，把原因说给用户听 */}
                 <InstantChatRouteNotice charId={activeCharacterId} />
 
+                {cardCreationCharId && char?.id === cardCreationCharId && <CardCreationModal
+                    key={cardCreationCharId}
+                    char={char}
+                    user={userProfile}
+                    api={apiConfig}
+                    isCurrentCharacter={id => activeCharIdRef.current === id}
+                    onClose={() => setCardCreationCharId(null)}
+                    onPublished={id => {
+                        setCardCreationCharId(null);
+                        if (activeCharIdRef.current === id) void reloadMessages(visibleCountRef.current);
+                    }}
+                />}
+                {sideStoryCharId && char?.id === sideStoryCharId && <SideStoryModal
+                    key={sideStoryCharId}
+                    char={char} user={userProfile} api={apiConfig}
+                    isCurrentCharacter={id => activeCharIdRef.current === id}
+                    onClose={() => setSideStoryCharId(null)}
+                />}
+
                 <ChatInputArea
                     compactHome={!!homePhone}
                     input={input} setInput={handleInputChange}
-                    isTyping={isTyping || instantChatPending} selectionMode={selectionMode}
+                    isTyping={replyUiTyping} selectionMode={selectionMode}
                     showPanel={showPanel} setShowPanel={setShowPanel}
                     onSend={handleSendCallback}
                     onGenerate={handleManualTrigger}
@@ -4424,12 +4918,16 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
                     autoReplySeconds={autoReply.seconds}
                     onCancelAutoReply={autoReply.cancel}
                     onInputFocusChange={setIsInputFocused}
+                    screenCaptureAvailable={screenCaptureAvailable}
+                    screenCaptureActive={screenCaptureActive}
+                    onToggleScreenCapture={() => void toggleScreenCapture()}
                     onDeleteSelected={handleBatchDelete}
                     onForwardSelected={handleForwardSelected}
                     onFavoriteSelected={handleFavoriteSelected}
                     favoriteSelectedCount={messages.filter(message => message.charId === char?.id && selectedMsgIds.has(message.id)).length}
                     selectedCount={selectedMsgIds.size + Array.from(selectedThinkingMsgIds).filter(id => !selectedMsgIds.has(id)).length}
                     emojis={filteredEmojis}
+                    triggerEmojis={aiVisibleEmojis}
                     emojiSuggestionsEnabled={inputPreferences.emojiSuggestions}
                     suggestionEmojis={aiVisibleEmojis}
                     characters={characters} activeCharacterId={activeCharacterId}
@@ -4520,6 +5018,7 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
                     onClose={() => setShowThinkingChainModal(false)}
                     value={{
                         enabled: !!(char as any).showThinkingChain,
+                        autoTranslateThinking,
                         styleId: ((char as any).thinkingChainStyle as any) || 'echo',
                         customColors: {
                             bg: (char as any).thinkingChainCustomColors?.bg || '#1f2937',
@@ -4530,6 +5029,10 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
                         customCss: (char as any).thinkingChainCustomCss || '',
                     }}
                     onChange={(next) => {
+                        if (next.autoTranslateThinking !== undefined) {
+                            saveThinkingAutoTranslate(next.autoTranslateThinking);
+                            setAutoTranslateThinking(next.autoTranslateThinking);
+                        }
                         const patch: any = {};
                         if (next.enabled !== undefined) patch.showThinkingChain = next.enabled;
                         if (next.styleId !== undefined) patch.thinkingChainStyle = next.styleId;
@@ -4653,30 +5156,58 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
                 const closing = new Set(months);
                 updateCharacter(char.id, current => ({ activeMemoryMonths: (current.activeMemoryMonths || []).filter(month => !closing.has(month)) }));
             }} />}
-            <Modal isOpen={showForwardModal} title="转发聊天记录" onClose={() => setShowForwardModal(false)}>
+            <Modal isOpen={showForwardModal} title="转发聊天记录" onClose={closeForwardModal}>
                 {(() => {
                     const forwardCandidates = characters.filter(c => c.id !== activeCharacterId);
                     const forwardChars = filterCharactersByGroup(forwardCandidates, characterGroups, forwardGroupId);
                     return (
-                        <div className="space-y-2 max-h-64 overflow-y-auto">
-                            <p className="text-xs text-slate-400 mb-3">选择要转发给的角色 (已选 {selectedMsgIds.size} 条消息)</p>
-                            <CharacterGroupFilterBar characters={forwardCandidates} groups={characterGroups} value={forwardGroupId} onChange={setForwardGroupId} className="mb-2 -mx-1 px-1" />
-                            {forwardChars.map(c => (
-                                <button
-                                    key={c.id}
-                                    onClick={() => handleForwardToCharacter(c.id)}
-                                    className="w-full flex items-center gap-3 p-3 rounded-2xl bg-slate-50 hover:bg-slate-100 active:scale-[0.98] transition-all border border-slate-100"
-                                >
-                                    <TokenImg value={c.avatar} className="w-10 h-10 rounded-xl object-cover" />
-                                    <div className="flex-1 text-left">
-                                        <div className="font-bold text-sm text-slate-700">{c.name}</div>
-                                        <div className="text-[10px] text-slate-400 truncate">{c.description}</div>
+                        <div className="space-y-3">
+                            <div className="flex gap-2" role="group" aria-label="转发方式">
+                                {(['individual', 'merged'] as const).map(mode => (
+                                    <button key={mode} type="button" aria-pressed={forwardMode === mode}
+                                        disabled={preparingForward || forwardSubmitting}
+                                        onClick={() => { setForwardMode(mode); setForwardConfirmation(null); }}
+                                        className={`flex-1 rounded-xl border px-3 py-2 text-sm font-semibold ${forwardMode === mode ? 'border-slate-700 bg-slate-700 text-white' : 'border-slate-200 bg-white text-slate-600'}`}>
+                                        {mode === 'individual' ? '逐条转发' : '合并转发'}
+                                    </button>
+                                ))}
+                            </div>
+                            <p className="text-xs text-slate-500">
+                                {forwardMode === 'individual'
+                                    ? `选中 ${selectedMsgIds.size} 条；逐条发送会成为目标对话里你的独立消息。单次最多 ${MAX_INDIVIDUAL_FORWARD} 条。`
+                                    : `选中 ${selectedMsgIds.size} 条；合并转发会生成一张保留原双方身份的聊天记录卡片。`}
+                            </p>
+                            {forwardConfirmation ? (
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 space-y-3">
+                                    <p className="text-sm font-semibold text-slate-700">向【{forwardConfirmation.targetName}】逐条发送 {forwardConfirmation.plan.messages.length} 条，会成为你的消息</p>
+                                    <p className="text-xs text-slate-500">选中 {forwardConfirmation.plan.selectedCount} 条，实际可逐条发送 {forwardConfirmation.plan.messages.length} 条，另 {forwardConfirmation.plan.skippedCount} 条暂不支持。</p>
+                                    {forwardConfirmation.plan.messages.length === 0 && <p className="text-xs text-amber-700">所选消息均不支持逐条转发，目标对话不会写入。</p>}
+                                    <div className="flex gap-2">
+                                        <button type="button" onClick={() => setForwardConfirmation(null)} disabled={forwardSubmitting}
+                                            className="flex-1 rounded-xl bg-white border border-slate-200 py-2 text-sm">返回选角色</button>
+                                        <button type="button" onClick={handleConfirmIndividualForward}
+                                            disabled={forwardSubmitting || forwardConfirmation.plan.messages.length === 0}
+                                            className="flex-1 rounded-xl bg-slate-800 py-2 text-sm font-semibold text-white disabled:opacity-40">{forwardSubmitting ? '正在发送…' : '确认逐条发送'}</button>
                                     </div>
-                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4 text-slate-300"><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
-                                </button>
-                            ))}
-                            {forwardChars.length === 0 && (
-                                <div className="text-center text-xs text-slate-400 py-8">{forwardCandidates.length === 0 ? '没有其他角色可以转发' : '该分组下没有角色'}</div>
+                                </div>
+                            ) : (
+                                <div className="max-h-64 overflow-y-auto space-y-2">
+                                    <CharacterGroupFilterBar characters={forwardCandidates} groups={characterGroups} value={forwardGroupId} onChange={setForwardGroupId} className="mb-2 -mx-1 px-1" />
+                                    {forwardChars.map(c => (
+                                        <button key={c.id} type="button" disabled={preparingForward || forwardSubmitting}
+                                            onClick={() => handleForwardToCharacter(c.id)}
+                                            className="w-full flex items-center gap-3 p-3 rounded-2xl bg-slate-50 hover:bg-slate-100 active:scale-[0.98] transition-all border border-slate-100 disabled:opacity-50">
+                                            <TokenImg value={c.avatar} className="w-10 h-10 rounded-xl object-cover" />
+                                            <div className="flex-1 text-left">
+                                                <div className="font-bold text-sm text-slate-700">{c.name}</div>
+                                                <div className="text-[10px] text-slate-400 truncate">{c.description}</div>
+                                            </div>
+                                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4 text-slate-300"><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
+                                        </button>
+                                    ))}
+                                    {forwardChars.length === 0 && <div className="text-center text-xs text-slate-400 py-8">{forwardCandidates.length === 0 ? '没有其他角色可以转发' : '该分组下没有角色'}</div>}
+                                    {preparingForward && <p className="text-center text-xs text-slate-500">正在检查图片引用…</p>}
+                                </div>
                             )}
                         </div>
                     );

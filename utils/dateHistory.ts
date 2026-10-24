@@ -144,6 +144,8 @@ export function buildDateHistoryGroups(
 
 const exportedContent = (message: Message): string => {
     if (message.type === 'image') {
+        // 场景生图：见面的「本轮场景」关联图，导出时标注为场景而不是普通图片
+        if (message.metadata?.sceneImage === true) return '[场景图]';
         const description = typeof message.metadata?.visionDescription === 'string'
             ? message.metadata.visionDescription.trim()
             : '';

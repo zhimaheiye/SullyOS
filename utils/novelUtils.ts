@@ -18,6 +18,107 @@ export interface GenerationOptions {
     analyze: boolean;
 }
 
+export const hasSelectedGenerationTask = (options: GenerationOptions): boolean =>
+    options.write || options.comment || options.analyze;
+
+export const createUserNovelSegment = (
+    input: string,
+    options: GenerationOptions,
+    timestamp = Date.now(),
+): NovelSegment | null => {
+    const content = input.trim();
+    if (!content || !hasSelectedGenerationTask(options)) return null;
+
+    const isWritingInput = options.write;
+    return {
+        id: `seg-${timestamp}`,
+        role: isWritingInput ? 'writer' : 'commenter',
+        type: isWritingInput ? 'story' : 'discussion',
+        authorId: 'user',
+        content,
+        timestamp,
+    };
+};
+
+export const formatNovelSegmentForPrompt = (
+    segment: NovelSegment,
+    characters: CharacterProfile[],
+    userProfile: UserProfile,
+): string => {
+    const authorName = segment.authorId === 'user'
+        ? userProfile.name
+        : characters.find(character => character.id === segment.authorId)?.name || 'AI';
+
+    if (segment.type === 'story' || segment.role === 'writer') {
+        return `[正文｜${authorName}]\n${segment.content}`;
+    }
+    if (segment.type === 'discussion' || segment.role === 'commenter') {
+        const label = segment.authorId === 'user' ? '讨论' : '吐槽';
+        return `[${label}｜${authorName}]\n${segment.content}`;
+    }
+    if (segment.type === 'analysis' || segment.role === 'analyst') {
+        return `[分析｜${authorName}]\n${segment.content}`;
+    }
+    return `[${authorName}]\n${segment.content}`;
+};
+
+export const buildNovelInteractionContext = (
+    contextSegments: NovelSegment[],
+    characters: CharacterProfile[],
+    userProfile: UserProfile,
+): string => {
+    const summaries = contextSegments.filter(segment => segment.focus === 'chapter_summary');
+    let currentChapterStart = 0;
+    for (let index = contextSegments.length - 1; index >= 0; index--) {
+        if (contextSegments[index].focus === 'chapter_summary') {
+            currentChapterStart = index + 1;
+            break;
+        }
+    }
+
+    const sections: string[] = [];
+    if (summaries.length > 0) {
+        sections.push(`【前情回顾 / Chapter Recaps】\n\n${summaries
+            .map((summary, index) => `第${index + 1}章总结：\n${summary.content}`)
+            .join('\n\n')}`);
+    }
+
+    const currentChapter = contextSegments
+        .slice(currentChapterStart)
+        .filter(segment => segment.focus !== 'chapter_summary')
+        .map(segment => formatNovelSegmentForPrompt(segment, characters, userProfile))
+        .join('\n\n');
+    sections.push(`【当前章节互动记录 / Current Chapter】${currentChapter ? `\n\n${currentChapter}` : ''}`);
+
+    return sections.join('\n\n---\n\n');
+};
+
+export const buildNovelTurnInstruction = (
+    userText: string,
+    options: GenerationOptions,
+): string => {
+    const normalizedUserText = userText.trim();
+    if (normalizedUserText) return normalizedUserText;
+
+    const secondaryTasks = [
+        options.comment && '吐槽/感想',
+        options.analyze && '深度分析',
+    ].filter(Boolean) as string[];
+
+    if (options.write) {
+        if (secondaryTasks.length > 0) {
+            return `[用户本轮没有输入新的内容。请根据现有上下文自然续写正文，并同时完成本轮已选择的${secondaryTasks.join('与')}任务。]`;
+        }
+        return '[用户本轮没有输入新的内容。请根据现有上下文自然续写正文。]';
+    }
+
+    const requestedTasks = [
+        options.comment && '直接发表吐槽/感想和看法',
+        options.analyze && '直接进行深度分析',
+    ].filter(Boolean).join('，并');
+    return `[用户本轮没有输入新的讨论内容。请直接基于已有正文和当前章节的讨论记录${requestedTasks ? `，${requestedTasks}` : ''}。不要要求用户补充或重新提出问题。]`;
+};
+
 // --- INTELLIGENT TAGGING SYSTEM ---
 export const extractWritingTags = (char: CharacterProfile): string[] => {
     if (!char) return ['风格未定'];
@@ -64,17 +165,6 @@ export const extractWritingTags = (char: CharacterProfile): string[] => {
         .slice(0, 5);
 };
 
-// impression is the character's view OF THE USER, never a character personality.
-const writerIdentityBoundary = (char: CharacterProfile, user: UserProfile): string => `
-【人物归属边界】
-- 本次作者/分析对象只有角色「${char.name}」（char）；「${user.name}」（user）是共创搭档。
-- 核心设定、世界观、世界书和记忆可能同时描述多个人，必须按每句话的明确主语区分归属。挂载给角色不等于全部描述角色本人。
-- 世界书里属于 user、用户或「${user.name}」的经历、职业、性格、MBTI、喜好和习惯仍属于用户，不能移植为作者特征。
-- 「我眼中的${user.name} / 私密印象档案」是角色对用户的看法；其中观察到的特质和 TA 的喜好描述用户，不是角色本人的人格。这部分仅供判断共创互动方式。
-- 用户备注/爱称不能当作角色的身份或物种。不要把小说中的人物设定当成作者身份。
-- 归属不明或没有依据的能力、偏好、专业知识标记为未知或依据不足，不拿另一人的资料补齐；不要编造当前没有提供的剧情。
-`.trim();
-
 // --- Helper: Writer Persona Analysis (Simple) ---
 export const analyzeWriterPersonaSimple = (char: CharacterProfile): string => {
     if (!char) return '未知风格';
@@ -92,14 +182,100 @@ export const extractWritingTaboos = (char: CharacterProfile): string => `
 用户的喜好、雷区和习惯仅用于共创互动，不自动变成作者本人的价值观或写作限制。
 `;
 
+// impression is the character's view OF THE USER, never a character personality.
+const writerIdentityBoundary = (char: CharacterProfile, user: UserProfile): string => `
+【人物归属边界】
+- 本次作者/分析对象只有角色「${char.name}」（char）；「${user.name}」（user）是共创搭档。
+- 核心设定、世界观、世界书和记忆可能同时描述多个人，必须按每句话的明确主语区分归属。挂载给角色不等于全部描述角色本人。
+- 世界书里属于 user、用户或「${user.name}」的经历、职业、性格、MBTI、喜好和习惯仍属于用户，不能移植为作者特征。
+- 「我眼中的${user.name} / 私密印象档案」是角色对用户的看法；其中观察到的特质和 TA 的喜好描述用户，不是角色本人的人格。这部分仅供判断共创互动方式。
+- 用户备注/爱称不能当作角色的身份或物种。不要把小说中的人物设定当成作者身份。
+- 归属不明或没有依据的能力、偏好、专业知识标记为未知或依据不足，不拿另一人的资料补齐；不要编造当前没有提供的剧情。
+`.trim();
+
 // --- Helper: Writer Persona Analysis (Deep) ---
+// 角色本人的稳定设定块：只有这三项，不含用户印象、近期记忆或共创话题。
+export const writerPersonaSettingsBlock = (char: CharacterProfile): string => `姓名：${char.name}
+
+基础描述：
+${char.description || '无'}
+
+核心性格 / 行为设定：
+${char.systemPrompt || '无'}
+
+背景与世界观：
+${char.worldview || '无'}`;
+
+// 生成写作人格时给模型的指令。角色稳定设定、世界书与私密档案由 ContextBuilder
+// （buildCharacterRequest）按 你的身份 / 世界观与设定 / 私密档案 分区注入，
+// 因此这里只带任务与 9 个分析维度，不重复嵌入角色卡，避免同一段设定出现两次。
+export const buildWriterPersonaPrompt = (_char: CharacterProfile): string => `你是一位人物塑造与创作风格分析专家。
+
+上方按分区提供了这个虚构角色本身的稳定设定。你的任务不是分析这个角色最近在做什么，也不是分析他与任何用户的关系，而是推导：
+
+“如果这个角色本人成为小说作者，在不受外部共创者影响的情况下，他天然会形成怎样的写作习惯、审美、叙事偏好与作者气质？”
+
+重要原则：
+1. 只依据上方的角色自身稳定设定。
+2. 不引入任何用户信息、聊天历史、近期记忆、当前小说、当前讨论或现实事件。
+3. 不因为角色最近接触某个话题，就把那个话题当成长期创作偏好。
+4. 不虚构角色没有明确依据的职业知识或专业领域。
+5. 区分“角色是什么样的人”和“角色最近经历了什么”。
+6. 人格鲜明不等于写作能力强；不要默认角色会写漂亮小说或拥有成熟技巧。
+7. 输出应体现角色之间的真实差异，不要生成通用的“理想作者”模板。
+8. 如果上方设定中混有用户关系、互动经历或近期事件，只忽略这些内容，不得将其写入创作人格。
+
+---
+
+### 分析任务
+
+请从以下 9 个维度分析这个角色作为作者时的稳定创作人格：
+
+1. 写作能力：根据明确设定判断新手、业余、熟练或大师；没有写作经历依据时不要高估。
+2. 语言风格：大白话、书面语、诗意、学术或其它更贴切的表达方式。
+3. 表现手法：写实、印象、象征或其它自然倾向。
+4. 叙事重心：动作、情感、对话、氛围、观念或其它关注点。
+5. 偏好与禁忌：天然偏好的题材/场景，以及会回避或处理不好的俗套。
+6. 人物观：通常如何理解和对待笔下人物；这是一般创作倾向，不针对任何当前小说人物。
+7. 叙事本能：无人给出具体要求时，天然如何推动故事；包括节奏、人物/情节驱动、开放/收束、保护人物或接受残酷后果。
+8. 作者气质：作为作者整体更克制或热烈、温柔或冷酷、秩序化或发散、严肃或玩味、解释或留白、控制剧情或让人物自然生长。
+9. 知识影响：只有角色稳定设定明确表明具备某领域知识时，才描述这些知识如何影响写作；没有依据就写“无明显专业知识影响”。禁止猜测专业领域。
+
+---
+
+输出格式（严格遵守，不要使用 Markdown 标记）：
+
+写作能力: (新手/业余/熟练/大师) - 一句话说明依据
+语言风格: 具体描述并给出简短示例
+表现手法: 具体描述
+叙事重心: 具体描述
+偏好题材: 列举 3 个
+禁忌俗套: 列举 3 个
+人物观: 一句话
+叙事本能: 一句话
+作者气质: 一句话
+知识影响: 有明确依据则说明，否则写“无明显专业知识影响”
+
+字数要求：总共 400-600 字。`;
+
+// 兼容两种调用：既支持 (char, apiConfig, updateCharacter, force)，
+// 也保留二改旧调用 (char, userProfile, apiConfig, updateCharacter, force)。
+// userProfile 只用于和 ContextBuilder 的署名保持一致，不进入作者人格推导。
 export const generateWriterPersonaDeep = async (
     char: CharacterProfile,
-    userProfile: UserProfile,
-    apiConfig: any,
-    updateCharacter: (id: string, updates: Partial<CharacterProfile>) => void,
-    force: boolean = false
+    apiConfigOrUser: any,
+    updateCharacterOrApi: any,
+    forceOrUpdate?: any,
+    legacyForce?: boolean
 ): Promise<string> => {
+    const legacySignature = typeof updateCharacterOrApi !== 'function';
+    const apiConfig = legacySignature ? updateCharacterOrApi : apiConfigOrUser;
+    const updateCharacter: (id: string, updates: Partial<CharacterProfile>) => void = legacySignature ? forceOrUpdate : updateCharacterOrApi;
+    const force: boolean = legacySignature ? !!legacyForce : !!forceOrUpdate;
+    // 只用于和 ContextBuilder 的署名一致；旧签名里的 UserProfile 可选传，缺失时用一个中性署名。
+    const userProfile: UserProfile = (legacySignature && apiConfigOrUser && typeof apiConfigOrUser === 'object' && 'name' in apiConfigOrUser)
+        ? apiConfigOrUser as UserProfile
+        : ({ name: '共创搭档' } as UserProfile);
     if (!char) return "Error: No Character";
 
     if (!force && char.writerPersona && char.writerPersonaGeneratedAt) {
@@ -108,89 +284,8 @@ export const generateWriterPersonaDeep = async (
             return char.writerPersona;
         }
     }
-    
-    const analysisPrompt = `本次任务是人物写作风格分析，不是继续角色扮演。请作为写作教练，根据提供的分区资料分析「${char.name}」本人写小说时的风格。
 
-### 分析任务
-
-请从以下**8个维度**分析这个角色的写作风格：
-
-#### 1. 写作能力 (Skill Level)
-他/她实际上擅长写作吗？还是只是想写？
-- 新手：经常用错词，逻辑混乱，但有热情
-- 业余：能写通顺，但技巧生硬
-- 熟练：有自己的风格，技巧自然
-- 大师：行云流水，深谙叙事之道
-
-#### 2. 语言风格 (Language)
-他/她说话/写作时用什么语言？
-- 大白话：口语化，"就是那种感觉你懂吧"
-- 书面语：规范、优雅
-- 诗意：比喻、意象丰富
-- 学术：专业术语，逻辑严密
-
-#### 3. 表现手法 (Technique)
-他/她倾向写实还是写意？
-- 写实：精确描写，像纪录片
-- 印象派：捕捉感觉，模糊但有氛围
-- 象征派：用隐喻，一切都有深意
-
-#### 4. 叙事重心 (Focus)
-他/她写作时最关注什么？
-- 动作：打斗、追逐、机械操作
-- 情感：内心戏、人际关系
-- 对话：角色互动、语言交锋
-- 氛围：环境、意境、美学
-
-#### 5. 偏好与禁忌 (Preference)
-他/她喜欢写什么？讨厌写什么？
-- 喜欢的题材/场景
-- 避之不及的俗套
-
-#### 6. 角色理解 (Character View)
-他/她怎么看待自己笔下的【小说主角】（Fictional Protagonist）？
-(注意：是指小说里的人物，不是指正在和他对话的用户)
-- 是英雄？受害者？工具人？
-- 会不会对主角的行为有自己的意见？
-
-#### 7. 剧情态度 (Plot Opinion)
-他/她对当前剧情有什么看法？
-- 认为合理吗？
-- 会不会想改变走向？
-- 有没有更想写的支线？
-
-#### 8. 互动倾向 (Collaboration Style)
-他/她会怎么和共创搭档（用户）互动？
-- 会吐槽搭档写得不对吗？
-- 会用专业术语"互殴"吗？
-- 还是默默接受搭档的设定？
-- 态度是冷漠、热情、傲娇还是温柔？(参考性格特质)
-
----
-
-**输出格式**（严格遵守, 不要用markdown标记）：
-
-写作能力: (新手/业余/熟练/大师) - 一句话说明理由
-
-语言风格: (大白话/书面语/诗意/学术) - 举例说明
-
-表现手法: (写实/印象派/象征派) - 具体描述
-
-叙事重心: (动作/情感/对话/氛围) - 为什么
-
-偏好题材: (列举3个) | 禁忌俗套: (列举3个)
-
-主角看法: (他/她怎么看待小说主角？一句话)
-
-剧情态度: (对当前剧情的看法，30字)
-
-互动模式: (与用户的互动风格？)
-
-专业术语: (如果这个角色有特定领域的专业知识，列举3-5个术语；没有则写"无")
-
----
-
-**字数要求**：总共400-600字。`;
+    const analysisPrompt = buildWriterPersonaPrompt(char);
 
     try {
         const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
@@ -264,6 +359,7 @@ export const buildPrompt = (
     const fewShot = getFewShotExamples(char);
     const extractedTaboos = extractWritingTaboos(char); 
     const protagonistContext = activeBook?.protagonists.map(p => `- ${p.name} (${p.role}): ${p.description}`).join('\n') || '无';
+    const currentUserInstruction = buildNovelTurnInstruction(userText, options);
     
     const bookInfo = `
 小说：《${activeBook?.title}》
@@ -285,6 +381,23 @@ ${writerIdentityBoundary(char, userProfile)}
 1. 你是小说作者之一，${userProfile.name}是本次共创搭档；你对搭档的态度参考关系背景，但不能把搭档的人格当成自己的人格。
 2. 在【分析】和【吐槽】环节，请完全保持你的人设（语气、性格、对用户的态度）。
 3. 如果你们关系亲密，不要表现得像个陌生的AI工具人；如果你们关系紧张/傲娇，也要体现出来。
+
+# ⚠️ 虚构创作边界 / Fiction Boundary
+
+你现在以“共创作者、读者、评论者”的身份参与一部虚构作品。
+上方的角色与关系上下文只提供评论者的人格和现实互动语气，不提供小说事实，也不得把小说事实改写成现实记忆。
+
+【现实互动层】
+- 你是${char.name}，${userProfile.name}是与你互动的用户和共创搭档。
+- 你的真实性格、价值观、知识、审美，以及你和${userProfile.name}已有的关系，可以影响写作风格、价值判断、关注点和讨论语气。
+
+【作品虚构层】
+- 小说《${activeBook?.title}》中的正文、人物、事件、关系和经历都属于虚构作品。
+- 正文中的事情默认没有真实发生在你、${userProfile.name}或现实互动中的其他角色身上。
+- 你可以理解、喜欢、讨厌或质疑作品人物，也可以根据自己的人格鲜明地评价他们；但角色视角是“你作为作者/读者的视角”，不是“你作为剧中亲历者的视角”。
+- 即使作品人物与你、${userProfile.name}或其他现实互动对象同名，性格有所参考，关系也很相似，除非正文或用户明确说明“这是现实事件的直接复现”，否则仍须视为作品中的虚构角色。
+- 不要因为正文写了某件事，就声称“我经历过这件事”“你当时就是这样”“这是我们之间发生过的事”，也不要把作品人物关系自动等同于现实关系或共同记忆。
+- 讨论时优先说“作品里的某人”“这个角色”“这一段里”“如果我是作者/按我的理解”。你可以说“作品里的我居然就这么让你走了？这写得不像我”，但不能把该情节说成现实中真的发生过。
 
 # 身份设定
 你是 **${char.name}**。
@@ -334,8 +447,8 @@ ${bookInfo}
 
 ---
 
-# 用户指令
-${userText || '[用户未输入，请根据上文自然续写]'}
+# 本轮用户输入 / 本轮指令
+${currentUserInstruction}
 
 ---
 `;
@@ -351,6 +464,10 @@ ${userText || '[用户未输入，请根据上文自然续写]'}
 1. **分析**: 以${char.name}的视角，简评上文。
    - 语气：保持你的人设（${char.name}）。
    - 内容：如果是你觉得不合理的地方，可以直接指出；如果觉得好，可以夸奖搭档。
+   - “以你的视角”是使用你本人的性格、经验、知识、价值观和审美理解作品，不是把自己视为小说事件的亲历者。
+   - 分析的是作品中的人物和人物关系；现实中你和${userProfile.name}的关系只影响讨论语气，不自动成为小说世界观或剧情事实。
+   - 如果用户本轮没有输入问题，不代表没有分析目标。主动结合当前章节正文以及已有讨论记录，选择值得深入分析的问题。
+   - 可以回应用户或其他角色之前提出的观点，不要要求用户重新提出问题。
 `;
         jsonStructure.push(`"analysis": { "reaction": "第一反应", "focus": "关注点", "critique": "评价" }`);
     }
@@ -376,7 +493,15 @@ ${userText || '[用户未输入，请根据上文自然续写]'}
 
         tasks += `
 3. **吐槽/感想 (带互动)**: 
-   写完后的第一人称碎碎念。这是你直接对用户说的话。
+   你现在是${char.name}本人，以这部小说的共创者/读者身份，直接和${userProfile.name}讨论作品。
+   - 保持你本人的性格、口吻、价值观和审美；可以亲近、嘴硬、吐槽或直接反驳，不要变成冷冰冰的文学评论。
+   - “第一人称”只表示发表评论的人是你，不代表你亲身经历了小说中的事件。
+   - 小说里的角色是作品人物。你可以根据自己对他们的理解形成好恶和判断，但不要自动把他们与你或现实关系对象重合。
+   - 可以说“这角色明显是在嘴硬”“你居然让他这么干？我真想把稿子抢过来改掉”或“作品里的我不会这么做”。
+   - 除非用户明确说明情节就是现实事件，否则不要说“你那时候就是这样”“我当时看到你这样”或“我们之前发生这件事的时候”。
+   - 用户本轮即使没有提出具体问题，也代表主动邀请你发表意见。不要反问用户想看什么或想讨论哪部分。
+   - 直接阅读当前章节已有正文、讨论、吐槽和分析，自主选择最有感觉或最值得回应的一点发表看法。
+   - 如果前面已经存在一场讨论，自然承接前面的观点，不要每次重新做总体评价。
    
    ${recentOtherAuthors.length > 0 ? `
    **特别提示**：最近有其他作者也写了内容：
@@ -411,7 +536,8 @@ export const parsePersonaMarkdown = (rawPersona: string) => {
     const iconMap: Record<string, string> = {
         '写作能力': '✍️', '语言风格': '💬', '表现手法': '🎨',
         '叙事重心': '🎯', '偏好': '❤️', '禁忌': '🚫',
-        '主角': '👤', '剧情': '📖', '互动': '🤝',
+        '主角': '👤', '人物观': '👤', '剧情': '📖', '叙事本能': '📖',
+        '作者气质': '🪶', '知识影响': '📚', '互动': '🤝',
         '创作人格': '🧠', '特别注意': '⚠️', '审美': '✨',
         '节奏': '🎵', '关注点': '👁️', '笔触': '🖌️',
         '核心性格': '💎', '专业术语': '📚'

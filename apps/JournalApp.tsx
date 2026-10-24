@@ -3,7 +3,7 @@ import { loadCharacterContextMessages } from '../utils/chatContextRange';
 import React, { useState, useEffect, useRef } from 'react';
 import { useOS } from '../context/OSContext';
 import { DB } from '../utils/db';
-import { CharacterProfile, DiaryEntry, StickerData, DiaryPage, MemoryFragment, type JournalAppearance } from '../types';
+import { CharacterProfile, DiaryEntry, StickerData, DiaryPage, MemoryFragment, type DiaryObservations, type JournalAppearance } from '../types';
 import { ContextBuilder } from '../utils/context';
 import { processImage } from '../utils/file';
 import Modal from '../components/os/Modal';
@@ -16,10 +16,64 @@ import { getRoomLabel } from '../utils/memoryPalace/types';
 import { Sparkle, Archive } from '@phosphor-icons/react';
 import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
 import { trackEvent } from '../utils/analytics';
+import {
+    canReceiveUserDiaryBroadcast,
+    diaryTextOrTemplate,
+    isPristineUserDiaryTemplate,
+    loadJournalTemplateSetting,
+    resolveJournalTemplate,
+    saveJournalTemplateSetting,
+    type JournalTemplateSetting,
+    isUnansweredDiaryExpired,
+    normalizeDiaryObservations,
+    normalizeDiaryPage,
+    serializeUserDiaryForExchange,
+    shouldRollJournalAtMidnight,
+    syncUserDiaryContent,
+} from '../utils/journal';
+import { useLocalDateKey } from '../hooks/useLocalDateKey';
 import JournalAppearanceButton, { JournalAppearanceStyle } from '../components/journal/JournalAppearanceEditor';
 import JournalThemeArtwork from '../components/journal/JournalThemeArtwork';
+import JournalTextarea from '../components/journal/JournalTextarea';
 
 const INTRO_SEEN_KEY = 'journal_app_intro_seen_v4';
+
+const JournalTemplateSettings: React.FC<{
+    initial: JournalTemplateSetting;
+    onClose: () => void;
+    onSave: (setting: JournalTemplateSetting) => void;
+}> = ({ initial, onClose, onSave }) => {
+    const [draft, setDraft] = useState<JournalTemplateSetting>(initial);
+    const customText = draft.customText ?? '';
+    return (
+        <Modal isOpen title="新日记的默认模板" onClose={onClose}>
+            <div className="space-y-4 text-slate-700">
+                <p className="text-xs leading-relaxed text-slate-500">只作用于之后新打开、还没有正文的书写页。已经保存的日记和正在看的历史页都不会被改写。</p>
+                {([
+                    ['builtin', '使用内置反思模板'],
+                    ['custom', '使用我写的模板'],
+                    ['blank', '从空白页开始'],
+                ] as const).map(([mode, label]) => (
+                    <label key={mode} className="flex items-center gap-2 text-sm">
+                        <input type="radio" name="journal-template-mode" checked={draft.mode === mode} onChange={() => setDraft(current => ({ ...current, mode }))} />
+                        {label}
+                    </label>
+                ))}
+                {draft.mode === 'builtin' && (
+                    <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-xl bg-amber-50 p-3 text-xs text-amber-900">{resolveJournalTemplate({ mode: 'builtin' })}</pre>
+                )}
+                {draft.mode === 'custom' && (
+                    <textarea value={customText} onChange={event => setDraft(current => ({ ...current, mode: 'custom', customText: event.target.value }))} className="min-h-40 w-full rounded-xl border border-amber-200 p-3 text-sm" placeholder="写下新日记要预填的文字" />
+                )}
+                {draft.mode === 'blank' && <p className="text-xs text-slate-500">新的一天会打开真正的空白页，零点也不会自动存出一篇有内容的日记。</p>}
+                <div className="flex gap-2">
+                    <button type="button" onClick={() => setDraft({ mode: 'builtin', customText })} className="rounded-xl bg-amber-100 px-3 py-2 text-xs font-bold text-amber-900">恢复内置模板</button>
+                    <button type="button" onClick={() => onSave(draft)} className="flex-1 rounded-xl bg-amber-600 py-2 text-sm font-bold text-white">保存</button>
+                </div>
+            </div>
+        </Modal>
+    );
+};
 
 const TWEMOJI_BASE = 'https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/72x72';
 const twemojiUrl = (codepoint: string) => `${TWEMOJI_BASE}/${codepoint}.png`;
@@ -59,17 +113,10 @@ const salvageDiaryText = (raw: string): string => {
     }
 };
 
-// HELPER: Get local date string YYYY-MM-DD
-const getLocalDateStr = () => {
-    const d = new Date();
-    const year = d.getFullYear();
-    const month = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
-};
-
 const JournalApp: React.FC = () => {
     const { closeApp, characters, activeCharacterId, apiConfig, addToast, userProfile, updateCharacter, memoryPalaceConfig, characterGroups, theme } = useOS();
+    const todayDate = useLocalDateKey();
+    const previousLocalDateRef = useRef(todayDate);
     // 预览草稿只活在当前 JournalApp 会话里，不写 theme/localStorage。状态放在
     // App 顶层，才能在选择页、列表页与书写页之间切换时继续预览同一套 CSS。
     const [previewJournalAppearance, setPreviewJournalAppearance] = useState<JournalAppearance | undefined>();
@@ -92,9 +139,12 @@ const JournalApp: React.FC = () => {
     const [journalGroupId, setJournalGroupId] = useState<string>(GROUP_FILTER_ALL); // 选日记本页的分组筛选
     const [diaries, setDiaries] = useState<DiaryEntry[]>([]);
     const [currentEntry, setCurrentEntry] = useState<DiaryEntry | null>(null);
-    const [selectedDate, setSelectedDate] = useState<string>(getLocalDateStr());
+    const [selectedDate, setSelectedDate] = useState<string>(todayDate);
 
     // Onboarding popup (一次性)
+    const [templateSetting, setTemplateSetting] = useState<JournalTemplateSetting>(() => loadJournalTemplateSetting());
+    const [showTemplateSettings, setShowTemplateSettings] = useState(false);
+    const activeTemplate = resolveJournalTemplate(templateSetting);
     const [showIntro, setShowIntro] = useState<boolean>(() => {
         try { return !localStorage.getItem(INTRO_SEEN_KEY); } catch { return false; }
     });
@@ -115,7 +165,8 @@ const JournalApp: React.FC = () => {
     } | null>(null);
     const [showStickerPanel, setShowStickerPanel] = useState(false);
     const [activeTab, setActiveTab] = useState<'user' | 'char'>('user'); // View Tab
-    const [hideCharStickers, setHideCharStickers] = useState(false); // Toggle to hide char stickers
+    const [hideCharStickers, setHideCharStickers] = useState(true); // Character stickers start hidden per opened entry
+    const [activePhysicalObservation, setActivePhysicalObservation] = useState<keyof NonNullable<DiaryObservations['physical']> | null>(null);
     
     // Sticker Interaction State
     const [draggingSticker, setDraggingSticker] = useState<string | null>(null);
@@ -165,8 +216,10 @@ const JournalApp: React.FC = () => {
         }).catch(() => { if (isCurrent()) addToast('日记读取失败，请重试', 'error'); });
     });
 
-    const openEntry = (date: string) => {
-        const existing = diaries.find(d => d.date === date);
+    const openEntry = (date: string, loadedEntry?: DiaryEntry | null, shouldTrack = true) => {
+        setHideCharStickers(true);
+        setActivePhysicalObservation(null);
+        const existing = loadedEntry === undefined ? diaries.find(d => d.date === date) : loadedEntry || undefined;
         if (existing) {
             setCurrentEntry(existing);
             // Default to char tab if they replied
@@ -177,7 +230,7 @@ const JournalApp: React.FC = () => {
                 id: `diary-${Date.now()}`,
                 charId: selectedChar!.id,
                 date: date,
-                userPage: { text: '', paperStyle: 'grid', stickers: [] },
+                userPage: { text: diaryTextOrTemplate('', activeTemplate), paperStyle: 'grid', stickers: [] },
                 timestamp: Date.now(),
                 isArchived: false,
                 autoSync: true,
@@ -187,7 +240,7 @@ const JournalApp: React.FC = () => {
         setMode('write');
         setSelectedDate(date);
         setSelectedStickerId(null); // Reset selection
-        trackEvent('进入日记书写页');
+        if (shouldTrack) trackEvent('进入日记书写页');
     };
 
     // --- Editor Logic ---
@@ -207,6 +260,48 @@ const JournalApp: React.FC = () => {
             };
         });
     };
+
+    const updateUserObservations = (updater: (current: DiaryObservations) => DiaryObservations) => {
+        setCurrentEntry(prev => prev ? {
+            ...prev,
+            userPage: {
+                ...prev.userPage,
+                observations: updater(prev.userPage.observations || {}),
+            },
+        } : null);
+    };
+
+    const updatePhysicalObservation = (
+        key: keyof NonNullable<DiaryObservations['physical']>,
+        value: string,
+    ) => updateUserObservations(current => ({
+        ...current,
+        physical: { ...current.physical, [key]: value },
+    }));
+
+    const updateObservationText = (
+        key: 'emotional' | 'cognitive' | 'volitional',
+        value: string,
+    ) => updateUserObservations(current => ({ ...current, [key]: value }));
+
+    const addObservationEvent = () => updateUserObservations(current => ({
+        ...current,
+        events: [
+            ...(current.events || []),
+            { id: `observation-event-${Date.now()}-${Math.random()}`, body: '' },
+        ],
+    }));
+
+    const updateObservationEvent = (id: string, updates: { title?: string; body?: string }) =>
+        updateUserObservations(current => ({
+            ...current,
+            events: (current.events || []).map(event => event.id === id ? { ...event, ...updates } : event),
+        }));
+
+    const removeObservationEvent = (id: string) => updateUserObservations(current => ({
+        ...current,
+        events: (current.events || []).filter(event => event.id !== id),
+    }));
 
     const addSticker = (url: string) => {
         const side = activeTab;
@@ -273,6 +368,7 @@ const JournalApp: React.FC = () => {
             charAvatar: char.avatar || '',
             userName: userProfile.name,
             userText: entry.userPage.text,
+            userObservations: normalizeDiaryObservations(entry.userPage.observations),
             charText: entry.charPage?.text || '',
             userPaperStyle: entry.userPage.paperStyle,
             userPaperName,
@@ -283,7 +379,8 @@ const JournalApp: React.FC = () => {
         };
     };
 
-    // 把一条已有 charPage 的日记同步到聊天里（新建或更新 score_card）。
+    // 把一次成功交换后的双页快照同步到聊天里（新建或更新 score_card）。
+    // 普通保存不会调用这里，避免尚未重写角色回复时改动旧卡片快照。
     // 没有 charPage → 不做任何事（单方面写的日记不进上下文，这是产品规则）。
     // 返回最终带 chatCardMessageId 的 entry，供调用方接着 setCurrentEntry/saveDiary。
     const syncDiaryCardToChat = async (entry: DiaryEntry, char: CharacterProfile): Promise<DiaryEntry> => {
@@ -315,16 +412,93 @@ const JournalApp: React.FC = () => {
 
     const saveEntry = async (options: { silent?: boolean } = {}) => {
         if (!currentEntry || !selectedChar) return;
-        // 若该日记已经在聊天里有卡片（char 回复过 + 自动发送过），保存时同步更新卡片
-        let toSave = currentEntry;
-        if (currentEntry.chatCardMessageId && currentEntry.charPage) {
-            toSave = await syncDiaryCardToChat(currentEntry, selectedChar);
+        const normalizedEntry = {
+            ...currentEntry,
+            userPage: normalizeDiaryPage(currentEntry.userPage),
+        };
+        setCurrentEntry(normalizedEntry);
+        // 当前打开的日记始终允许用户主动修改；只阻止它作为其它日记保存时的广播目标被覆盖。
+        await DB.saveDiary(normalizedEntry);
+        const otherCharacters = characters.filter(char => char.id !== normalizedEntry.charId);
+        const syncResults = await Promise.all(otherCharacters.map(async char => {
+            try {
+                const existing = (await DB.getDiariesByCharId(char.id)).find(entry => entry.date === normalizedEntry.date);
+                if (!canReceiveUserDiaryBroadcast(existing)) {
+                    return { status: 'skipped_replied' as const };
+                }
+                const synced = syncUserDiaryContent(existing, char.id, normalizedEntry.date, normalizedEntry.userPage);
+                await DB.saveDiary(synced);
+                return { status: 'synced' as const };
+            } catch (error) {
+                console.warn(`🗒 [Journal] 同步到 ${char.name} 的日记失败:`, error);
+                return { status: 'failed' as const, charName: char.name };
+            }
+        }));
+        const successfulSyncCount = syncResults.filter(result => result.status === 'synced').length;
+        const skippedRepliedCount = syncResults.filter(result => result.status === 'skipped_replied').length;
+        const failedCharNames = syncResults
+            .filter((result): result is Extract<typeof result, { status: 'failed' }> => result.status === 'failed')
+            .map(result => result.charName);
+        await loadDiaries(normalizedEntry.charId);
+        if (options.silent) return;
+
+        if (otherCharacters.length === 0) {
+            addToast('日记已保存', 'success');
+        } else if (failedCharNames.length > 0 && successfulSyncCount > 0) {
+            addToast(`日记已保存，已同步到其他 ${successfulSyncCount} 本未交换日记；未能同步到：${failedCharNames.join('、')}`, 'error');
+        } else if (failedCharNames.length > 0) {
+            addToast(`日记已保存，但未能同步到：${failedCharNames.join('、')}`, 'error');
+        } else if (successfulSyncCount > 0) {
+            addToast(`日记已保存，并同步到其他 ${successfulSyncCount} 本未交换日记`, 'success');
+        } else if (skippedRepliedCount === otherCharacters.length) {
+            addToast('日记已保存，其他日记本均已交换，不再同步', 'success');
+        } else {
+            addToast('日记已保存', 'success');
         }
-        await DB.saveDiary(toSave);
-        if (toSave !== currentEntry) setCurrentEntry(toSave);
-        await loadDiaries(toSave.charId);
-        if (!options.silent) addToast('日记已保存', 'success');
     };
+
+    // 未取得角色回复的日记只保留到所属自然日结束；应用重开时也会补做清理。
+    // 若正停留在刚结束一天的书写页，先完成保存与广播，再清理并打开今天。
+    useEffect(() => {
+        const previousDate = previousLocalDateRef.current;
+        previousLocalDateRef.current = todayDate;
+        const shouldRoll = mode === 'write'
+            && Boolean(currentEntry)
+            && Boolean(selectedChar)
+            && shouldRollJournalAtMidnight(currentEntry?.date, previousDate, todayDate);
+
+        let cancelled = false;
+        void (async () => {
+            try {
+                if (shouldRoll && currentEntry && !isPristineUserDiaryTemplate(currentEntry.userPage, activeTemplate)) {
+                    await saveEntry();
+                }
+
+                const allDiaries = (await Promise.all(
+                    characters.map(character => DB.getDiariesByCharId(character.id)),
+                )).flat();
+                const expired = allDiaries.filter(entry => isUnansweredDiaryExpired(entry, todayDate));
+                await Promise.all(expired.map(entry => DB.deleteDiary(entry.id)));
+
+                if (cancelled) return;
+                if (!selectedChar) return;
+
+                const latest = await DB.getDiariesByCharId(selectedChar.id);
+                setDiaries(latest.sort((a, b) => b.date.localeCompare(a.date)));
+                if (shouldRoll) {
+                    openEntry(todayDate, latest.find(entry => entry.date === todayDate) || null, false);
+                } else if (currentEntry && expired.some(entry => entry.id === currentEntry.id)) {
+                    setCurrentEntry(null);
+                    setMode('calendar');
+                }
+            } catch (error) {
+                console.error('🗒 [Journal] 跨日保存或过期日记清理失败:', error);
+                if (shouldRoll) addToast('昨天的日记处理失败，暂未清空当前内容', 'error');
+            }
+        })();
+
+        return () => { cancelled = true; };
+    }, [todayDate, activeTemplate, characters.map(character => character.id).join('|')]);
 
     const handleDeleteDiary = async () => {
         if (!deletingDiary || !selectedChar) return;
@@ -460,7 +634,8 @@ const JournalApp: React.FC = () => {
             // 生成前仍要把用户页草稿落库，但这是重写流程的内部步骤，不能冒充用户
             // 主动点了“保存”。旧代码在这里直接 saveEntry()，于是循环按钮先弹“日记已保存”。
             await saveEntry({ silent: true });
-            await injectMemoryPalace(selectedChar, undefined, currentEntry.userPage.text);
+            const serializedUserDiary = serializeUserDiaryForExchange(currentEntry.userPage);
+            await injectMemoryPalace(selectedChar, undefined, serializedUserDiary);
             const characterContextInput = { char: selectedChar, user: userProfile };
             let systemPrompt = '';
 
@@ -521,7 +696,7 @@ Structure:
                     model: apiConfig.model,
                     messages: (await ContextBuilder.buildCharacterRequest(characterContextInput, [
                         { role: 'system', content: systemPrompt },
-                        { role: 'user', content: `Users Diary:\n${currentEntry.userPage.text}` }
+                        { role: 'user', content: `Users Diary:\n${serializedUserDiary}` }
                     ])),
                     temperature: 0.85
                 })
@@ -557,9 +732,9 @@ Structure:
                 stickers: charStickers
             };
 
-            const updatedEntry = { ...currentEntry, charPage };
-            // 自动发送 / 同步到聊天：char 有回复 → 卡片落地到对应角色的聊天历史。
-            // 重交换（同一日记重新让 char 写回复）会复用已有 chatCardMessageId 走更新而不是再创建一条。
+            const updatedEntry = { ...currentEntry, userPage: normalizeDiaryPage(currentEntry.userPage), charPage };
+            // 只有本次角色回复成功后才把双方此刻的正文固化为聊天卡快照。
+            // 重交换会复用已有 chatCardMessageId 原地更新；普通保存不会改动这张快照。
             const synced = await syncDiaryCardToChat(updatedEntry, selectedChar);
             setCurrentEntry(synced);
             await DB.saveDiary(synced);
@@ -587,7 +762,8 @@ Structure:
     const handleArchiveDiary = async (diary: DiaryEntry) => {
         if (!selectedChar || diary.isArchived) return;
         if (!apiConfig.apiKey) { addToast('请先配置主 API', 'error'); return; }
-        if (!diary.userPage.text.trim() && !diary.charPage?.text?.trim()) {
+        const serializedUserDiary = serializeUserDiaryForExchange(diary.userPage);
+        if (!serializedUserDiary && !diary.charPage?.text?.trim()) {
             addToast('日记内容为空,无法归档', 'info');
             return;
         }
@@ -608,7 +784,7 @@ Structure:
 ### 输入内容
 ${userProfile.name} 的那页:
 """
-${diary.userPage.text || '(空白页)'}
+${serializedUserDiary || '(空白页)'}
 """
 
 你 (${selectedChar.name}) 的回复页:
@@ -652,7 +828,7 @@ ${charPart}
                     palaceResult = await ingestDiaryToPalace(
                         selectedChar,
                         diary.date,
-                        diary.userPage.text,
+                        serializedUserDiary,
                         diary.charPage?.text || '',
                         memoryPalaceConfig?.lightLLM as any,
                         userProfile.name,
@@ -722,11 +898,27 @@ ${charPart}
     const renderPage = (page: DiaryPage, side: 'user' | 'char') => {
         const style = PAPER_STYLES.find(s => s.id === page.paperStyle) || PAPER_STYLES[0];
         const isInteractive = true; // Always interactive now for editing
+        const observations = normalizeDiaryObservations(page.observations);
+        const isCurrentDay = currentEntry?.date === todayDate;
+        const showObservationModule = (key: 'physical' | 'emotional' | 'cognitive' | 'volitional' | 'events') =>
+            isCurrentDay || Boolean(key === 'events' ? observations?.events?.length : observations?.[key]);
+        const physicalFields: Array<{
+            key: keyof NonNullable<DiaryObservations['physical']>;
+            label: string;
+            placeholder: string;
+        }> = [
+            { key: 'sleep', label: '睡眠', placeholder: '昨晚睡得怎么样？' },
+            { key: 'diet', label: '饮食', placeholder: '今天吃东西时有什么感觉？' },
+            { key: 'exercise', label: '运动', placeholder: '今天的身体活动给了你什么感受？' },
+            { key: 'body', label: '身体', placeholder: '此刻身体最想让你注意什么？' },
+        ];
+        const visiblePhysicalKey = activePhysicalObservation
+            || (!isCurrentDay ? physicalFields.find(field => observations?.physical?.[field.key])?.key || null : null);
 
         return (
             <div 
                 ref={side === activeTab ? paperRef : undefined}
-                className={`sully-journal-paper sully-journal-paper-${side} relative w-full h-full shadow-md transition-all duration-300 overflow-hidden ${style.css} flex flex-col rounded-3xl touch-none`}
+                className={`sully-journal-paper sully-journal-paper-${side} relative w-full h-full min-h-0 shadow-md transition-all duration-300 overflow-hidden ${style.css} flex flex-col rounded-3xl touch-pan-y`}
                 style={{ ...style.style }}
                 onPointerMove={isInteractive && side === activeTab ? handlePointerMove : undefined}
                 onPointerUp={isInteractive && side === activeTab ? handlePointerUp : undefined}
@@ -734,7 +926,7 @@ ${charPart}
                 onClick={handleBackgroundClick}
             >
                 {/* Content Container */}
-                <div className="sully-journal-page-content flex-1 p-6 relative z-10 flex flex-col">
+                <div className="sully-journal-page-content flex-1 min-h-0 p-6 relative z-10 flex flex-col overflow-y-auto no-scrollbar touch-pan-y">
                     <div className="sully-journal-page-meta flex justify-between items-center mb-4 pb-2 border-b border-black/5 shrink-0">
                         <span className={`sully-journal-page-title text-xs font-bold uppercase tracking-widest opacity-50 ${style.text}`}>
                             {side === 'user' ? 'MY DIARY' : 'REPLY'}
@@ -744,13 +936,118 @@ ${charPart}
                         </span>
                     </div>
 
-                    <textarea 
+                    <JournalTextarea
                         value={page.text}
                         onChange={e => updatePage({ text: e.target.value }, side)}
                         placeholder={side === 'user' ? "记录今天发生的事情..." : "等待回复..."}
-                        className={`sully-journal-textarea flex-1 w-full bg-transparent resize-none outline-none leading-loose text-[16px] font-normal ${style.text} placeholder:opacity-30 no-scrollbar`}
+                        className={`sully-journal-textarea flex-none min-h-[12rem] w-full bg-transparent resize-none outline-none leading-loose text-[16px] font-normal ${style.text} placeholder:opacity-30 no-scrollbar`}
                         readOnly={isThinking} 
                     />
+
+                    {side === 'user' && (isCurrentDay || observations) && (
+                        <details className={`sully-journal-observations mt-4 shrink-0 rounded-2xl border border-current/10 bg-white/45 px-3 py-2 ${style.text}`}>
+                            <summary className="cursor-pointer select-none text-sm font-bold opacity-75 py-1">
+                                看看今天的自己
+                            </summary>
+                            <div className="pt-2 space-y-2" onPointerDown={event => event.stopPropagation()}>
+                                {showObservationModule('physical') && (
+                                    <details className="rounded-xl bg-white/45 border border-current/10 px-3 py-2">
+                                        <summary className="cursor-pointer text-xs font-bold opacity-75">体能</summary>
+                                        <div className="pt-2">
+                                            <div className="flex flex-wrap gap-1.5 mb-2">
+                                                {physicalFields
+                                                    .filter(field => isCurrentDay || observations?.physical?.[field.key])
+                                                    .map(field => (
+                                                        <button
+                                                            key={field.key}
+                                                            type="button"
+                                                            onClick={() => setActivePhysicalObservation(field.key)}
+                                                            className={`px-2.5 py-1 rounded-full text-[11px] border transition-colors ${visiblePhysicalKey === field.key ? 'bg-amber-500 text-white border-amber-500' : 'bg-white/60 border-current/10 opacity-70'}`}
+                                                        >
+                                                            {field.label}
+                                                        </button>
+                                                    ))}
+                                            </div>
+                                            {visiblePhysicalKey && (
+                                                <JournalTextarea
+                                                    value={page.observations?.physical?.[visiblePhysicalKey] || ''}
+                                                    onChange={event => updatePhysicalObservation(visiblePhysicalKey, event.target.value)}
+                                                    placeholder={physicalFields.find(field => field.key === visiblePhysicalKey)?.placeholder}
+                                                    className="w-full min-h-20 rounded-xl bg-white/60 border border-current/10 px-3 py-2 text-sm leading-relaxed outline-none placeholder:opacity-35"
+                                                    readOnly={isThinking}
+                                                />
+                                            )}
+                                        </div>
+                                    </details>
+                                )}
+
+                                {([
+                                    ['emotional', '情感', '今天的情绪是怎么流动的？'],
+                                    ['cognitive', '思维', '今天有哪些念头、判断或新的理解？'],
+                                    ['volitional', '意志', '今天在哪个选择或行动里感受到了自己的意志？'],
+                                ] as const).map(([key, label, placeholder]) => showObservationModule(key) && (
+                                    <details key={key} className="rounded-xl bg-white/45 border border-current/10 px-3 py-2">
+                                        <summary className="cursor-pointer text-xs font-bold opacity-75">{label}</summary>
+                                        <JournalTextarea
+                                            value={page.observations?.[key] || ''}
+                                            onChange={event => updateObservationText(key, event.target.value)}
+                                            placeholder={placeholder}
+                                            className="mt-2 w-full min-h-20 rounded-xl bg-white/60 border border-current/10 px-3 py-2 text-sm leading-relaxed outline-none placeholder:opacity-35"
+                                            readOnly={isThinking}
+                                        />
+                                    </details>
+                                ))}
+
+                                {showObservationModule('events') && (
+                                    <details className="rounded-xl bg-white/45 border border-current/10 px-3 py-2">
+                                        <summary className="cursor-pointer text-xs font-bold opacity-75">记录一件事情</summary>
+                                        <div className="pt-2 space-y-3">
+                                            <p className="text-[11px] leading-relaxed opacity-55">
+                                                发生了什么？当时有什么感受？你怎么理解它？现在回看，想记住什么？可以顺着写，也可以只写你想写的部分。
+                                            </p>
+                                            {(page.observations?.events || []).map((event, index) => (
+                                                <div key={event.id} className="rounded-xl border border-current/10 bg-white/55 p-2.5 space-y-2">
+                                                    <div className="flex items-center gap-2">
+                                                        <input
+                                                            value={event.title || ''}
+                                                            onChange={e => updateObservationEvent(event.id, { title: e.target.value })}
+                                                            placeholder="给这件事起个标题（可选）"
+                                                            className="flex-1 min-w-0 bg-transparent border-b border-current/10 px-1 py-1 text-xs outline-none placeholder:opacity-35"
+                                                            readOnly={isThinking}
+                                                        />
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => removeObservationEvent(event.id)}
+                                                            className="px-2 py-1 text-[11px] opacity-45 hover:opacity-80"
+                                                            aria-label={`删除第 ${index + 1} 条事情记录`}
+                                                        >
+                                                            删除
+                                                        </button>
+                                                    </div>
+                                                    <JournalTextarea
+                                                        value={event.body}
+                                                        onChange={e => updateObservationEvent(event.id, { body: e.target.value })}
+                                                        placeholder="自由写下这件事情……"
+                                                        className="w-full min-h-24 rounded-lg bg-white/60 border border-current/10 px-3 py-2 text-sm leading-relaxed outline-none placeholder:opacity-35"
+                                                        readOnly={isThinking}
+                                                    />
+                                                </div>
+                                            ))}
+                                            {isCurrentDay && (
+                                                <button
+                                                    type="button"
+                                                    onClick={addObservationEvent}
+                                                    className="w-full rounded-xl border border-dashed border-current/20 py-2 text-xs font-medium opacity-60 hover:opacity-90"
+                                                >
+                                                    ＋ 记录一件事情
+                                                </button>
+                                            )}
+                                        </div>
+                                    </details>
+                                )}
+                            </div>
+                        </details>
+                    )}
                 </div>
 
                 {/* Stickers Layer */}
@@ -764,7 +1061,7 @@ ${charPart}
                             key={s.id} 
                             onPointerDown={(e) => handlePointerDown(e, s.id, 'move')}
                             onClick={(e) => selectSticker(e, s.id)}
-                            className={`sully-journal-sticker absolute text-6xl select-none drop-shadow-md z-20 cursor-move ${draggingSticker === s.id ? 'opacity-90' : ''} transition-transform`}
+                            className={`sully-journal-sticker absolute text-6xl select-none touch-none drop-shadow-md z-20 cursor-move ${draggingSticker === s.id ? 'opacity-90' : ''} transition-transform`}
                             style={{ 
                                 left: `${s.x}%`, 
                                 top: `${s.y}%`, 
@@ -845,7 +1142,7 @@ ${charPart}
             <div className="space-y-3 text-sm text-slate-700 leading-relaxed">
                 <p className="font-bold text-amber-700">几个新变化,先看一眼:</p>
                 <div className="rounded-2xl bg-amber-50 border border-amber-100 px-4 py-3 space-y-2">
-                    <p><span className="font-bold text-amber-700">① 自动同步聊天:</span> 角色回复了你的日记之后,会自动变成一张漂亮卡片出现在和这个角色的聊天里 —— 不用再手动发送。你之后在日记本里改文字 / 删日记,聊天里那张卡片也会跟着同步。</p>
+                    <p><span className="font-bold text-amber-700">① 自动同步聊天:</span> 角色回复了你的日记之后,会自动变成一张漂亮卡片出现在和这个角色的聊天里 —— 不用再手动发送。普通保存只改日记本；成功重新写回复后，才会更新聊天里的卡片快照；删除日记时也会一并删除该卡片。</p>
                     <p><span className="font-bold text-amber-700">② 单向日记不进记忆:</span> 如果你只是单方面写给角色看(没让 ta 回复),这一篇就不会进入任何记忆,按以前的方式存着就好。</p>
                     <p><span className="font-bold text-amber-700">③ 新日记不用管归档:</span> 本次更新<b>之后</b>新写的日记走的就是上面"自动同步聊天"那条线 —— 卡片进了聊天后，系统会像处理普通消息一样自动帮你整理。不需要也<b>不应该</b>再手动归档一次。所以新日记你看不到归档入口, 这是故意的。</p>
                     <p><span className="font-bold text-amber-700">④ 老日记还能手动归档:</span> 本次更新<b>之前</b>留下的老日记里, 如果是角色回复过的, <b>点进那篇日记, 右上角会有一个"归档"按钮</b>, 点一下就行 —— 就会把这篇日记整理进角色的记忆里，开了记忆宫殿的角色会记得更细。</p>
@@ -968,12 +1265,25 @@ ${charPart}
         );
     })() : null;
 
+    const templateModal = showTemplateSettings ? (
+        <JournalTemplateSettings
+            initial={templateSetting}
+            onClose={() => setShowTemplateSettings(false)}
+            onSave={next => {
+                setTemplateSetting(saveJournalTemplateSetting(next));
+                setShowTemplateSettings(false);
+                addToast('默认模板已保存，只用于之后新打开的空白页', 'success');
+            }}
+        />
+    ) : null;
+
     if (mode === 'select') {
         return (
             <div className={`sully-journal-root sully-journal-select h-full w-full bg-amber-50 flex flex-col font-light${journalLayoutClass}`}>
                 <JournalAppearanceStyle appearance={effectiveJournalAppearance} />
                 {introModal}
                 {archiveResultModal}
+                {templateModal}
                 <JournalThemeArtwork preset={effectiveJournalPreset} scene="select" />
                 <div className="sully-journal-header border-b border-amber-100 bg-amber-50/80 backdrop-blur-sm sticky top-0 z-20 shrink-0" style={{ paddingTop: 'var(--chrome-top)' }}>
                     <div className="h-12 px-6 flex items-center justify-between">
@@ -981,14 +1291,17 @@ ${charPart}
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6 text-amber-900"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
                         </button>
                         <span className="sully-journal-header-title font-bold text-amber-900 text-lg tracking-wide">选择日记本</span>
-                        <JournalAppearanceButton compact {...journalAppearanceButtonProps} />
+                        <div className="flex items-center gap-1">
+                            <button type="button" onClick={() => setShowTemplateSettings(true)} className="rounded-full px-2 py-1 text-xs font-bold text-amber-800 hover:bg-amber-100">默认模板</button>
+                            <JournalAppearanceButton compact {...journalAppearanceButtonProps} />
+                        </div>
                     </div>
                 </div>
                 
                 {/* 分组筛选（没建分组时不渲染），浅色米黄底 */}
                 <CharacterGroupFilterBar characters={characters} groups={characterGroups}
                     value={journalGroupId} onChange={setJournalGroupId} className="sully-journal-group-filter px-6 pt-4 shrink-0" />
-                <div className="sully-journal-notebook-grid p-6 grid grid-cols-2 gap-5 overflow-y-auto pb-20 no-scrollbar">
+                <div className="sully-journal-notebook-grid p-6 grid grid-cols-2 auto-rows-max content-start gap-5 flex-1 min-h-0 overflow-y-auto pb-20 no-scrollbar">
                     {filterCharactersByGroup(characters, characterGroups, journalGroupId).map(c => (
                         <div key={c.id} onClick={() => handleCharSelect(c)} className="sully-journal-notebook aspect-[3/4] bg-white rounded-r-2xl rounded-l-md border-l-4 border-l-amber-800 shadow-[2px_4px_12px_rgba(0,0,0,0.08)] p-4 flex flex-col items-center justify-center gap-3 cursor-pointer active:scale-95 transition-all relative overflow-hidden group">
                             <div className="absolute inset-y-0 left-0 w-2 bg-gradient-to-r from-black/10 to-transparent"></div>
@@ -1010,6 +1323,7 @@ ${charPart}
                 <JournalAppearanceStyle appearance={effectiveJournalAppearance} />
                 {introModal}
                 {archiveResultModal}
+                {templateModal}
                 <JournalThemeArtwork preset={effectiveJournalPreset} scene="calendar" />
                 <div className="sully-journal-calendar-hero pb-6 px-6 bg-amber-500 shadow-lg shrink-0 rounded-b-[2rem] z-20" style={{ paddingTop: 'max(3rem, var(--safe-top))' }}>
                     <div className="flex justify-between items-start mb-4">
@@ -1025,7 +1339,8 @@ ${charPart}
                 </div>
 
                 <div className="sully-journal-calendar-list flex-1 overflow-y-auto p-5 pb-20 no-scrollbar">
-                    <button onClick={() => openEntry(getLocalDateStr())} className="sully-journal-new-entry w-full py-5 mb-8 border-2 border-dashed border-amber-200 rounded-2xl text-amber-500 font-bold flex items-center justify-center gap-2 hover:bg-amber-50 active:scale-95 transition-all">
+                    <button type="button" onClick={() => setShowTemplateSettings(true)} className="mb-3 text-xs font-bold text-amber-700">设置新日记的默认模板</button>
+                    <button onClick={() => openEntry(todayDate)} className="sully-journal-new-entry w-full py-5 mb-8 border-2 border-dashed border-amber-200 rounded-2xl text-amber-500 font-bold flex items-center justify-center gap-2 hover:bg-amber-50 active:scale-95 transition-all">
                         <span className="text-xl">+</span> 写今天的日记
                     </button>
                     
@@ -1159,19 +1474,19 @@ ${charPart}
             </div>
 
             {/* Main Page Area */}
-            <div className="sully-journal-editor-stage flex-1 relative w-full overflow-hidden flex flex-col">
-                <div className={`flex-1 w-full mx-auto px-2 pb-4 pt-2 flex flex-col relative ${journalUsesScrapbookLayout ? 'max-w-5xl' : 'max-w-xl'}`}>
-                    <div className="flex-1 relative rounded-3xl transition-all duration-500">
+            <div className="sully-journal-editor-stage flex-1 min-h-0 relative w-full overflow-hidden flex flex-col">
+                <div className={`flex-1 min-h-0 w-full mx-auto px-2 pb-4 pt-2 flex flex-col relative ${journalUsesScrapbookLayout ? 'max-w-5xl' : 'max-w-xl'}`}>
+                    <div className="flex-1 min-h-0 relative rounded-3xl transition-all duration-500">
                         {journalUsesScrapbookLayout ? (
-                            <div className="sully-journal-spread">
+                            <div className="sully-journal-spread h-full min-h-0 grid-rows-[minmax(0,1fr)]">
                                 <div
-                                    className={`sully-journal-spread-page sully-journal-spread-user ${activeTab === 'user' ? 'is-active' : 'is-inactive'}`}
+                                    className={`sully-journal-spread-page min-h-0 sully-journal-spread-user ${activeTab === 'user' ? 'is-active' : 'is-inactive'}`}
                                     onPointerDownCapture={() => setActiveTab('user')}
                                 >
                                     {currentEntry && renderPage(currentEntry.userPage, 'user')}
                                 </div>
                                 <div
-                                    className={`sully-journal-spread-page sully-journal-spread-char ${activeTab === 'char' ? 'is-active' : 'is-inactive'}`}
+                                    className={`sully-journal-spread-page min-h-0 sully-journal-spread-char ${activeTab === 'char' ? 'is-active' : 'is-inactive'}`}
                                     onPointerDownCapture={() => setActiveTab('char')}
                                 >
                                     {currentEntry?.charPage ? renderPage(currentEntry.charPage, 'char') : renderEmptyCharPage()}

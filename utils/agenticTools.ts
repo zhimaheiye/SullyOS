@@ -15,6 +15,7 @@
 // amsg worker bundle 原样打包跑在服务端工具循环里；类型统一 import type，不进 bundle。
 import type { CharacterProfile, RealtimeConfig, UserProfile } from '../types';
 import type { XhsNote } from './realtimeContext';
+import { getProxyWorkerUrl } from './proxyWorker';
 import {
     performSearch,
     notionGetDiaryByDate,
@@ -202,10 +203,13 @@ export async function runSearch(
     ctx: AgenticToolCtx,
 ): Promise<SearchResult> {
     const { realtimeConfig } = ctx;
-    if (!realtimeConfig?.newsEnabled || !realtimeConfig?.newsApiKey) {
+    // 个人 Key 走玩家自己的额度。没填 Key 但公共代理可用时，改走发行方的共享额度。
+    // 新闻开关没开、两边都没有时，保持原来的「没配置」结果，不额外发请求。
+    const personalKey = realtimeConfig?.newsApiKey || '';
+    if (!realtimeConfig?.newsEnabled || (!personalKey && !getProxyWorkerUrl())) {
         return { ok: false, reason: 'no_api_key', query: args.query };
     }
-    const searchResult = await performSearch(args.query, realtimeConfig.newsApiKey, ctx.signal);
+    const searchResult = await performSearch(args.query, personalKey, ctx.signal);
     // 「请求没跑通」和「搜过了但没结果」得分开（同 runXhsSearch）。performSearch 的
     // success:false 两种都包：断网、代理 5xx、返回不是 JSON，跟真的零结果混在一起。
     // 都归 no_results 的话，角色会把一次根本没发出去的搜索说成「我刚搜了下，没什么新鲜的」。

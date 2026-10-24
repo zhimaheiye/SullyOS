@@ -1,6 +1,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const { spawn } = require('child_process');
 
 const root = path.resolve(process.argv[2] || 'dist');
 const host = process.env.HOST || '127.0.0.1';
@@ -62,7 +63,16 @@ const server = http.createServer((req, res) => {
   });
 });
 
+for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {
+  server.close(() => process.exit(0));
+  server.closeAllConnections();
+});
+
 server.listen(port, host, () => {
   console.log(`Listening on http://${host}:${port}`);
   console.log(`Serving ${root}`);
+  if (process.argv.includes('--open')) {
+    const opener = spawn('explorer.exe', [`http://${host}:${port}/`], { detached: true, stdio: 'ignore', windowsHide: true });
+    opener.unref();
+  }
 });

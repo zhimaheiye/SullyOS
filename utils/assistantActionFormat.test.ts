@@ -2,6 +2,17 @@ import { describe, expect, it } from 'vitest';
 import { normalizeAssistantActionFormatting as normalize } from './assistantActionFormat';
 
 describe('normalizeAssistantActionFormatting', () => {
+    it('修复新闻卡片的全角标点、中文名和单层括号', () => {
+        expect(normalize('[[NEWS_CARD： 微博｜某某官宣 ]]'))
+            .toBe('[[NEWS_CARD: 微博|某某官宣]]');
+        expect(normalize('[NEWS_CARD: 知乎|一个问题]'))
+            .toBe('[[NEWS_CARD: 知乎|一个问题]]');
+        expect(normalize('[新闻卡片：抖音｜一条视频]'))
+            .toBe('[[NEWS_CARD: 抖音|一条视频]]');
+        expect(normalize('[[NEWS_CARD: 微博|某某官宣]]'))
+            .toBe('[[NEWS_CARD: 微博|某某官宣]]');
+    });
+
     it.each(['[[SEND_EMOJI：咬你]]', '[[send_emoji: 咬你]]', '[凯恩 发送了表情包：咬你]'])('统一表情变体 %s 且重复处理不变', raw => {
         expect(normalize(raw)).toBe('[[SEND_EMOJI: 咬你]]');
         expect(normalize(normalize(raw))).toBe('[[SEND_EMOJI: 咬你]]');
@@ -36,6 +47,7 @@ describe('normalizeAssistantActionFormatting', () => {
             .toBe('[生活记录：支出 13（西瓜汁）（已有记录，未重复添加）]');
         expect(normalize('她发了一个开心表情')).toBe('她发了一个开心表情');
         expect(normalize('我看了[那本书]')).toBe('我看了[那本书]');
+        expect(normalize('我刚刷到一条新闻，马上分享给你')).toBe('我刚刷到一条新闻，马上分享给你');
     });
 });
 
@@ -55,6 +67,14 @@ describe('sticker history syntax recovery', () => {
 
 it('repairs adjacent stickers without skipping the second token', () => {
  expect(normalize('[[你发送了表情包: 甲]][[你发送了表情包: 乙]]')).toBe('[[SEND_EMOJI: 甲]][[SEND_EMOJI: 乙]]');
+});
+
+it('preserves no-lookbehind equivalence for preceding bracket boundaries', () => {
+ expect(normalize('[表情: 开心]')).toBe('[[SEND_EMOJI: 开心]]');
+ expect(normalize('[[SEND_EMOJI: 开心]]')).toBe('[[SEND_EMOJI: 开心]]');
+ expect(normalize('[[[表情: 开心]')).toBe('[[[表情: 开心]');
+ expect(normalize('【[表情: 开心]')).toBe('【[表情: 开心]');
+ expect(normalize('［[表情: 开心]')).toBe('［[表情: 开心]');
 });
 
 it.each(['[', '【', '［'])('preserves extra opening bracket %s and still repairs the next sticker', prefix => {

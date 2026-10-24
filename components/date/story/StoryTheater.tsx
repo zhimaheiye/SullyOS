@@ -21,17 +21,19 @@ import StoryMaskBox from './StoryMaskBox';
 import StoryPresetMaker from './StoryPresetMaker';
 import StoryTheaterEditor from './StoryTheaterEditor';
 import StoryTheaterSession from './StoryTheaterSession';
+import StoryTimelineGraph from './StoryTimelineGraph';
 import StoryVectorMemoryPanel from './StoryVectorMemoryPanel';
 import StoryArchivePanel from './StoryArchivePanel';
 import { StoryAppearanceButton, StoryTheaterThemeProvider } from './StoryTheaterTheme';
 import { deleteStoryTheaterData } from '../../../utils/storyTheaterDeletion';
+import { ensureStoryTimeline } from '../../../utils/storyTheaterTimelineStorage';
 
 interface Props {
     onSwitchCompanion: () => void;
     onClose: () => void;
 }
 
-type View = 'list' | 'editor' | 'session' | 'preset' | 'masks' | 'vectors' | 'archives';
+type View = 'list' | 'editor' | 'session' | 'timeline' | 'preset' | 'masks' | 'vectors' | 'archives';
 
 const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) => {
     const { characters, userProfile, addToast, remoteVectorConfig } = useOS();
@@ -73,9 +75,17 @@ const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) =>
     const saveEntry = useCallback(async (next: StoryTheaterEntry) => {
         const normalized = normalizeStoryTheater(next);
         await DB.saveStoryTheater(normalized);
-        setEntries(current => [normalized, ...current.filter(item => item.id !== normalized.id)].sort((a, b) => b.updatedAt - a.updatedAt));
-        setActiveEntry(normalized);
+        const ready = normalized.writesToCharacterMemory ? normalized : (await ensureStoryTimeline(normalized)).entry;
+        setEntries(current => [ready, ...current.filter(item => item.id !== ready.id)].sort((a, b) => b.updatedAt - a.updatedAt));
+        setActiveEntry(ready);
         setView('session');
+    }, []);
+
+    const openStory = useCallback(async (entry: StoryTheaterEntry, target: 'session' | 'timeline' = 'session') => {
+        const ready = entry.writesToCharacterMemory ? entry : (await ensureStoryTimeline(entry)).entry;
+        setActiveEntry(ready);
+        setEntries(current => current.map(item => item.id === ready.id ? ready : item));
+        setView(target);
     }, []);
 
     const persistEntryInSession = useCallback(async (next: StoryTheaterEntry) => {
@@ -213,10 +223,17 @@ const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) =>
     if (view === 'vectors' && activeEntry) return <StoryVectorMemoryPanel entry={activeEntry} onBack={() => setView('session')} />;
     if (view === 'archives' && activeEntry) return <StoryArchivePanel entry={activeEntry} masks={masks} onBack={() => setView('session')} onUpdated={next => {setActiveEntry(next);setEntries(current => current.map(item => item.id === next.id ? next : item));}} />;
 
+    if (view === 'timeline' && activeEntry && !activeEntry.writesToCharacterMemory) return <StoryTimelineGraph
+        entry={activeEntry}
+        onBack={() => setView('session')}
+        onOpenSession={() => setView('session')}
+        onEntryChange={persistEntryInSession}
+    />;
+
     if (view === 'session' && activeEntry) {
         const preset = presets.find(item => item.id === activeEntry.presetId) || BUILTIN_NIGHT_SCREENING_PRESET;
         const hasVectorArchive = (!activeEntry.writesToCharacterMemory && activeEntry.archiveStrategy === 'vector') || activeEntry.archives.some(archive => archive.strategy === 'vector');
-        return <StoryTheaterSession entry={activeEntry} preset={preset} masks={masks} onBack={() => { setActiveEntry(null); setView('list'); }} onEdit={() => void openEntryEditor(activeEntry)} onOpenArchives={() => setView('archives')} onOpenVectorMemory={hasVectorArchive ? () => setView('vectors') : undefined} onEntryChange={persistEntryInSession} />;
+        return <StoryTheaterSession entry={activeEntry} preset={preset} masks={masks} onBack={() => { setActiveEntry(null); setView('list'); }} onEdit={() => void openEntryEditor(activeEntry)} onOpenTimeline={!activeEntry.writesToCharacterMemory ? () => setView('timeline') : undefined} onOpenArchives={() => setView('archives')} onOpenVectorMemory={hasVectorArchive ? () => setView('vectors') : undefined} onEntryChange={persistEntryInSession} />;
     }
 
     return <div className='h-full w-full flex flex-col bg-stone-100 text-slate-800'>
@@ -248,7 +265,7 @@ const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) =>
                         const vectorEnabled = item.archiveStrategy === 'vector' && !item.writesToCharacterMemory;
                         const hasVectorArchive = vectorEnabled || item.archives.some(archive => archive.strategy === 'vector');
                         return <div key={item.id} className='w-full py-5 flex items-center gap-2'>
-                            <button onClick={() => { setActiveEntry(item); setView('session'); }} className='min-w-0 flex-1 flex items-center gap-4 text-left'>
+                            <button onClick={() => { void openStory(item); }} className='min-w-0 flex-1 flex items-center gap-4 text-left'>
                                 <div className='flex -space-x-2'>{mask.avatar ? <TokenImg value={mask.avatar} alt='' className='w-10 h-10 rounded-full object-cover border-2 border-slate-800 relative z-10' /> : <span className='w-10 h-10 rounded-full bg-slate-800 text-white grid place-items-center border-2 border-slate-800 relative z-10 text-xs font-serif'>{mask.name.slice(0, 1)}</span>}{cast.slice(0, 2).map(char => <TokenImg key={char.id} value={char.avatar} alt='' className='w-10 h-10 rounded-full object-cover border-2 border-stone-100' />)}{cast.length === 0 && <span className='w-10 h-10 rounded-full bg-slate-200 grid place-items-center'><UsersThree size={18} /></span>}</div>
                                 <div className='min-w-0 flex-1'><h3 className='font-serif font-semibold truncate'>{item.title}</h3><p className='mt-1 text-[10px] text-slate-400 truncate'>{youLabel} · 角色：{cast.map(char => char.name).join('、') || '暂无'} · {item.writesToCharacterMemory ? '进入角色记忆' : vectorEnabled ? '独立向量剧场' : '独立事件盒'}</p></div>
                                 <time className='text-[9px] text-slate-400'>{new Date(item.updatedAt).toLocaleDateString()}</time>

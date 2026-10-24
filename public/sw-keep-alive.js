@@ -1754,15 +1754,9 @@ function createStaticCache(deps) {
   };
   const refreshing = /* @__PURE__ */ new Set();
   const missing = (response) => response.status === 404 || response.status === 410 || response.ok && /^text\/html\b/i.test(response.headers.get("Content-Type") || "");
-  let installation;
-  function install() {
-    return installation ??= prepareShell().finally(() => {
-      installation = void 0;
-    });
-  }
-  async function prepareShell() {
-    const cache = await caches.open(shellName);
+  async function install() {
     try {
+      const cache = await caches.open(shellName);
       async function prepare(path) {
         const entry = entries.get(absolute(path));
         if (!entry) throw new Error(`Missing shell entry: ${path}`);
@@ -1808,8 +1802,7 @@ function createStaticCache(deps) {
       if (failure) throw failure.reason;
       await prepare("index.html");
     } catch (error) {
-      const index = entries.get(absolute("index.html"));
-      if (index) await cache.delete(keyFor(index)).catch(() => {
+      await caches.delete(shellName).catch(() => {
       });
       throw error;
     }
@@ -1818,18 +1811,7 @@ function createStaticCache(deps) {
     const old = (await caches.keys()).filter((name) => name.startsWith(`${prefix}shell-`) && name !== shellName);
     if (inUseBuilds) {
       const protectedNames = new Set(inUseBuilds.map((build) => `${prefix}shell-${build}`));
-      if (old.length) protectedNames.add(old[old.length - 1]);
-      for (const name of [...old].reverse()) {
-        const keys = await (await caches.open(name)).keys();
-        if (keys.some((key) => {
-          const url = new URL(key.url);
-          return `${url.origin}${url.pathname}` === absolute("index.html");
-        })) {
-          protectedNames.add(name);
-          break;
-        }
-      }
-      for (const name of old) if (!protectedNames.has(name)) await caches.delete(name);
+      for (const name of old.slice(0, -1)) if (!protectedNames.has(name)) await caches.delete(name);
     }
     await serial(async () => prune(await caches.open(runtimeName)));
   }
@@ -2219,6 +2201,18 @@ function syncProactive(configs) {
   }
   refreshKeepAlive();
 }
+function readPushPayload2(event) {
+  if (!event.data) return null;
+  try {
+    return event.data.json();
+  } catch {
+    try {
+      return { message: event.data?.text() };
+    } catch {
+      return null;
+    }
+  }
+}
 var inboxDbPromise = null;
 function openInboxDb() {
   if (inboxDbPromise) return inboxDbPromise;
@@ -2539,4 +2533,44 @@ sw.addEventListener("install", (event) => {
 });
 sw.addEventListener("activate", (event) => {
   event.waitUntil(sw.clients.claim());
+});
+sw.addEventListener("push", (event) => {
+  const payload = readPushPayload2(event);
+  if (!payload || payload.type !== "proactive-message") return;
+  const content = payload.content || "";
+  const charId = payload.charId || "";
+  if (!content) return;
+  let charName = charId;
+  const sched = proactiveSchedules.get(charId);
+  const displayName = charName.length > 20 ? charName.slice(0, 20) : charName;
+  event.waitUntil((async () => {
+    try {
+      await sw.registration.showNotification(displayName, {
+        body: content.length > 200 ? content.slice(0, 200) + "\u2026" : content,
+        icon: "./icons/icon-192.png",
+        badge: "./icons/icon-192.png",
+        data: { type: "proactive-message", charId, content },
+        tag: `proactive-${charId}-${Math.floor(Date.now() / 6e4)}`,
+        requireInteraction: false
+      });
+      const clients = await sw.clients.matchAll({ type: "window", includeUncontrolled: true });
+      for (const client of clients) {
+        client.postMessage({ type: "proactive-wake-received", charId, t: Date.now() });
+      }
+    } catch (e) {
+      console.error("[ProactivePush] showNotification failed", e);
+    }
+  })());
+});
+sw.addEventListener("notificationclick", (event) => {
+  const data = event.notification?.data;
+  if (!data || data.type !== "proactive-message") return;
+  event.notification.close();
+  event.waitUntil((async () => {
+    const charId = data.charId;
+    const openUrl = new URL(sw.registration.scope || sw.location.origin);
+    openUrl.searchParams.set("openApp", "chat");
+    if (charId) openUrl.searchParams.set("activeMsgCharId", charId);
+    await sw.clients.openWindow(openUrl.toString());
+  })());
 });

@@ -1,4 +1,5 @@
 import {expect,it,vi} from 'vitest';
+// @ts-expect-error Room helper is a JavaScript module without TypeScript declarations.
 import {createRoomFinishPass} from '../apps/room3d/roomFinishPass.js';
 
 it('keeps the sharp source full size and samples only the halo at quarter pixel count, reusing buffers',()=>{

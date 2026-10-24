@@ -1,5 +1,29 @@
 import { describe, it, expect, vi } from 'vitest';
-import { DB, openDB } from './db';
+import { DB, DB_VERSION, openDB } from './db';
+
+describe('character life store migration', () => {
+  it('upgrades an existing v95 database without losing character data', async () => {
+    await DB.deleteDB();
+    const old = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('AetherOS_Data', 95);
+      request.onupgradeneeded = () => request.result.createObjectStore('characters', { keyPath: 'id' });
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    await new Promise<void>((resolve, reject) => {
+      const tx = old.transaction('characters', 'readwrite');
+      tx.objectStore('characters').put({ id: 'kept', name: '保留角色' });
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    old.close();
+    const upgraded = await openDB();
+    expect(upgraded.version).toBe(DB_VERSION);
+    expect(upgraded.objectStoreNames.contains('character_life')).toBe(true);
+    expect((await DB.getAllCharacters()).some(character => character.id === 'kept')).toBe(true);
+    await DB.deleteDB();
+  });
+});
 
 // fake-indexeddb 已通过 test-setup.ts 注入。这组用例锁住「单例连接复用」这条修复:
 // 修复前 openDB 每次调用都 indexedDB.open() 新开一条连接 (a !== b, 且每个 DB 操作

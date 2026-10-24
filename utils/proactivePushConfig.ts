@@ -21,18 +21,12 @@
 //   Settings → 推送凭据 (VAPID) 里生成；跟主动消息 2.0 用同一份，避免互相
 //   unsubscribe 抢同一个 pushManager 订阅。
 // ═══════════════════════════════════════════════════════════════════
-const WORKER_URL = 'https://noir2.cc.cd';
-const CLIENT_TOKEN = 'weqwqewqeqwdcsccagdgs32132';
+// 公开版本不附带任何人的私人推送地址。玩家需要自己部署 worker/proactive-push 后再填写。
+const WORKER_URL = '';
+const CLIENT_TOKEN = '';
 // ═══════════════════════════════════════════════════════════════════
 
-// ── 全局停用开关（KILL SWITCH）─────────────────────────────────────
-// 主动消息 Push 加速这层已经全局下线（设置面板也藏了）。已经开过的用户
-// localStorage 里 proactive_push_enabled_v1 还是 'true'，光藏 UI 改不了，
-// 他们的客户端会照常心跳、Worker 照常发 wake push。把这里设成 true 后，
-// loadPushConfig() 一律返回 enabled=false：心跳不再启动、不再向 Worker
-// 注册，Worker 在心跳窗口（默认 5 分钟）内自动对这些设备停发。
-// 注意：只关掉 Worker 加速层，proactiveChat.ts 的本地定时主动消息不受影响。
-const FORCE_DISABLED = true;
+const FORCE_DISABLED = false;
 // ───────────────────────────────────────────────────────────────────
 
 import { loadPushVapid, isPushVapidReady } from './pushVapid';
@@ -180,7 +174,7 @@ function buildHeaders(cfg: ProactivePushConfig): HeadersInit {
  * Register or update a schedule on the Worker.  Returns true on success.
  * Failures are swallowed — the local-timer path still works regardless.
  */
-export async function registerScheduleOnWorker(charId: string, intervalMs: number): Promise<boolean> {
+export async function registerScheduleOnWorker(charId: string, intervalMs: number, systemPrompt?: string): Promise<boolean> {
   const cfg = loadPushConfig();
   if (!isPushConfigReady(cfg)) return false;
 
@@ -188,17 +182,20 @@ export async function registerScheduleOnWorker(charId: string, intervalMs: numbe
   if (!sub) return false;
 
   try {
+    const body: any = {
+      subscription: {
+        endpoint: sub.endpoint,
+        keys: { p256dh: sub.p256dh, auth: sub.auth },
+      },
+      charId,
+      intervalMs,
+    };
+    if (systemPrompt) body.systemPrompt = systemPrompt;
+
     const res = await fetch(`${cfg.workerUrl}/subscribe`, {
       method: 'POST',
       headers: buildHeaders(cfg),
-      body: JSON.stringify({
-        subscription: {
-          endpoint: sub.endpoint,
-          keys: { p256dh: sub.p256dh, auth: sub.auth },
-        },
-        charId,
-        intervalMs,
-      }),
+      body: JSON.stringify(body),
     });
     return res.ok;
   } catch (e) {

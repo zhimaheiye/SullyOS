@@ -58,8 +58,9 @@ const sampleBackup = () => ({
     // 非数组字段 → metadata.json
     timestamp: 123,
     version: 3,
-    theme: { name: 'dark', wallpaper: 'assets/asset_1.png' },
+    theme: { name: 'dark', wallpaper: 'assets/asset_1.png', launcherAppOrder: ['chat', '', 'launcher:folder'], launcherFolderApps: ['gallery'], launcherFolderName: '不太常用' },
     userProfile: { name: '小明', avatar: 'assets/asset_2.png' },
+    chatActionOrders: { private: ['side-story', 'collaboration'], group: ['group-html-mode', 'group-image'] },
     lifeSimState: null,                 // 单例空 → null，仍要原样带回（v1 语义：清目标）
     apiConfig: undefined,               // undefined 字段 → JSON 丢弃，导入端拿不到（与 v1 一致）
     // 数组字段 → 分片
@@ -69,6 +70,17 @@ const sampleBackup = () => ({
 });
 
 describe('backupFormat v2 往返', () => {
+    it('keeps raw Veglia facts, hidden legacy cards, and corrected episodes in a sharded schedule backup', async () => {
+        const zip = new FakeZip();
+        const myScheduleRecords = [
+            { id: 'raw:1', kind: 'activity', raw: { app: 'editor' } },
+            { id: 'schedule:raw:1', kind: 'entry', legacyFragmentHidden: true },
+            { id: 'episode:raw:1', kind: 'entry', rawObservationIds: ['raw:1'], manualCorrection: true },
+        ];
+        const manifest = await writeV2Backup(zip, { myScheduleRecords }, { limits: { maxLen: 256, maxItems: 1, hardMaxLen: 1000 } });
+        expect(manifest.stores.myScheduleRecords).toEqual({ parts: 3, count: 3 });
+        expect((await assembleV2Backup(zip, manifest)).myScheduleRecords).toEqual(myScheduleRecords);
+    });
     it('写 → 读：每个字段与原 backupData 逐字段一致（数组照旧、非数组照旧）', async () => {
         const zip = new FakeZip();
         const src = sampleBackup();
@@ -91,6 +103,7 @@ describe('backupFormat v2 往返', () => {
         expect(data.memoryNodes).toEqual(src.memoryNodes);
         expect(data.theme).toEqual(src.theme);
         expect(data.userProfile).toEqual(src.userProfile);
+        expect(data.chatActionOrders).toEqual(src.chatActionOrders);
         expect(data.lifeSimState).toBe(null);                // null 原样带回
         expect('apiConfig' in data).toBe(false);             // undefined 字段被 JSON 丢弃，导入端没有
         expect(data.timestamp).toBe(123);
@@ -347,6 +360,29 @@ describe('backupFormat v2 向量二进制旁路', () => {
 // FakeZip 只验逻辑，验不到真 JSZip 的二进制编码 + generateAsync/loadAsync 实际行为。
 // 这条用真 JSZip 跑完整往返，钉死「bin 直写 Uint8Array、读回 async('uint8array') 字节无损」。
 describe('backupFormat v2 真实 JSZip 二进制往返', () => {
+    it('聊愈四张表和独立向量旁路会完整往返', async () => {
+        const zip = new JSZip();
+        const healingVectors = makeVectorPayload([
+            { memoryId: 'hm1', charId: '', values: [0.25, -0.5], model: 'heal-embed' },
+        ]);
+        await writeV2Backup(zip as any, {
+            healingSessions: [{ id: 'hs1', charId: 'c1', createdAt: 1, updatedAt: 1 }],
+            healingMessages: [{ id: 1, sessionId: 'hs1', charId: 'c1', role: 'user', type: 'text', content: '保留原话', timestamp: 2 }],
+            healingMemoryNodes: [{ id: 'hm1', content: '一条聊愈记忆' }],
+        }, { healingVectors });
+
+        const bytes = await zip.generateAsync({ type: 'uint8array' });
+        const loaded = await JSZip.loadAsync(bytes);
+        const manifest = JSON.parse(await loaded.file('manifest.json')!.async('string'));
+        const data = await assembleV2Backup(loaded as any, manifest);
+
+        expect(data.healingSessions[0].id).toBe('hs1');
+        expect(data.healingMessages[0].content).toBe('保留原话');
+        expect(data.healingMemoryNodes[0].id).toBe('hm1');
+        expect(data.healingMemoryVectors[0]).not.toHaveProperty('charId');
+        expect(Array.from(new Float32Array(data.healingMemoryVectors[0].vector.buffer))).toEqual([0.25, -0.5]);
+    });
+
     it('真 JSZip：写 bin + 分片 + metadata → generateAsync → loadAsync → 读 manifest → 完整还原', async () => {
         const zip = new JSZip();
         const payload = makeVectorPayload([

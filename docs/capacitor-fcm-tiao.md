@@ -37,9 +37,7 @@ powershell -ExecutionPolicy Bypass -File scripts\sync-tiao-capacitor.ps1
 
 `D:\CHICK\CHICK2\android\app\build\outputs\apk\debug\app-debug.apk`
 
-本分支的 `.env.capacitor` 会为私有 App 预设
-`https://amsg.noir2.cc.cd`。首次启动会申请通知权限，随后把 FCM token 登记到该 AMSG
-Worker。普通生产构建不会包含这个地址。
+这个待公开工作区的 `.env.capacitor` 把主动消息地址留空，不会把 FCM token 登记到作者的服务器。玩家要自己部署主动消息之后，再把地址填进设置。普通网页构建同样不带作者的地址。
 
 ## 隔离保证
 

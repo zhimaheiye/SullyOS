@@ -5,6 +5,7 @@ import { MusicProvider } from './context/MusicContext';
 import PhoneShell from './components/PhoneShell';
 import BuildBadge from './components/BuildBadge';
 import DevDebugPanel from './components/DevDebugPanel';
+import ManualModelRelayPanel from './components/ManualModelRelayPanel';
 import Amsg2DebugPanel from './components/Amsg2DebugPanel';
 import VRBroadcast from './components/VRBroadcast';
 import WorldBroadcast from './components/WorldBroadcast';
@@ -50,6 +51,7 @@ const App: React.FC = () => {
       </div>
       <BuildBadge />
       <DevDebugPanel />
+      <ManualModelRelayPanel />
       <VRBroadcast />
       <WorldBroadcast />
       <ChatBroadcast />

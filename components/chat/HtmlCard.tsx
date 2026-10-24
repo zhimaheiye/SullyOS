@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { copyTextToClipboard } from '../../utils/clipboard';
 import { CaretDown, Check, CopySimple } from '@phosphor-icons/react';
 
 /**
@@ -23,43 +24,14 @@ const HtmlCard: React.FC<{ html: string }> = ({ html }) => {
     const copyHtmlSource = async (event: React.MouseEvent<HTMLButtonElement>) => {
         event.preventDefault();
         event.stopPropagation();
-        let copied = false;
-        try {
-            if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable');
-            // Copy the exact source stored on the message, not the renderer's
-            // srcDoc wrapper, so users can archive or edit the original card.
-            await navigator.clipboard.writeText(html);
-            copied = true;
-        } catch {
-            // iOS PWA / non-secure contexts can reject Clipboard API. Keep a
-            // user-gesture fallback without touching interactions in the iframe.
-            let textarea: HTMLTextAreaElement | null = null;
-            try {
-                textarea = document.createElement('textarea');
-                textarea.value = html;
-                textarea.setAttribute('readonly', '');
-                textarea.style.position = 'fixed';
-                textarea.style.left = '-9999px';
-                textarea.style.opacity = '0';
-                textarea.style.pointerEvents = 'none';
-                document.body.appendChild(textarea);
-                textarea.select();
-                textarea.setSelectionRange(0, textarea.value.length);
-                copied = document.execCommand('copy');
-            } catch {
-                copied = false;
-            } finally {
-                textarea?.remove();
-            }
-        }
-
+        const copied = await copyTextToClipboard(html);
         setCopyState(copied ? 'ok' : 'error');
         if (feedbackTimerRef.current) clearTimeout(feedbackTimerRef.current);
         feedbackTimerRef.current = setTimeout(() => setCopyState('idle'), 1600);
     };
 
     return (
-        <div className="w-[280px] max-w-full rounded-[18px] overflow-hidden bg-transparent">
+        <div className="relative group w-[280px] max-w-full rounded-[18px] overflow-hidden bg-transparent">
             <iframe
                 title="html-card"
                 srcDoc={srcDoc}

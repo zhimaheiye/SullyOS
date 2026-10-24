@@ -3,6 +3,8 @@ import { isPaperWallpaper, useOS } from '../context/OSContext';
 import { INSTALLED_APPS, DOCK_APPS } from '../constants';
 import { isDevDebugAvailable, subscribeDevDebugAvailability } from '../utils/devDebug';
 import AppIcon from '../components/os/AppIcon';
+import LauncherAppGrid from '../components/os/LauncherAppGrid';
+import { LAUNCHER_FOLDER_ID, LAUNCHER_EMPTY_SLOT_PREFIX, normalizeLauncherLayout, moveLauncherItem, type LauncherFolderLayout } from '../utils/launcherFolder';
 import TokenImg from '../components/os/TokenImg';
 import { useBlobRefUrl } from '../utils/blobRef';
 import { DB } from '../utils/db';
@@ -16,6 +18,9 @@ import { getDailyScheduleForChar } from '../utils/dailySchedule';
 import { useLocalDateKey } from '../hooks/useLocalDateKey';
 import { resolveCharTimeZone } from '../utils/timezone';
 import { trackEvent } from '../utils/analytics';
+import TheaterPlayer from '../components/schedule/TheaterPlayer';
+import { generateSlotTheater } from '../utils/theaterGenerator';
+import { persistScheduleTheaterCard } from '../utils/scheduleTheater';
 
 const CompanionHome = React.lazy(() => import('../components/os/CompanionHome'));
 const HomelyHome = React.lazy(() => import('../components/os/HomelyHome'));
@@ -251,51 +256,6 @@ const CharacterWidget = React.memo(({
     );
 });
 
-// 3. Grid Page Component
-const AppGridPage = React.memo(({
-    apps,
-    openApp,
-    acnh = false,
-    editing = false,
-}: {
-    apps: typeof INSTALLED_APPS,
-    openApp: (id: AppID) => void,
-    acnh?: boolean,
-    editing?: boolean,
-}) => {
-    return (
-        <div className={`grid place-items-center animate-fade-in relative ${acnh ? 'grid-cols-4 gap-y-6 gap-x-2' : 'grid-cols-4 gap-y-6 gap-x-2'}`}>
-             {apps.map(app => (
-                 <div
-                    key={app.id}
-                    data-launcher-item={app.id}
-                    data-launcher-kind="app"
-                    className={`relative transition-transform duration-200 active:scale-95 ${editing ? 'launcher-edit-item' : ''}`}
-                 >
-                     <AppIcon
-                        app={app}
-                        onClick={() => { if (!editing) openApp(app.id); }}
-                        size="md"
-                     />
-                 </div>
-             ))}
-        </div>
-    );
-});
-
-// 3b. Small 2x2 app grid for pinwheel cells
-const AppQuadGrid = React.memo(({ apps, openApp, editing = false }: { apps: typeof INSTALLED_APPS, openApp: (id: AppID) => void, editing?: boolean }) => {
-    return (
-        <div className="w-full h-full grid grid-cols-2 grid-rows-2 place-items-center gap-x-2 gap-y-3">
-            {apps.map(app => (
-                <div key={app.id} data-launcher-item={app.id} data-launcher-kind="app" className={`relative transition-transform duration-200 active:scale-95 ${editing ? 'launcher-edit-item' : ''}`}>
-                    <AppIcon app={app} onClick={() => { if (!editing) openApp(app.id); }} />
-                </div>
-            ))}
-        </div>
-    );
-});
-
 // 3c. Square image slot for pinwheel (bottom-right)
 const DesktopSquareImage = React.memo(({ image, contentColor, onClick, acnh = false }: {
     image?: string,
@@ -480,7 +440,7 @@ let _lastPageIndex = 0;
 // --- Main Launcher ---
 
 const Launcher: React.FC<{ staticPreview?: boolean }> = ({ staticPreview = false }) => {
-  const { openApp, characters, activeCharacterId, theme, updateTheme, lastMsgTimestamp, isDataLoaded, unreadMessages } = useOS();
+  const { openApp, characters, activeCharacterId, theme, updateTheme, lastMsgTimestamp, isDataLoaded, unreadMessages, userProfile, apiConfig, addToast, registerBackHandler } = useOS();
 
   // Local state for widget data to prevent context trashing
   const [widgetChar, setWidgetChar] = useState<CharacterProfile | null>(staticPreview ? characters[0] || null : null);
@@ -489,7 +449,13 @@ const Launcher: React.FC<{ staticPreview?: boolean }> = ({ staticPreview = false
   const [scheduleData, setScheduleData] = useState<DailySchedule | null>(null);
   const [scheduleCharId, setScheduleCharId] = useState<string | null>(null);
   const [scheduleViewerOpen, setScheduleViewerOpen] = useState(false);
+  const [theaterSlotIdx, setTheaterSlotIdx] = useState<number | null>(null);
+  const [theaterGenerating, setTheaterGenerating] = useState(false);
   const [layoutEditing, setLayoutEditing] = useState(false);
+  const [folderOpen, setFolderOpen] = useState(false);
+  const [folderManaging, setFolderManaging] = useState(false);
+  const [folderNameDraft, setFolderNameDraft] = useState(theme.launcherFolderName || '不太常用');
+  const folderPanelRef = useRef<HTMLDivElement>(null);
   const layoutPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const layoutPointer = useRef<{
       pointerId: number;
@@ -504,6 +470,7 @@ const Launcher: React.FC<{ staticPreview?: boolean }> = ({ staticPreview = false
       grabOffsetY?: number;
       lastTarget?: string;
       targetElement?: HTMLElement;
+      fromFolder?: boolean;
   } | null>(null);
   const suppressLayoutClickUntil = useRef(0);
   const layoutPageTurnTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -540,25 +507,23 @@ const Launcher: React.FC<{ staticPreview?: boolean }> = ({ staticPreview = false
   }, []);
 
   const availableGridIds = useMemo(() => availableGridApps.map(app => app.id), [availableGridApps]);
-  const [launcherAppOrder, setLauncherAppOrder] = useState<string[]>(() => normalizeOrder(theme.launcherAppOrder, INSTALLED_APPS.filter(app => !DOCK_APPS.includes(app.id)).map(app => app.id)));
+  const [folderLayout, setFolderLayout] = useState<LauncherFolderLayout>(() => normalizeLauncherLayout(theme, availableGridIds));
   const [launcherDockOrder, setLauncherDockOrder] = useState<string[]>(() => normalizeOrder(theme.launcherDockOrder, DOCK_APPS));
   const [pinwheelOrder, setPinwheelOrder] = useState<Array<'music' | 'appsA' | 'appsB' | 'image'>>(() => {
       const available = ['music', 'appsA', 'appsB', 'image'] as const;
       const saved = theme.launcherPinwheelOrder || [];
       return [...saved.filter((id, index) => available.includes(id) && saved.indexOf(id) === index), ...available.filter(id => !saved.includes(id))];
   });
-  const launcherAppOrderRef = useRef(launcherAppOrder);
+  const folderLayoutRef = useRef(folderLayout);
   const launcherDockOrderRef = useRef(launcherDockOrder);
   const pinwheelOrderRef = useRef(pinwheelOrder);
 
   useEffect(() => {
-      setLauncherAppOrder(prev => {
-          const next = normalizeOrder(prev.length ? prev : theme.launcherAppOrder, availableGridIds);
-          launcherAppOrderRef.current = next;
-          return next;
-      });
-  }, [availableGridIds, normalizeOrder, theme.launcherAppOrder]);
-  useEffect(() => { launcherAppOrderRef.current = launcherAppOrder; }, [launcherAppOrder]);
+      if (layoutEditing) return;
+      const next = normalizeLauncherLayout(theme, availableGridIds);
+      folderLayoutRef.current = next;
+      setFolderLayout(next);
+  }, [availableGridIds, layoutEditing, theme.launcherAppOrder, theme.launcherFolderApps]);
   useEffect(() => { launcherDockOrderRef.current = launcherDockOrder; }, [launcherDockOrder]);
   useEffect(() => { pinwheelOrderRef.current = pinwheelOrder; }, [pinwheelOrder]);
   useEffect(() => {
@@ -576,28 +541,62 @@ const Launcher: React.FC<{ staticPreview?: boolean }> = ({ staticPreview = false
       setPinwheelOrder(next);
   }, [layoutEditing, theme.launcherPinwheelOrder]);
 
-  const gridApps = useMemo(() => {
-      const byId = new Map(availableGridApps.map(app => [app.id, app]));
-      return launcherAppOrder.map(id => byId.get(id as AppID)).filter(Boolean) as typeof INSTALLED_APPS;
-  }, [availableGridApps, launcherAppOrder]);
-
   const dockAppsConfig = useMemo(() => {
       const byId = new Map(INSTALLED_APPS.map(app => [app.id, app]));
       return launcherDockOrder.map(id => byId.get(id as AppID)).filter(Boolean) as typeof INSTALLED_APPS;
   }, [launcherDockOrder]);
 
-  // Split apps into pages of 8 (4 cols x 2 rows fit comfortably below widget)
-  // Pages: 0 = clock+chat+music+grid (original), 1 = pinwheel, 2 = widget images + grid,
-  //        3+ = plain grid. Pad to at least 3 slots so the pinwheel/widget pages always exist.
-  const APPS_PER_PAGE = 8;
+  // The first two pages have large widgets, so they keep 8 apps each. Page 3 has the
+  // full-height grid and absorbs every remaining app instead of creating sparse tail pages.
   const appPages = useMemo(() => {
-      const pages: typeof INSTALLED_APPS[] = [];
-      for (let i = 0; i < gridApps.length; i += APPS_PER_PAGE) {
-          pages.push(gridApps.slice(i, i + APPS_PER_PAGE));
-      }
-      while (pages.length < 3) pages.push([]);
-      return pages;
-  }, [gridApps]);
+      return [folderLayout.order.slice(0, 8), folderLayout.order.slice(8, 16), folderLayout.order.slice(16)];
+  }, [folderLayout.order]);
+  const folderName = theme.launcherFolderName || '不太常用';
+  useEffect(() => { setFolderNameDraft(folderName); }, [folderName]);
+  const gridProps = { editing: layoutEditing, folderApps: folderLayout.folderApps, folderName, openApp, openFolder: () => { setFolderOpen(true); setFolderManaging(false); } };
+  const commitFolderLayout = (next: LauncherFolderLayout) => {
+      if (staticPreview) return;
+      const normalized = normalizeLauncherLayout({ launcherAppOrder: next.order, launcherFolderApps: next.folderApps }, availableGridIds);
+      folderLayoutRef.current = normalized;
+      setFolderLayout(normalized);
+      void updateTheme({ launcherAppOrder: normalized.order, launcherFolderApps: normalized.folderApps });
+  };
+  const toggleFolderApp = (id: string) => {
+      const layout = folderLayoutRef.current;
+      const target = layout.folderApps.includes(id) ? `${LAUNCHER_EMPTY_SLOT_PREFIX}${layout.order.indexOf('')}` : LAUNCHER_FOLDER_ID;
+      commitFolderLayout(moveLauncherItem(layout, id, target));
+  };
+  useEffect(() => {
+      if (staticPreview || (!folderOpen && !layoutEditing)) return;
+      const close = () => {
+          finishLayoutPointer(undefined, true);
+          if (folderOpen) { setFolderOpen(false); setFolderManaging(false); }
+          else setLayoutEditing(false);
+          return true;
+      };
+      const unregister = registerBackHandler(close);
+      const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); close(); } };
+      window.addEventListener('keydown', onKeyDown);
+      return () => { unregister(); window.removeEventListener('keydown', onKeyDown); };
+  }, [folderOpen, layoutEditing, registerBackHandler, staticPreview]);
+  useEffect(() => {
+      if (!folderOpen) return;
+      const previous = document.activeElement as HTMLElement | null;
+      const panel = folderPanelRef.current;
+      panel?.querySelector<HTMLElement>('input, button')?.focus();
+      const trapFocus = (event: KeyboardEvent) => {
+          if (event.key !== 'Tab' || !panel) return;
+          const controls = Array.from(panel.querySelectorAll<HTMLElement>('button, input, [tabindex="0"]'));
+          const first = controls[0], last = controls[controls.length - 1];
+          if (event.shiftKey && (document.activeElement === first || !panel.contains(document.activeElement))) {
+              event.preventDefault(); last?.focus();
+          } else if (!event.shiftKey && (document.activeElement === last || !panel.contains(document.activeElement))) {
+              event.preventDefault(); first?.focus();
+          }
+      };
+      window.addEventListener('keydown', trapFocus);
+      return () => { window.removeEventListener('keydown', trapFocus); if (previous?.isConnected) previous.focus(); };
+  }, [folderOpen]);
 
   // Page 2 (pinwheel) uses appPages[1]: split into two 2x2 quads
   const page2Apps = appPages[1] || [];
@@ -654,11 +653,51 @@ const Launcher: React.FC<{ staticPreview?: boolean }> = ({ staticPreview = false
       return characters.find(c => c.id === activeCharacterId) || characters[0];
   }, [characters, scheduleCharId, activeCharacterId]);
   const scheduleDateKey = useLocalDateKey(resolveCharTimeZone(scheduleChar));
+  const activeSchedule = scheduleChar && scheduleData?.charId === scheduleChar.id ? scheduleData : null;
 
   useEffect(() => {
       if (!scheduleChar || !isDataLoaded) return;
       getDailyScheduleForChar(scheduleChar).then(s => setScheduleData(s)).catch(() => {});
   }, [scheduleChar, isDataLoaded, scheduleDateKey]);
+
+  const openScheduleTheater = async (index: number, forceRegenerate = false) => {
+      if (!scheduleChar || !activeSchedule || theaterGenerating) return;
+      const schedule = activeSchedule;
+      const slot = schedule.slots[index];
+      if (!slot) return;
+
+      setScheduleViewerOpen(false);
+      setTheaterSlotIdx(index);
+      if (!forceRegenerate && slot.theater?.lines.length) return;
+
+      setTheaterGenerating(true);
+      try {
+          const updated = await generateSlotTheater(scheduleChar, userProfile, schedule, index, apiConfig, forceRegenerate);
+          if (!updated) throw new Error('empty schedule theater');
+          setScheduleData(updated);
+      } catch (error) {
+          console.error('[Launcher] schedule theater failed:', error);
+          addToast('小剧场生成失败，稍后再试', 'error');
+          setTheaterSlotIdx(null);
+          setScheduleViewerOpen(true);
+      } finally {
+          setTheaterGenerating(false);
+      }
+  };
+
+  const sendScheduleTheaterToChat = async (exposed: boolean) => {
+      if (theaterSlotIdx === null || !activeSchedule) return;
+      try {
+          const saved = await persistScheduleTheaterCard(activeSchedule, theaterSlotIdx, exposed);
+          if (!saved) return;
+          setTheaterSlotIdx(null);
+          addToast(exposed ? '已让 TA 发现你在看 👀' : '已悄悄记下 · TA 不知道你看了 🙈', 'info');
+          openApp(AppID.Chat);
+      } catch (error) {
+          console.error('[Launcher] schedule theater card failed:', error);
+          addToast('写回聊天失败，稍后再试', 'error');
+      }
+  };
 
   // Restore scroll position BEFORE paint to avoid visible flash/slide
   useLayoutEffect(() => {
@@ -748,9 +787,9 @@ const Launcher: React.FC<{ staticPreview?: boolean }> = ({ staticPreview = false
           return next;
       };
       if (kind === 'app') {
-          const next = reorder(launcherAppOrderRef.current);
-          launcherAppOrderRef.current = next;
-          setLauncherAppOrder(next);
+          const next = moveLauncherItem(folderLayoutRef.current, source, target);
+          folderLayoutRef.current = next;
+          setFolderLayout(next);
       } else if (kind === 'dock') {
           const next = reorder(launcherDockOrderRef.current);
           launcherDockOrderRef.current = next;
@@ -834,10 +873,17 @@ const Launcher: React.FC<{ staticPreview?: boolean }> = ({ staticPreview = false
   useEffect(() => () => {
       clearLayoutPressTimer();
       clearLayoutPageTurn();
-      layoutPointer.current?.ghost?.remove();
+      const pointer = layoutPointer.current;
+      if (pointer) {
+          pointer.ghost?.remove();
+          pointer.targetElement?.classList.remove('launcher-drop-target');
+          pointer.element.classList.remove('launcher-dragging');
+          pointer.element.style.pointerEvents = '';
+      }
   }, [clearLayoutPageTurn, clearLayoutPressTimer]);
 
   const handleLayoutPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+      if (staticPreview || layoutPointer.current) return;
       if ((e.target as HTMLElement).closest('[data-launcher-control]')) return;
       if (e.pointerType === 'mouse' && e.button !== 0) return;
       const launcherRoot = e.currentTarget;
@@ -846,8 +892,9 @@ const Launcher: React.FC<{ staticPreview?: boolean }> = ({ staticPreview = false
       const key = item.dataset.launcherItem;
       const kind = item.dataset.launcherKind;
       if (!key || !kind) return;
+      if (key.startsWith(LAUNCHER_EMPTY_SLOT_PREFIX)) return;
       clearLayoutPressTimer();
-      layoutPointer.current = { pointerId: e.pointerId, key, kind, x: e.clientX, y: e.clientY, active: layoutEditing, element: item };
+      layoutPointer.current = { pointerId: e.pointerId, key, kind, x: e.clientX, y: e.clientY, active: layoutEditing, element: item, fromFolder: !!item.closest('[data-launcher-folder-content]') };
       if (layoutEditing) {
           activateLayoutDrag(layoutPointer.current);
           launcherRoot.setPointerCapture(e.pointerId);
@@ -881,14 +928,32 @@ const Launcher: React.FC<{ staticPreview?: boolean }> = ({ staticPreview = false
           pointer.ghost.style.left = `${e.clientX - (pointer.grabOffsetX || 0)}px`;
           pointer.ghost.style.top = `${e.clientY - (pointer.grabOffsetY || 0)}px`;
       }
+      const panelRect = folderPanelRef.current?.getBoundingClientRect();
+      if (pointer.fromFolder && panelRect && (e.clientX < panelRect.left || e.clientX > panelRect.right || e.clientY < panelRect.top || e.clientY > panelRect.bottom)) {
+          setFolderOpen(false);
+          setFolderManaging(false);
+      }
       const rootRect = e.currentTarget.getBoundingClientRect();
-      if (pointer.kind === 'app' && e.clientX <= rootRect.left + 72) queueLayoutPageTurn(-1);
-      else if (pointer.kind === 'app' && e.clientX >= rootRect.right - 72) queueLayoutPageTurn(1);
+      if (!folderPanelRef.current && pointer.kind === 'app' && e.clientX <= rootRect.left + 72) queueLayoutPageTurn(-1);
+      else if (!folderPanelRef.current && pointer.kind === 'app' && e.clientX >= rootRect.right - 72) queueLayoutPageTurn(1);
       else clearLayoutPageTurn();
+      if (!folderPanelRef.current && pointer.kind === 'app') {
+          const page = scrollContainerRef.current?.children[activePageIndexRef.current] as HTMLElement | undefined;
+          const verticalScroller = page?.querySelector<HTMLElement>('[data-launcher-grid-scroll]') || page;
+          if (verticalScroller) {
+              const rect = verticalScroller.getBoundingClientRect();
+              if (e.clientY < rect.top + 48) verticalScroller.scrollTop -= 18;
+              else if (e.clientY > rect.bottom - 48) verticalScroller.scrollTop += 18;
+          }
+      }
       const target = document.elementFromPoint(e.clientX, e.clientY)?.closest<HTMLElement>('[data-launcher-item]');
       const targetKey = target?.dataset.launcherItem;
       const targetKind = target?.dataset.launcherKind;
-      const validTarget = !!targetKey && targetKind === pointer.kind && targetKey !== pointer.key;
+      const targetInFolder = !!target?.closest('[data-launcher-folder-content]');
+      const validTarget = !!targetKey && targetKind === pointer.kind && targetKey !== pointer.key
+          && (!targetInFolder || pointer.fromFolder)
+          && (!pointer.fromFolder || targetInFolder || targetKey.startsWith(LAUNCHER_EMPTY_SLOT_PREFIX))
+          && !(pointer.key === LAUNCHER_FOLDER_ID && targetKey === LAUNCHER_FOLDER_ID);
       if (!validTarget) {
           pointer.targetElement?.classList.remove('launcher-drop-target');
           pointer.targetElement = undefined;
@@ -902,9 +967,10 @@ const Launcher: React.FC<{ staticPreview?: boolean }> = ({ staticPreview = false
       pointer.lastTarget = targetKey;
   };
 
-  const finishLayoutPointer = (e?: React.PointerEvent<HTMLDivElement>) => {
+  const finishLayoutPointer = (e?: React.PointerEvent<HTMLDivElement>, cancelled = false) => {
       const pointer = layoutPointer.current;
       if (e && pointer && pointer.pointerId !== e.pointerId) return;
+      if (e && pointer?.active && !cancelled) handleLayoutPointerMove(e);
       clearLayoutPressTimer();
       clearLayoutPageTurn();
       if (pointer?.active) {
@@ -913,19 +979,27 @@ const Launcher: React.FC<{ staticPreview?: boolean }> = ({ staticPreview = false
           pointer.element.classList.remove('launcher-dragging');
           pointer.ghost?.remove();
           pointer.targetElement?.classList.remove('launcher-drop-target');
-          if (pointer.lastTarget) reorderByTarget(pointer.kind, pointer.key, pointer.lastTarget);
-          void updateTheme({
-              launcherAppOrder: launcherAppOrderRef.current,
-              launcherDockOrder: launcherDockOrderRef.current,
-              launcherPinwheelOrder: pinwheelOrderRef.current,
-          });
+          if (!cancelled && pointer.lastTarget) {
+              reorderByTarget(pointer.kind, pointer.key, pointer.lastTarget);
+              const layout = normalizeLauncherLayout({ launcherAppOrder: folderLayoutRef.current.order, launcherFolderApps: folderLayoutRef.current.folderApps }, availableGridIds);
+              folderLayoutRef.current = layout;
+              setFolderLayout(layout);
+              void updateTheme({
+                  launcherAppOrder: layout.order,
+                  launcherFolderApps: layout.folderApps,
+                  launcherDockOrder: launcherDockOrderRef.current,
+                  launcherPinwheelOrder: pinwheelOrderRef.current,
+              });
+          }
       }
+      if (e && e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
       layoutPointer.current = null;
   };
 
   const finishLayoutEditing = () => {
-      finishLayoutPointer();
+      finishLayoutPointer(undefined, true);
       setLayoutEditing(false);
+      setFolderManaging(false);
   };
 
   const contentColor = theme.contentColor || '#ffffff';
@@ -966,7 +1040,8 @@ const Launcher: React.FC<{ staticPreview?: boolean }> = ({ staticPreview = false
       onPointerDown={handleLayoutPointerDown}
       onPointerMove={handleLayoutPointerMove}
       onPointerUp={finishLayoutPointer}
-      onPointerCancel={finishLayoutPointer}
+      onPointerCancel={e => finishLayoutPointer(e, true)}
+      onClickCapture={handleClickCapture}
       onContextMenu={(e) => {
           if ((e.target as HTMLElement).closest('[data-launcher-item]')) e.preventDefault();
       }}
@@ -1024,8 +1099,9 @@ const Launcher: React.FC<{ staticPreview?: boolean }> = ({ staticPreview = false
       {layoutEditing && (
           <div className="absolute top-[calc(var(--safe-top)+0.65rem)] left-4 right-4 z-50 flex items-center justify-between rounded-full px-3 py-2"
               style={{ background: 'rgba(75,65,54,0.88)', color: '#fffdf8', boxShadow: '0 8px 24px rgba(75,65,54,0.20)' }}>
-              <span className="text-[10px] font-semibold tracking-wide">按住拖动，松手交换位置</span>
-              <button onClick={finishLayoutEditing} className="ml-3 px-3 py-1 rounded-full text-[10px] font-bold bg-white/15 active:scale-95">完成</button>
+              <span className="text-[10px] font-semibold tracking-wide">拖到文件夹收纳，拖到空位放回</span>
+              <button data-launcher-control onClick={() => { setFolderOpen(true); setFolderManaging(true); }} className="ml-2 px-2 py-1 rounded-full text-[10px] font-bold bg-white/15">收纳</button>
+              <button data-launcher-control onClick={finishLayoutEditing} className="ml-2 px-2 py-1 rounded-full text-[10px] font-bold bg-white/15 active:scale-95">完成</button>
           </div>
       )}
       
@@ -1080,7 +1156,7 @@ const Launcher: React.FC<{ staticPreview?: boolean }> = ({ staticPreview = false
                             paper={paper}
                         />
                         <div className="flex-1">
-                            <AppGridPage apps={pageApps} openApp={openApp} acnh={acnh} editing={layoutEditing} />
+                            <LauncherAppGrid items={pageApps} offset={0} {...gridProps} />
                         </div>
                       </>
                   ) : idx === 1 ? (
@@ -1088,7 +1164,7 @@ const Launcher: React.FC<{ staticPreview?: boolean }> = ({ staticPreview = false
                       <div className="launcher-pinwheel-content w-full flex flex-col gap-5">
                           {scheduleChar && (
                               <ScheduleHomeWidget
-                                  schedule={scheduleData}
+                                  schedule={activeSchedule}
                                   character={scheduleChar}
                                   contentColor={contentColor}
                                   onOpen={() => { setScheduleViewerOpen(true); trackEvent('打开角色日程面板'); }}
@@ -1115,9 +1191,9 @@ const Launcher: React.FC<{ staticPreview?: boolean }> = ({ staticPreview = false
                                       {cell === 'music' ? (
                                           <NowPlayingSquareWidget contentColor={contentColor} />
                                       ) : cell === 'appsA' ? (
-                                          <AppQuadGrid apps={page2QuadA} openApp={openApp} editing={layoutEditing} />
+                                          <LauncherAppGrid items={page2QuadA} offset={8} columns={2} dense {...gridProps} />
                                       ) : cell === 'appsB' ? (
-                                          <AppQuadGrid apps={page2QuadB} openApp={openApp} editing={layoutEditing} />
+                                          <LauncherAppGrid items={page2QuadB} offset={12} columns={2} dense {...gridProps} />
                                       ) : (
                                           <DesktopSquareImage
                                               image={theme.launcherWidgets?.['dsq']}
@@ -1132,7 +1208,7 @@ const Launcher: React.FC<{ staticPreview?: boolean }> = ({ staticPreview = false
                       </div>
                   ) : (
                       // Page 3+: Widget Images (idx===2 only) + Free Decorations + Apps
-                      <div className="pt-10 flex-1 flex flex-col relative">
+                      <div data-launcher-grid-scroll className="min-h-0 flex-1 overflow-y-auto no-scrollbar pt-4 pb-2 flex flex-col relative">
                           {idx === 2 && (() => {
                             const raw = theme.launcherWidgets || {};
                             const w = { ...raw };
@@ -1184,12 +1260,7 @@ const Launcher: React.FC<{ staticPreview?: boolean }> = ({ staticPreview = false
                             );
                           })()}
 
-                          <AppGridPage
-                                apps={pageApps}
-                                openApp={openApp}
-                                acnh={acnh}
-                                editing={layoutEditing}
-                          />
+                          <LauncherAppGrid items={pageApps} offset={16} dense {...gridProps} />
                           <div className="flex-1"></div>
                       </div>
                   )}
@@ -1252,16 +1323,66 @@ const Launcher: React.FC<{ staticPreview?: boolean }> = ({ staticPreview = false
            </div>
       </div>
 
+      {folderOpen && (
+          <div className="absolute inset-0 z-[60] flex items-center justify-center px-5" role="dialog" aria-modal="true" aria-label={folderName}>
+              <button type="button" data-launcher-control aria-label="关闭文件夹" className="absolute inset-0 bg-black/20 backdrop-blur-sm" onClick={() => { setFolderOpen(false); setFolderManaging(false); }} />
+              <div ref={folderPanelRef} className="relative w-full max-w-md rounded-[2rem] p-5 shadow-2xl border border-white/20 flex flex-col max-h-[70%]"
+                  style={{ background: paper || acnh ? 'rgba(247,243,233,0.96)' : 'rgba(48,48,58,0.88)', color: acnh ? '#725d42' : contentColor }}>
+                  <div data-launcher-control className="flex items-center gap-2 mb-3">
+                      {folderManaging ? <input autoFocus aria-label="文件夹名称" maxLength={32} value={folderNameDraft}
+                          onChange={e => setFolderNameDraft(e.target.value)}
+                          onBlur={() => {
+                              const name = folderNameDraft.trim() || '不太常用';
+                              setFolderNameDraft(name);
+                              if (name !== folderName) void updateTheme({ launcherFolderName: name });
+                          }} className="min-w-0 w-full bg-transparent text-lg font-semibold border-b border-current/30 outline-none" />
+                          : <h2 className="text-lg font-semibold truncate flex-1">{folderName}</h2>}
+                      {!staticPreview && <button type="button" onClick={() => setFolderManaging(value => !value)} className="shrink-0 px-2 py-2 rounded-xl bg-white/15 text-xs">{folderManaging ? '查看' : '整理'}</button>}
+                      {layoutEditing && <button type="button" onClick={finishLayoutEditing} className="shrink-0 px-2 py-2 rounded-xl bg-white/15 text-xs">完成</button>}
+                      <button type="button" autoFocus={!folderManaging} onClick={() => { setFolderOpen(false); setFolderManaging(false); }} className="shrink-0 px-2 py-2 rounded-xl bg-white/15 text-xs">关闭</button>
+                  </div>
+                  <p className="text-[11px] opacity-65 mb-4">{folderManaging ? '勾选要收纳的应用，取消勾选放回桌面空位。' : '点击打开应用；长按后拖出此面板，放到桌面空位。'}</p>
+                  <div className="min-h-0 overflow-y-auto overscroll-contain no-scrollbar pb-2">
+                      {folderManaging ? <div data-launcher-control className="grid grid-cols-2 gap-2">
+                          {availableGridApps.map(app => <label key={app.id} className="flex items-center gap-2 rounded-xl bg-white/10 p-3 cursor-pointer text-xs">
+                              <input type="checkbox" checked={folderLayout.folderApps.includes(app.id)} onChange={() => toggleFolderApp(app.id)} />
+                              <span className="truncate">{app.name}</span>
+                          </label>)}
+                      </div> : <div data-launcher-folder-content>
+                          {folderLayout.folderApps.length ? <LauncherAppGrid items={folderLayout.folderApps} columns={3} {...gridProps} openApp={id => { setFolderOpen(false); openApp(id); }} />
+                              : <div className="py-10 text-center text-sm opacity-60">这里还是空的，点“整理”选择不常用的应用。</div>}
+                      </div>}
+                  </div>
+              </div>
+          </div>
+      )}
+
       <ScheduleFullscreenViewer
           open={scheduleViewerOpen}
           onClose={() => setScheduleViewerOpen(false)}
           characters={characters}
           activeCharId={scheduleChar?.id || null}
           onSwitchCharacter={(id) => setScheduleCharId(id)}
-          schedule={scheduleData}
+          schedule={activeSchedule}
           activeCharacter={scheduleChar}
           contentColor={contentColor}
+          onPlayTheater={(index) => void openScheduleTheater(index)}
       />
+
+      {theaterSlotIdx !== null && activeSchedule && (
+          <TheaterPlayer
+              character={scheduleChar}
+              slot={activeSchedule.slots[theaterSlotIdx] || null}
+              lines={activeSchedule.slots[theaterSlotIdx]?.theater?.lines || null}
+              isGenerating={theaterGenerating}
+              onReplay={() => void openScheduleTheater(theaterSlotIdx, true)}
+              onSendCard={(exposed) => void sendScheduleTheaterToChat(exposed)}
+              onClose={() => {
+                  setTheaterSlotIdx(null);
+                  setScheduleViewerOpen(true);
+              }}
+          />
+      )}
 
     </div>
   );

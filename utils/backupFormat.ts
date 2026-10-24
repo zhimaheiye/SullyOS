@@ -43,7 +43,8 @@ export const DEFAULT_SHARD_LIMITS: ShardLimits = {
 /** 向量 bin 的索引项：每条向量在 memory_vectors.bin 里的位置 + 重建所需元数据 */
 export interface VectorIndexEntry {
     memoryId: string;
-    charId: string;
+    /** 普通记忆向量按角色分区；聊愈向量的 store 本身就是唯一用户空间，因此没有 charId。 */
+    charId?: string;
     dimensions: number;
     model?: string;
     byteOffset: number;
@@ -58,6 +59,8 @@ export interface BackupManifest {
     stores: Record<string, { parts: number; count: number }>;
     /** 向量走二进制旁路（memory_vectors.bin + .index.json），不进 stores。无向量时省略。 */
     vectors?: { count: number; byteLength: number };
+    /** 聊愈共享记忆向量的独立二进制旁路。 */
+    healingVectors?: { count: number; byteLength: number };
     assetCount?: number;
 }
 
@@ -81,6 +84,8 @@ export interface ZipFileReader {
 /** 向量 bin / index 在 zip 里的固定文件名 */
 export const VECTOR_BIN_FILE = 'stores/memory_vectors.bin';
 export const VECTOR_INDEX_FILE = 'stores/memory_vectors.index.json';
+export const HEALING_VECTOR_BIN_FILE = 'stores/healing_memory_vectors.bin';
+export const HEALING_VECTOR_INDEX_FILE = 'stores/healing_memory_vectors.index.json';
 
 /** 分片文件名：stores/<field>.NNN.json。写读两端用同一个公式，靠数字下标对齐，不靠文件名字典序。 */
 export function shardFileName(field: string, index: number): string {
@@ -98,6 +103,8 @@ export interface WriteV2Options {
      *  写进 memory_vectors.bin（二进制直写）+ .index.json，并在 manifest.vectors 记 count/byteLength。
      *  传了这个就不要再把 memoryVectors 放进 backupData（否则会被当普通数组又分片一遍）。 */
     vectors?: { bin: Uint8Array; index: VectorIndexEntry[] };
+    /** 与 vectors 相同的紧凑格式，但恢复到 healingMemoryVectors。 */
+    healingVectors?: { bin: Uint8Array; index: VectorIndexEntry[] };
     /**
      * 已由调用方增量写进 zip 的数组字段。大数据量导出可用 createV2ArrayFieldWriter 一批批写，
      * 不必先把整个 store 攒进 backupData；writeV2Backup 收尾时会把这些统计合进 manifest。
@@ -253,6 +260,12 @@ export async function writeV2Backup(
         zip.file(VECTOR_INDEX_FILE, JSON.stringify(options.vectors.index));
         vectorsMeta = { count: options.vectors.index.length, byteLength: options.vectors.bin.byteLength };
     }
+    let healingVectorsMeta: { count: number; byteLength: number } | undefined;
+    if (options.healingVectors) {
+        zip.file(HEALING_VECTOR_BIN_FILE, options.healingVectors.bin, { compression: 'STORE' });
+        zip.file(HEALING_VECTOR_INDEX_FILE, JSON.stringify(options.healingVectors.index));
+        healingVectorsMeta = { count: options.healingVectors.index.length, byteLength: options.healingVectors.bin.byteLength };
+    }
 
     const manifest: BackupManifest = {
         formatVersion: BACKUP_FORMAT_VERSION,
@@ -260,6 +273,7 @@ export async function writeV2Backup(
         createdAt: options.createdAt,
         stores: manifestStores,
         vectors: vectorsMeta,
+        healingVectors: healingVectorsMeta,
         assetCount: options.assetCount,
     };
     zip.file('manifest.json', JSON.stringify(manifest));
@@ -398,6 +412,38 @@ export async function assembleV2Backup(
         });
         data.memoryVectors = vectors;
         options.onShardProgress?.('memoryVectors', fields.length, fields.length + 1);
+    }
+
+    if (manifest.healingVectors) {
+        const idxFile = zip.file(HEALING_VECTOR_INDEX_FILE);
+        const binFile = zip.file(HEALING_VECTOR_BIN_FILE);
+        if (!idxFile || !binFile) {
+            throw new Error('损坏的备份包：manifest 声明了聊愈向量但缺 index/bin 文件，已中止导入（数据未改动）。');
+        }
+        let index: VectorIndexEntry[];
+        try {
+            index = JSON.parse(await idxFile.async('string'));
+        } catch {
+            throw new Error('损坏的备份包：healing_memory_vectors.index.json 解析失败，已中止导入（数据未改动）。');
+        }
+        const bin = await binFile.async('uint8array');
+        if (!Array.isArray(index) || index.length !== manifest.healingVectors.count || bin.byteLength !== manifest.healingVectors.byteLength) {
+            throw new Error('损坏的备份包：聊愈向量条数或字节数与 manifest 不符，已中止导入（数据未改动）。');
+        }
+        const okInt = (n: unknown): n is number => Number.isSafeInteger(n) && (n as number) >= 0;
+        data.healingMemoryVectors = index.map(entry => {
+            if (!okInt(entry.byteOffset) || !okInt(entry.byteLength) || !okInt(entry.dimensions)
+                || entry.byteLength !== entry.dimensions * 4 || entry.byteOffset + entry.byteLength > bin.byteLength) {
+                throw new Error(`损坏的备份包：聊愈向量 ${entry.memoryId} 的索引非法，已中止导入（数据未改动）。`);
+            }
+            return {
+                memoryId: entry.memoryId,
+                dimensions: entry.dimensions,
+                model: entry.model,
+                vector: bin.slice(entry.byteOffset, entry.byteOffset + entry.byteLength),
+            };
+        });
+        options.onShardProgress?.('healingMemoryVectors', fields.length + (manifest.vectors ? 1 : 0), fields.length + (manifest.vectors ? 2 : 1));
     }
 
     return data;

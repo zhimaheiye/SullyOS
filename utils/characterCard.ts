@@ -23,6 +23,7 @@ export const CARD_STRIPPED_FIELDS = [
   'embeddingConfig',
   'proactiveConfig',
   'activeMsg2Config',
+  'lifeConfig',              // 专用副 API 密钥和本机作息习惯不能随分享卡外流
 
   // 2) 美化
   'embeddedTheme',           // CharacterExportData 上的内嵌主题（导入侧一并剥离）

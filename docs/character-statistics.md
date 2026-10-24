@@ -17,4 +17,4 @@
 
 模型间没有固定中文用量比例或大小顺序。页面只引用 DeepSeek 官方的中文字符 × 0.6 示例，并链接 Gemini、Claude 的计数说明；不把某一个模型的比例推广为所有国产模型。此说明不会发起计数 API 调用。
 
-测试：`pnpm exec node node_modules/vitest/vitest.mjs run utils/characterStats.test.ts utils/contextWorldbook.test.ts utils/chatContextRange.test.ts utils/contextPipeline.test.ts`。
+测试：`.\node_modules\.bin\vitest.cmd run utils/characterStats.test.ts utils/contextWorldbook.test.ts utils/chatContextRange.test.ts utils/contextPipeline.test.ts`。

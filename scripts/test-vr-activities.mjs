@@ -23,12 +23,12 @@ try{
     await card.getByLabel('不自动去整个SAR活动室',{exact:true}).uncheck();
     assert(await card.getByLabel('不自动玩抽芯片演绎',{exact:true}).isChecked());
     assert(!(await card.getByLabel('不自动玩模块商店',{exact:true}).isChecked()));
-    for(const room of ['图书馆','剧院','听歌房','留言簿','娱乐室','邮局'])await card.getByLabel(`不自动去${room}`,{exact:true}).check();
+    for(const room of ['图书馆','剧院','听歌房','留言簿','娱乐室'])await card.getByLabel(`不自动去${room}`,{exact:true}).check();
     await card.getByLabel('不自动去整个SAR活动室',{exact:true}).check();
     await card.getByRole('status').filter({hasText:'全部自动活动已排除'}).waitFor();
     await page.screenshot({path:'output/vr-activities/03-restrictions.png'});
     const saved=await page.evaluate(async()=>{const{DB}=await import('/utils/db.ts');return(await DB.getAllCharacters()).find(c=>c.id==='qa-activity').vrState;});
-    assert.equal(saved.excludedAutoRooms.length,7);assert.deepEqual(saved.excludedAutoSARActivities,['cabinet']);
+    assert.equal(saved.excludedAutoRooms.length,6);assert.deepEqual(saved.excludedAutoSARActivities,['cabinet']);
     await page.reload();await button('接入').click();await card.locator('.vra-restrictions summary').click();
     assert(await card.getByLabel('不自动去整个SAR活动室',{exact:true}).isChecked());
     // Capture UI routing without calling a model. Scheduler forwarding is separately unit-tested.

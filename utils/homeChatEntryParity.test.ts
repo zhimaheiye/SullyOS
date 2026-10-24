@@ -9,7 +9,16 @@ import { generateHomeReply, buildHomeScenePrompt } from './homeConversation';
 import { ContextBuilder } from './context';
 
 const shared = vi.hoisted(() => ({ music: {} as any }));
-vi.mock('../context/MusicContext', () => ({ useMusic: () => shared.music, loadMusicHooks: () => null }));
+// useChatAI 走二改的模块级播放快照（loadMusicPlaybackSnapshot / loadMusicCfgStandalone）而不是
+// useMusic()，mock 要把这条出口一起补上，否则 triggerAI 在取快照时就抛错、请求根本发不出去。
+// 快照必须返回同一份 shared.music：ChatApp 侧只有拿到它才会拼出「一起听」氛围与行动指引，
+// 和家园显式传入的 musicSnapshot 才对得上。
+vi.mock('../context/MusicContext', () => ({
+  useMusic: () => shared.music,
+  loadMusicHooks: () => null,
+  loadMusicPlaybackSnapshot: () => shared.music,
+  loadMusicCfgStandalone: () => shared.music.cfg,
+}));
 vi.mock('./keepAlive', () => ({ KeepAlive: { start: vi.fn(), stop: vi.fn() } }));
 vi.mock('./activeMsgRuntime', () => ({ prepareInboxBeforeChat: vi.fn(async () => 'completed') }));
 vi.mock('./safeApi', async original => ({ ...await original<typeof import('./safeApi')>(), safeFetchJson: vi.fn() }));

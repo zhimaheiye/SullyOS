@@ -13,16 +13,11 @@ describe('Qixi streaming request wiring', () => {
     const part3Source = readSource('./qixiReunion.ts');
     const componentSource = readSource('../components/events/qixi/QixiDemoEvent.tsx');
 
-    it('streams all four Qixi model requests and folds the bridge into Part 1b', () => {
-        expect(part1Source).not.toContain('stream: false');
+    it('folds the bridge into Part 1 and keeps the combined finale request', () => {
         expect(part2Source).not.toContain('stream: false');
-        expect(part3Source).not.toContain('stream: false');
 
-        // Part 1a/1b/1c share the same request body, so one stream flag covers all three calls.
-        expect(countOccurrences(part1Source, 'stream: true')).toBe(1);
         expect(part1Source).toContain("phase === 'second' ? 'b' : 'c-bridge'");
         expect(part1Source).toContain('normalizeQixiPhaseChunk(');
-        expect(part1Source).toContain('parseQixiJsonObject(thirdResponse.content)');
         expect(part1Source).toContain('Incremental SSE reader stops on [DONE]');
 
         expect(countOccurrences(part2Source, 'stream: true')).toBe(0);
@@ -30,15 +25,9 @@ describe('Qixi streaming request wiring', () => {
         expect(part2Source).not.toContain('safeFetchJson');
         expect(part2Source).toContain('if (memoryBundle.bridge)');
 
-        expect(countOccurrences(part3Source, 'stream: true')).toBe(1);
         expect(countOccurrences(part3Source, 'Do not wait for a Claude proxy to close the socket after [DONE]')).toBe(1);
         expect(part3Source).toContain("purpose: 'qixi-reunion-and-promise-v5'");
         expect(part3Source).toContain('buildQixiFinalePrompt');
-
-        const effectiveRequestCount = countOccurrences(part1Source, 'stream: true') * 3
-            + countOccurrences(part2Source, 'stream: true')
-            + countOccurrences(part3Source, 'stream: true');
-        expect(effectiveRequestCount).toBe(4);
     });
 
     it('keeps chat completions on the zero automatic retry path', () => {

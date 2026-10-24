@@ -1,5 +1,20 @@
 import type { PhoneSimLog, SimScript } from '../types';
 
+/** First numeric timestamp in the order PersonaSim reads messages. */
+export function firstChatTimestamp(messages: ReadonlyArray<{ timestamp?: unknown }>): number | undefined {
+    for (const message of messages) {
+        const ts = message.timestamp;
+        if (typeof ts === 'number' && ts) return ts;
+    }
+    return undefined;
+}
+
+/** Whole 24-hour periods since the first counted message. */
+export function acquaintanceDays(firstTs: number | undefined, now = Date.now()): number {
+    if (!firstTs || !Number.isFinite(firstTs)) return 0;
+    return Math.floor((now - firstTs) / 86400000);
+}
+
 /** 生成成功即归档；此时只存剧本，不给角色施加情绪效果。 */
 export function createPersonaSimLog(script: SimScript, mode: PhoneSimLog['mode'], theme: string): PhoneSimLog {
     return {

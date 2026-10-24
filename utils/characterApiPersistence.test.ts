@@ -12,7 +12,14 @@ import { normalizeApiPreset } from './apiConfigNormalize';
 import { useChatAI } from '../hooks/useChatAI';
 import { safeFetchJson } from './safeApi';
 
-vi.mock('../context/MusicContext', () => ({ useMusic: () => ({}), loadMusicHooks: () => null }));
+// useChatAI 走二改的模块级播放快照（loadMusicPlaybackSnapshot / loadMusicCfgStandalone）
+// 而不是 useMusic()，所以 mock 要把这条出口一起补上；快照为空 = 按「没在听歌」兜底。
+vi.mock('../context/MusicContext', () => ({
+    useMusic: () => ({}),
+    loadMusicHooks: () => null,
+    loadMusicPlaybackSnapshot: () => null,
+    loadMusicCfgStandalone: () => ({ workerUrl: '', cookie: '', quality: 'standard' }),
+}));
 vi.mock('./keepAlive', () => ({ KeepAlive: { start: vi.fn(), stop: vi.fn() } }));
 vi.mock('./safeApi', async importOriginal => ({ ...await importOriginal<typeof import('./safeApi')>(), safeFetchJson: vi.fn() }));
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;

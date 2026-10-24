@@ -5,7 +5,7 @@ import { avatarDecorationImageStyle, isAnniversaryFrame } from '../utils/anniver
 import { loadCharacterContextMessages } from '../utils/chatContextRange';
 
 import BlobRefStyle from '../components/chat/BlobRefStyle';
-import React, { useState, useEffect, useRef, useLayoutEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useOS } from '../context/OSContext';
 import { DB } from '../utils/db';
@@ -32,6 +32,9 @@ import { buildMemberTimeline, DEFAULT_MEMBER_TIMELINE_CAP } from '../utils/group
 import { buildEmojiContextStr, buildGroupHistoryBlock, buildDirectorInstruction, buildRoundRobinInstruction, GroupHistoryBlock } from '../utils/groupChat/prompts';
 import { dispatchMemberActions } from '../utils/groupChat/dispatch';
 import { completeGroupChatWithMcp } from '../utils/groupChat/mcp';
+import { cancelManualRelayForApp, isManualRelayEnabled } from '../utils/manualModelRelay';
+import SideStoryModal from '../components/chat/SideStoryModal';
+import { groupSideStorySignature, type GroupSideStorySource } from '../utils/groupSideStory';
 import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
 // 群聊输入区/表情面板已改用共享 ChatInputArea（其表情网格自带 useIncrementalReveal 增量渲染），
 // master 上给旧内联表情抽屉加的增量渲染随旧抽屉一并退役。
@@ -41,16 +44,20 @@ import ChatInputArea from '../components/chat/ChatInputArea';
 import { loadChatInputPreferences, saveChatInputPreferences } from '../utils/chatInputPreferences';
 import ChatInputSettings from '../components/chat/ChatInputSettings';
 import { useChatAutoReply } from '../hooks/useChatAutoReply';
+import { useChatScroll } from '../hooks/useChatScroll';
 import TokenImg from '../components/os/TokenImg';
+import GroupInfoMembers from '../components/groupChat/GroupInfoMembers';
+import GroupMemberPicker from '../components/groupChat/GroupMemberPicker';
 import { ImageViewer } from '../components/chat/ChatImage';
-import { useBlobRefUrl, migrateDataUrlToRef } from '../utils/blobRef';
+import { useBlobRefUrl, isBlobRef, getBlobForRef, migrateDataUrlToRef } from '../utils/blobRef';
 import { buildReplySnapshotContent } from '../utils/applyAssistantPostProcessing';
 import ChromeCssEditor from '../components/chat/ChromeCssEditor';
 import WhiteboxSoundEditor from '../components/chat/WhiteboxSoundEditor';
 import HtmlCard from '../components/chat/HtmlCard';
 import { WhiteboxSound, parseWhiteboxSound, upsertWhiteboxSound, stripWhiteboxSoundDirective, resolveActiveSound, playWhiteboxSound, unlockWhiteboxAudio } from '../utils/whiteboxSound';
 import { buildHtmlPrompt } from '../utils/htmlPrompt';
-import { materializeVisionDescriptions } from '../utils/visionApi';
+import { materializeStickerVisionDescriptions, materializeVisionDescriptions } from '../utils/visionApi';
+import { buildStickerVisionMetadata, loadGlobalStickerVisionEnabled, resolveStickerVisionEnabled, type StickerVisionMode } from '../utils/stickerVision';
 import {
     buildGroupTopicContext,
     buildGroupTopicPrompt,
@@ -60,6 +67,10 @@ import {
     makeGroupTopicBox,
     planGroupTopicBatch,
 } from '../utils/groupChat/topicBoxes';
+import {
+    filterGroupMessagesForMember,
+    splitMessagesByMembershipAudience,
+} from '../utils/groupChat/membership';
 
 const TWEMOJI_BASE = 'https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/72x72';
 const twemojiUrl = (codepoint: string) => `${TWEMOJI_BASE}/${codepoint}.png`;
@@ -487,9 +498,12 @@ const GroupMessageItem = React.memo(({
 // --- Main Component ---
 
 const GroupChat: React.FC = () => {
-    const { closeApp, groups, createGroup, updateGroup, deleteGroup, characters, apiConfig, addToast, userProfile, virtualTime, characterGroups, theme: osTheme, customThemes, realtimeConfig } = useOS();
+    const { closeApp, groups, createGroup, updateGroup, deleteGroup, addGroupMembers, removeGroupMembers, characters, apiConfig, addToast, userProfile, virtualTime, characterGroups, theme: osTheme, customThemes, realtimeConfig, groupChatLaunchIntent, clearGroupChatLaunchIntent } = useOS();
     const [view, setView] = useState<'list' | 'chat'>('list');
     const [activeGroup, setActiveGroup] = useState<GroupProfile | null>(null);
+    useEffect(() => { cancelManualRelayForApp('group_chat'); }, [activeGroup?.id]);
+    const [sideStorySource, setSideStorySource] = useState<GroupSideStorySource | null>(null);
+    const [launchOrigin, setLaunchOrigin] = useState<'group-list' | 'recent-conversations'>('group-list');
     useAppShortcut(ShortcutAppID.GroupChat, intent => {
         const target = groups.find(group => group.id === intent.resourceId);
         setActiveGroup(target || null); setView(target ? 'chat' : 'list');
@@ -548,7 +562,7 @@ const GroupChat: React.FC = () => {
     // UI State — 面板状态对齐私聊 ChatInputArea 的 showPanel 约定
     const [showPanel, setShowPanel] = useState<'none' | 'actions' | 'emojis' | 'chars'>('none');
     const [activeEmojiCategory, setActiveEmojiCategory] = useState('default');
-    const [modalType, setModalType] = useState<'none' | 'create' | 'settings' | 'transfer' | 'member_select' | 'message-options' | 'edit-message' | 'packet-detail' | 'chrome-css' | 'chrome-sound' | 'html-prompt' | 'help'>('none');
+    const [modalType, setModalType] = useState<'none' | 'create' | 'settings' | 'invite-members' | 'remove-members' | 'transfer' | 'member_select' | 'message-options' | 'edit-message' | 'packet-detail' | 'chrome-css' | 'chrome-sound' | 'html-prompt' | 'help'>('none');
     const [tempHtmlPrompt, setTempHtmlPrompt] = useState('');
     const [selectedMessage, setSelectedMessage] = useState<Message | null>(null);
     const [replyTarget, setReplyTarget] = useState<Message | null>(null);
@@ -589,9 +603,11 @@ const GroupChat: React.FC = () => {
     const [tempPrivateContextCap, setTempPrivateContextCap] = useState<number>(80);
     const [tempMemberTimelineCap, setTempMemberTimelineCap] = useState<number>(DEFAULT_MEMBER_TIMELINE_CAP);
     const [tempReplyMode, setTempReplyMode] = useState<'director' | 'roundRobin'>('director');
+    const [tempStickerVisionMode, setTempStickerVisionMode] = useState<StickerVisionMode>('inherit');
     const [tempMemberBubbleIndependent, setTempMemberBubbleIndependent] = useState(false);
     const [tempUserBubbleThemeId, setTempUserBubbleThemeId] = useState<string>('');
     const [selectedMembers, setSelectedMembers] = useState<Set<string>>(new Set());
+    const [memberEditSelection, setMemberEditSelection] = useState<Set<string>>(new Set());
     const [memberGroupId, setMemberGroupId] = useState(GROUP_FILTER_ALL); // 建群选成员的分组筛选
     const [transferAmount, setTransferAmount] = useState('');
     // 红包 2.0：发送弹窗的 tab / 份数 / 专属目标 / 祝福语；明细弹层锁定的红包消息 id
@@ -600,9 +616,42 @@ const GroupChat: React.FC = () => {
     const [packetTargetId, setPacketTargetId] = useState<string>('');
     const [packetNote, setPacketNote] = useState('');
     const [selectedPacketId, setSelectedPacketId] = useState<number | null>(null);
+
+    useEffect(() => {
+        if (!groupChatLaunchIntent) return;
+        const target = groups.find(group => group.id === groupChatLaunchIntent.groupId);
+        if (!target) {
+            clearGroupChatLaunchIntent();
+            setLaunchOrigin('group-list');
+            setView('list');
+            return;
+        }
+        setActiveGroup(target);
+        setLaunchOrigin('recent-conversations');
+        setView('chat');
+        clearGroupChatLaunchIntent();
+    }, [groupChatLaunchIntent, groups, clearGroupChatLaunchIntent]);
     
     // Refs
-    const scrollRef = useRef<HTMLDivElement>(null);
+    const { scrollRef, contentRef, followingLatestRef, hasNewMessageBelow, onScroll, onWheel, onTouchStart, onTouchMove, onKeyDown,
+        scrollToLatest, preservePrepend } = useChatScroll(view === 'chat' ? activeGroup?.id ?? null : null, messages, selectionMode);
+    const activeGroupIdRef = useRef<string | null>(null);
+    activeGroupIdRef.current = view === 'chat' ? activeGroup?.id ?? null : null;
+    const latestGroupsRef = useRef(groups);
+    latestGroupsRef.current = groups;
+    useEffect(() => {
+        if (!sideStorySource) return;
+        const latest = groups.find(group => group.id === sideStorySource.group.id);
+        if (view === 'chat' && activeGroup?.id === sideStorySource.group.id
+            && latest && groupSideStorySignature(latest) === groupSideStorySignature(sideStorySource.group)
+            && sideStorySource.members.every(member => characters.some(char => char === member))) return;
+        setSideStorySource(null);
+        if (latest && activeGroup?.id === sideStorySource.group.id && view === 'chat') {
+            addToast('群资料或成员可见范围已变化，请重新打开番外创作', 'info');
+        }
+    }, [activeGroup?.id, view, groups, characters, sideStorySource, addToast]);
+    const visibleCountRef = useRef(visibleCount);
+    visibleCountRef.current = visibleCount;
     const fileInputRef = useRef<HTMLInputElement>(null);
     const groupAvatarInputRef = useRef<HTMLInputElement>(null);
     // 生成中的取消句柄：非空 = 正在生成，再点触发按钮 = 停止
@@ -614,9 +663,14 @@ const GroupChat: React.FC = () => {
 
     // Initial Load
     useEffect(() => {
-        if (activeGroup) {
+        if (view === 'chat' && activeGroup) {
+            const groupId = activeGroup.id;
+            setMessages([]);
+            setTotalMsgCount(0);
             setVisibleCount(MESSAGE_PAGE_SIZE);
-            DB.getRecentGroupMessagesWithCount(activeGroup.id, MESSAGE_PAGE_SIZE).then(({ messages: msgs, totalCount }) => {
+            visibleCountRef.current = MESSAGE_PAGE_SIZE;
+            DB.getRecentGroupMessagesWithCount(groupId, MESSAGE_PAGE_SIZE).then(({ messages: msgs, totalCount }) => {
+                if (activeGroupIdRef.current !== groupId) return;
                 setMessages(msgs);
                 setTotalMsgCount(totalCount);
             });
@@ -626,14 +680,7 @@ const GroupChat: React.FC = () => {
                 setCategories(cats);
             });
         }
-    }, [activeGroup]);
-
-    // Auto Scroll
-    useLayoutEffect(() => {
-        if (scrollRef.current && !selectionMode) {
-            scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-        }
-    }, [messages.length, activeGroup, showPanel, isTyping, selectionMode]);
+    }, [activeGroup?.id, view]);
 
     // 白框提示音：成员新发的消息成为群里最后一条时响一次（用户自己/翻旧消息不响）。
     // 逻辑对齐私聊 Chat.tsx——切群只记基线不播、回合内多气泡只响首条、基线只增不减。
@@ -707,7 +754,16 @@ const GroupChat: React.FC = () => {
     // 之前每条气泡都 getGroupMessages 全表读，且 totalMsgCount 不更新，
     // 导致发送后"加载历史消息"按钮的计数失真（甚至消失）
     const refreshMessages = async (groupId: string) => {
-        const { messages: msgs, totalCount } = await DB.getRecentGroupMessagesWithCount(groupId, visibleCount);
+        const keepFromId = messagesRef.current[0]?.groupId === groupId
+            ? messagesRef.current[0].id : undefined;
+        const result = await DB.getRecentGroupMessagesWithCount(groupId, visibleCountRef.current, keepFromId);
+        const msgs = followingLatestRef.current ? result.messages.slice(-visibleCountRef.current) : result.messages;
+        const totalCount = result.totalCount;
+        if (activeGroupIdRef.current !== groupId) return msgs;
+        if (msgs.length > visibleCountRef.current) {
+            visibleCountRef.current = msgs.length;
+            setVisibleCount(msgs.length);
+        }
         setMessages(msgs);
         setTotalMsgCount(totalCount);
         return msgs;
@@ -836,6 +892,7 @@ const GroupChat: React.FC = () => {
             memberBubbleIndependent: tempMemberBubbleIndependent,
             // 空串 = 默认紫，存 undefined 保持向后兼容语义
             userBubbleThemeId: tempUserBubbleThemeId || undefined,
+            stickerVisionMode: tempStickerVisionMode,
         };
         // 走 context 的 updateGroup：同步内存 groups + DB，避免退出后读回旧值
         await updateGroup(activeGroup.id, updates);
@@ -870,8 +927,44 @@ const GroupChat: React.FC = () => {
         setSelectedMembers(next);
     };
 
+    const toggleMemberEditSelection = (id: string) => {
+        setMemberEditSelection(previous => {
+            const next = new Set(previous);
+            if (next.has(id)) next.delete(id); else next.add(id);
+            return next;
+        });
+    };
+
+    const handleAddMembers = async () => {
+        if (!activeGroup || memberEditSelection.size === 0) return;
+        const updated = await addGroupMembers(activeGroup.id, Array.from(memberEditSelection));
+        if (!updated) return;
+        setActiveGroup(updated);
+        setMemberEditSelection(new Set());
+        setModalType('settings');
+        addToast('成员已加入；加入前的群消息对其不可见', 'success');
+    };
+
+    const handleRemoveMembers = async () => {
+        if (!activeGroup || memberEditSelection.size === 0) return;
+        if (activeGroup.members.length - memberEditSelection.size < 1) {
+            addToast('群聊至少需要保留 1 名 AI 成员', 'error');
+            return;
+        }
+        try {
+            const updated = await removeGroupMembers(activeGroup.id, Array.from(memberEditSelection));
+            if (!updated) return;
+            setActiveGroup(updated);
+            setMemberEditSelection(new Set());
+            setModalType('settings');
+            addToast('成员已移除，历史消息仍完整保留', 'success');
+        } catch (error: any) {
+            addToast(error?.message || '移除成员失败', 'error');
+        }
+    };
+
     const handleDeleteGroup = async (id: string) => {
-        // 清理旧版本可能留下的群记忆副本，以及公共话题盒投递到成员私聊的卡片。
+        // 清理旧版本可能留下的群记忆副本，以及群聊话题盒投递到成员私聊的卡片。
         try {
             const result = await deleteGroupMemoriesByGroupId(id);
             if (result.deleted > 0) {
@@ -890,7 +983,10 @@ const GroupChat: React.FC = () => {
             }));
         }
         await deleteGroup(id);
-        if (activeGroup?.id === id) setView('list');
+        if (activeGroup?.id === id) {
+            if (launchOrigin === 'recent-conversations') closeApp();
+            else setView('list');
+        }
         addToast('群聊已解散', 'success');
     };
 
@@ -1145,6 +1241,7 @@ const GroupChat: React.FC = () => {
         setTempPrivateContextCap(activeGroup?.privateContextCap ?? 80);
         setTempMemberTimelineCap(activeGroup?.memberTimelineCap ?? DEFAULT_MEMBER_TIMELINE_CAP);
         setTempReplyMode(activeGroup?.replyMode ?? 'director');
+        setTempStickerVisionMode(activeGroup?.stickerVisionMode ?? 'inherit');
         setTempMemberBubbleIndependent(activeGroup?.memberBubbleIndependent ?? false);
         setTempUserBubbleThemeId(activeGroup?.userBubbleThemeId ?? '');
         if (activeGroup) void loadTopicBoxStats(activeGroup);
@@ -1158,7 +1255,15 @@ const GroupChat: React.FC = () => {
     const handlePanelAction = (type: string, payload?: any) => {
         switch (type) {
             case 'send-emoji':
-                handleSendMessage(payload.url, 'emoji');
+                // 发送时刻冻结视觉资格（全局开关 + 本群三态覆盖，对整个群生效）；没开就不带 metadata。
+                handleSendMessage(
+                    payload.url,
+                    'emoji',
+                    buildStickerVisionMetadata(
+                        payload.name,
+                        resolveStickerVisionEnabled(loadGlobalStickerVisionEnabled(), activeGroup?.stickerVisionMode),
+                    ),
+                );
                 break;
             case 'select-category':
                 setActiveEmojiCategory(payload);
@@ -1180,15 +1285,18 @@ const GroupChat: React.FC = () => {
     // 两种模式共用：系统头（群名/时间/共享场景）。
     // 共享场景块（用户档案 + 共有世界书 + 共有 worldview）——每个角色都"看见"的
     // 舞台只描述一次，避免按成员数 N 倍复制；角色的人设/印象/记忆仍保持完整。
-    const buildGroupSystemHeader = (currentMsgs: Message[], groupMembers: CharacterProfile[]) => {
-        const lastMsg = currentMsgs[currentMsgs.length - 1];
+    const buildGroupSystemHeader = (currentMsgs: Message[], groupMembers: CharacterProfile[], memberId?: string) => {
+        const scopedMsgs = memberId && activeGroup
+            ? filterGroupMessagesForMember(activeGroup, memberId, currentMsgs)
+            : currentMsgs;
+        const lastMsg = scopedMsgs[scopedMsgs.length - 1];
         const timeGapInfo = lastMsg ? getTimeGapHint(lastMsg.timestamp) : "这是群聊的第一条消息。";
         // 带上完整日期（年月日 + 星期），只给 HH:MM 时角色感知不到"过了几天"——
         // 这正是"很久以后还无缝续上旧话题"的一个来源。virtualTime 只有时分，日期取真实当天。
         const nowDate = new Date();
         const weekNames = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
         const currentTimeStr = `${nowDate.getFullYear()}年${nowDate.getMonth() + 1}月${nowDate.getDate()}日 ${weekNames[nowDate.getDay()]} ${virtualTime.hours.toString().padStart(2, '0')}:${virtualTime.minutes.toString().padStart(2, '0')}`;
-        const liveMsgs = currentMsgs.filter(m => m.id > (activeGroup?.archivedThroughMessageId || 0));
+        const liveMsgs = scopedMsgs.filter(m => m.id > (activeGroup?.archivedThroughMessageId || 0));
         const sharedScene = ContextBuilder.buildGroupSharedScene(groupMembers.map(member => ({ ...member, mountedWorldbooks: [] })), userProfile, liveMsgs);
 
         const header = `【系统：群聊模拟器配置】
@@ -1196,7 +1304,7 @@ const GroupChat: React.FC = () => {
 当前系统时间: ${currentTimeStr}
 时间流逝感知: ${timeGapInfo}
 
-${sharedScene.text}${activeGroup ? buildGroupTopicContext(activeGroup) : ''}`;
+${sharedScene.text}${activeGroup ? buildGroupTopicContext(activeGroup, memberId) : ''}`;
         return { header, sharedScene };
     };
 
@@ -1208,7 +1316,10 @@ ${sharedScene.text}${activeGroup ? buildGroupTopicContext(activeGroup) : ''}`;
         const timelineCap = activeGroup?.memberTimelineCap ?? DEFAULT_MEMBER_TIMELINE_CAP;
         // 记忆宫殿检索源用当前群线程（滤掉媒体消息，base64 不能进 embedding query）：
         // 角色应召回与"群里正聊的话题"相关的记忆，而不是私聊近况（旧行为，召回跑偏）
-        const liveGroupMsgs = currentMsgs.filter(m => m.id > (activeGroup?.archivedThroughMessageId || 0));
+        const visibleCurrentMsgs = activeGroup
+            ? filterGroupMessagesForMember(activeGroup, member.id, currentMsgs)
+            : currentMsgs;
+        const liveGroupMsgs = visibleCurrentMsgs.filter(m => m.id > (activeGroup?.archivedThroughMessageId || 0));
         const palaceQueryMsgs = liveGroupMsgs.slice(-30).filter(m => !m.type || m.type === 'text');
         await injectMemoryPalace(member, palaceQueryMsgs, undefined, userProfile.name);
         // 角色块：跳过共享场景已包含的部分（用户档案 / 共有 worldview / 共有世界书）
@@ -1234,6 +1345,13 @@ ${sharedScene.text}${activeGroup ? buildGroupTopicContext(activeGroup) : ''}`;
                 : (characters.find(c => c.id === m.charId)?.name || '未知成员'),
             stickerName: url => stickerNameFromUrl(emojis, url),
         });
+        const visibleGroupHistory = buildGroupHistoryBlock(
+            liveGroupMsgs.slice(-contextLimit),
+            characters,
+            emojis,
+            userProfile.name,
+            0,
+        ).text;
 
         // Construct Detailed Profile Wrapper
         // CRITICAL FIX: Emphasize Private Context logic
@@ -1246,6 +1364,9 @@ ${coreContext}
 - **重要指令**: 如果 [私聊空窗期] 显示 "刚刚" 或 "几小时前"，请【忽略】群聊的时间流逝感知。哪怕群里很久没说话，只要你和用户私底下刚聊过，就【严禁】说 "好久不见" 或表现出疏离感。
 - 你的近期互动时间线（按时间排序；[私聊]=你和用户单独聊的，别人看不见；[群聊]=本群公开记录。仅作为你内心状态的底色，不要变成默认反应模板）：
 ${memberTimeline || '(暂无互动记录)'}
+- **该角色可见群史（唯一允许你当作亲历事实的群消息）**：
+${visibleGroupHistory || '(加入后的可见群消息暂为空)'}
+${activeGroup ? buildGroupTopicContext(activeGroup, member.id) : ''}
 - **先认清 U**：群聊里的用户，就是你一直在私聊、记忆和印象里认识的同一个人。已经建立的关系、承诺和亲密程度继续成立；公开场合可以换一种表达方式，但不能重置关系或突然把 U 当成普通陌生群友。
 - **关于私聊状态如何影响群聊表现**：
   · 私聊在吵架 → **可能**有点别扭/冷淡/借题发挥，但**强度由你的性格决定**。情绪稳定的人不会因为私下闹矛盾就在群里失态；脾气大的人才会带情绪到群里。绝大多数情况是"心里有点疙瘩"而不是"摆脸色给所有人看"。
@@ -1287,7 +1408,7 @@ ${memberTimeline || '(暂无互动记录)'}
               ]
             : prompt;
 
-    /** 群公共话题盒：每群只调用一次总结 API，不再按开启记忆宫殿的成员分别复制。 */
+    /** 群话题盒按连续可见成员集合分段，避免把退群空窗期倒灌给角色。 */
     const createNextGroupTopicBox = async (force: boolean = false): Promise<boolean> => {
         if (!activeGroup || topicArchiveLockRef.current || !apiConfig.apiKey) return false;
         const groupForArchive = activeGroup;
@@ -1301,24 +1422,30 @@ ${memberTimeline || '(暂无互动记录)'}
                 if (force) addToast(`最近 ${GROUP_TOPIC_HOT_ZONE} 条会保留原文；热区以前暂无可整理记录`, 'info');
                 return false;
             }
-            setGroupPalaceStatus(`正在把 ${batchPlan.messages.length} 条旧群聊整理成公共话题盒…`);
+            setGroupPalaceStatus(`正在把 ${batchPlan.messages.length} 条旧群聊按成员可见范围整理…`);
             setSummaryProgress(`正在整理 ${batchPlan.messages.length} 条旧群聊…`);
-            const prompt = buildGroupTopicPrompt(groupForArchive, batchPlan.messages, charactersRef.current, userProfile.name);
-            const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
-                body: JSON.stringify({ model: apiConfig.model, messages: [{ role: 'user', content: prompt }], temperature: 0.3, max_tokens: 2000 }),
-            });
-            if (!response.ok) throw new Error(`API 返回 ${response.status}`);
-            const data = await safeResponseJson(response);
-            const parsed = parseGroupTopicBox(data.choices?.[0]?.message?.content || '');
-            if (!parsed) throw new Error('总结格式无法解析');
-
-            const box = makeGroupTopicBox(groupForArchive, batchPlan.messages, parsed.title, parsed.summary);
+            const segments = splitMessagesByMembershipAudience(groupForArchive, batchPlan.messages)
+                .filter(segment => segment.audienceMemberIds.length > 0);
+            const boxes: NonNullable<GroupProfile['topicBoxes']> = [];
+            for (const segment of segments) {
+                const prompt = buildGroupTopicPrompt(groupForArchive, segment.messages, charactersRef.current, userProfile.name, segment.audienceMemberIds);
+                const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
+                    body: JSON.stringify({ model: apiConfig.model, messages: [{ role: 'user', content: prompt }], temperature: 0.3, max_tokens: 2000 }),
+                });
+                if (!response.ok) throw new Error(`API 返回 ${response.status}`);
+                const data = await safeResponseJson(response);
+                const parsed = parseGroupTopicBox(data.choices?.[0]?.message?.content || '');
+                if (!parsed) throw new Error('总结格式无法解析');
+                boxes.push(makeGroupTopicBox(groupForArchive, segment.messages, parsed.title, parsed.summary, segment.audienceMemberIds));
+            }
+            if (boxes.length === 0) throw new Error('没有可投递的话题盒成员范围');
+            const archivedThroughMessageId = batchPlan.messages[batchPlan.messages.length - 1].id;
             const updatedGroup: GroupProfile = {
                 ...groupForArchive,
-                topicBoxes: [...(groupForArchive.topicBoxes || []), box],
-                archivedThroughMessageId: box.sourceEndMessageId,
+                topicBoxes: [...(groupForArchive.topicBoxes || []), ...boxes],
+                archivedThroughMessageId,
             };
             await updateGroup(groupForArchive.id, {
                 topicBoxes: updatedGroup.topicBoxes,
@@ -1326,23 +1453,20 @@ ${memberTimeline || '(暂无互动记录)'}
             });
             setActiveGroup(updatedGroup);
 
-            // 成盒时给所有当前成员一张私聊卡。正文可被私聊上下文/归档正常解析；
-            // metadata 保留引用，后续编辑/删除公共盒时同步这些卡片。
-            await Promise.all(groupForArchive.members.map(memberId => DB.saveMessage({
-                charId: memberId,
-                role: 'system',
-                type: 'group_topic_card',
-                content: `[群聊公共话题盒：${groupForArchive.name}｜${box.title}]\n${box.summary}`,
+            await Promise.all(boxes.flatMap(box => (box.deliveredMemberIds || []).map(memberId => DB.saveMessage({
+                charId: memberId, role: 'system', type: 'group_topic_card',
+                content: `[群聊话题盒：${groupForArchive.name}｜${box.title}]\n${box.summary}`,
                 metadata: { groupTopicBox: { ...box, groupName: groupForArchive.name } },
-            })));
+            }))));
             // 话题盒卡片是直接写进成员私聊历史的，也就是 fire_pack 转写的直接来源
-            markGroupMembersDirty(groupForArchive.members);
-            const remaining = groupTopicPendingCount(allMsgs, box.sourceEndMessageId);
+            const deliveredMemberIds = Array.from(new Set(boxes.flatMap(box => box.deliveredMemberIds || [])));
+            markGroupMembersDirty(deliveredMemberIds);
+            const remaining = groupTopicPendingCount(allMsgs, archivedThroughMessageId);
             setTopicPendingCount(remaining);
-            addToast(`「${box.title}」已成盒，并送达 ${groupForArchive.members.length} 位成员私聊`, 'success');
+            addToast(`${boxes.length} 个话题盒已按可见范围送达 ${deliveredMemberIds.length} 位成员`, 'success');
             return true;
         } catch (err: any) {
-            console.warn('[GroupChat] 公共话题盒整理失败:', err);
+            console.warn('[GroupChat] 群聊话题盒整理失败:', err);
             if (force) addToast(`话题盒整理失败：${err.message || err}`, 'error');
             return false;
         } finally {
@@ -1373,7 +1497,7 @@ ${memberTimeline || '(暂无互动记录)'}
             const msgs = await DB.getMessagesByCharId(memberId, true);
             const cards = msgs.filter(m => m.type === 'group_topic_card' && m.metadata?.groupTopicBox?.id === boxId);
             await Promise.all(cards.map(async card => {
-                await DB.updateMessage(card.id, `[群聊公共话题盒：${activeGroup.name}｜${edited.title}]\n${edited.summary}`);
+                await DB.updateMessage(card.id, `[群聊话题盒：${activeGroup.name}｜${edited.title}]\n${edited.summary}`);
                 await DB.updateMessageMetadata(card.id, prev => ({ ...(prev || {}), groupTopicBox: { ...edited, groupName: activeGroup.name } }));
             }));
         }));
@@ -1398,7 +1522,7 @@ ${memberTimeline || '(暂无互动记录)'}
     const triggerDirector = async (currentMsgs: Message[]) => {
 
         if (!activeGroup) return;
-        if (!apiConfig.apiKey) {
+        if (!apiConfig.apiKey && !isManualRelayEnabled()) {
             addToast('请先在设置里填好 API', 'error');
             return;
         }
@@ -1421,7 +1545,10 @@ ${memberTimeline || '(暂无互动记录)'}
             // 3. Group History + 导演任务指令（模板原文照搬进 utils/groupChat/prompts.ts）
             const liveHistoryMsgs = currentMsgs.filter(m => m.id > (activeGroup.archivedThroughMessageId || 0));
             const historyWindow = liveHistoryMsgs.slice(-contextLimit);
-            const preparedHistory = await materializeVisionDescriptions(historyWindow, apiConfig.visionApi);
+            const preparedHistory = await materializeStickerVisionDescriptions(
+                await materializeVisionDescriptions(historyWindow, apiConfig.visionApi),
+                apiConfig.visionApi,
+            );
             const history = buildGroupHistoryBlock(
                 preparedHistory,
                 characters,
@@ -1451,6 +1578,7 @@ ${memberTimeline || '(暂无互动记录)'}
                 userName: userProfile.name,
                 signal: abort.signal,
                 onStatus: setMcpStatus,
+                supportsNativeTools: true,
             });
 
             // Token 统计：从导演响应里读 usage（兼容 OpenAI 兼容接口的标准字段）
@@ -1470,7 +1598,7 @@ ${memberTimeline || '(暂无互动记录)'}
             const rawContent = data.choices?.[0]?.message?.content ?? '';
             const actions = parseDirectorActions(rawContent, groupMembers);
             if (actions.length === 0 && String(rawContent).trim()) {
-                console.error('Director Parse Error', rawContent);
+                if (data?.model !== 'external-manual-relay') console.error('Director Parse Error', rawContent);
                 addToast('AI 输出格式无法解析，请重试', 'error');
             }
 
@@ -1487,10 +1615,11 @@ ${memberTimeline || '(暂无互动记录)'}
                 resolveQuote,
                 userName: userProfile.name,
                 htmlMode: !!activeGroup.htmlModeEnabled,
+                stickerVisionEnabled: resolveStickerVisionEnabled(loadGlobalStickerVisionEnabled(), activeGroup.stickerVisionMode),
             });
 
         } catch (e: any) {
-            if (e?.name === 'AbortError') {
+            if (abort.signal.aborted || e?.name === 'AbortError') {
                 addToast('已停止生成', 'info');
             } else {
                 console.error(e);
@@ -1512,6 +1641,10 @@ ${memberTimeline || '(暂无互动记录)'}
     const triggerRoundRobin = async (currentMsgs: Message[]) => {
 
         if (!activeGroup) return;
+        if (!apiConfig.apiKey && !isManualRelayEnabled()) {
+            addToast('请先在设置里填好 API', 'error');
+            return;
+        }
         setIsTyping(true);
         const abort = new AbortController();
         abortRef.current = abort;
@@ -1528,13 +1661,17 @@ ${memberTimeline || '(暂无互动记录)'}
                 if (abort.signal.aborted) break;
                 try {
                     const dialogueApi = resolveDialogueApi(apiConfig, member);
-                    if (!dialogueApi.baseUrl || !dialogueApi.model) throw new Error("请配置该角色或设置中的 API");
+                    if ((!dialogueApi.baseUrl || !dialogueApi.model) && !isManualRelayEnabled()) throw new Error("请配置该角色或设置中的 API");
                     // 每位成员基于"此刻"的群历史构建上下文——包含本轮先发言成员的新消息
-                    const { header, sharedScene } = buildGroupSystemHeader(roundMsgs, groupMembers);
+                    const { header, sharedScene } = buildGroupSystemHeader(roundMsgs, groupMembers, member.id);
                     const memberBlock = await buildMemberBlock(member, roundMsgs, sharedScene);
-                    const liveRoundMsgs = roundMsgs.filter(m => m.id > (activeGroup.archivedThroughMessageId || 0));
+                    const liveRoundMsgs = filterGroupMessagesForMember(activeGroup, member.id, roundMsgs)
+                        .filter(m => m.id > (activeGroup.archivedThroughMessageId || 0));
                     const historyWindow = liveRoundMsgs.slice(-contextLimit);
-                    const preparedHistory = await materializeVisionDescriptions(historyWindow, apiConfig.visionApi);
+                    const preparedHistory = await materializeStickerVisionDescriptions(
+                        await materializeVisionDescriptions(historyWindow, apiConfig.visionApi),
+                        apiConfig.visionApi,
+                    );
                     const preparedById = new Map(preparedHistory.map(message => [message.id, message]));
                     // 轮询模式后续成员继续复用本轮刚写回的描述，不能每位成员各识图一次。
                     roundMsgs = roundMsgs.map(message => preparedById.get(message.id) || message);
@@ -1566,6 +1703,7 @@ ${memberTimeline || '(暂无互动记录)'}
                         userName: userProfile.name,
                         signal: abort.signal,
                         onStatus: status => setMcpStatus(status ? `${member.name}：${status}` : ''),
+                        supportsNativeTools: true,
                     });
 
                     // Token 统计：整轮累加显示
@@ -1597,6 +1735,7 @@ ${memberTimeline || '(暂无互动记录)'}
                         resolveQuote,
                         userName: userProfile.name,
                         htmlMode: !!activeGroup.htmlModeEnabled,
+                        stickerVisionEnabled: resolveStickerVisionEnabled(loadGlobalStickerVisionEnabled(), activeGroup.stickerVisionMode),
                     });
 
                     // 刷新滚动历史给下一位成员
@@ -1681,7 +1820,7 @@ ${memberTimeline || '(暂无互动记录)'}
 
                 <div className="p-4 space-y-3 overflow-y-auto">
                     {groups.map(g => (
-                        <div key={g.id} onClick={() => { setActiveGroup(g); setView('chat'); }} className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex items-center gap-4 active:scale-[0.98] transition-all cursor-pointer group hover:bg-violet-50/30">
+                        <div key={g.id} onClick={() => { setActiveGroup(g); setLaunchOrigin('group-list'); setView('chat'); }} className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex items-center gap-4 active:scale-[0.98] transition-all cursor-pointer group hover:bg-violet-50/30">
                             {/* Group Avatar Logic */}
                             <div className="w-14 h-14 rounded-2xl bg-slate-100 overflow-hidden border border-slate-200 relative shadow-sm">
                                 {g.avatar ? (
@@ -1699,7 +1838,7 @@ ${memberTimeline || '(暂无互动记录)'}
                                 <div className="font-bold text-slate-700 truncate text-base">{g.name}</div>
                                 <div className="text-xs text-slate-400 mt-1 flex items-center gap-1">
                                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3 h-3"><path d="M7 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM14.5 9a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM1.615 16.428a1.224 1.224 0 0 1-.569-1.175 6.002 6.002 0 0 1 11.908 0c.058.467-.172.92-.57 1.174A9.953 9.953 0 0 1 7 18a9.953 9.953 0 0 1-5.385-1.572ZM14.5 16h-.106c.07-.297.088-.611.048-.933a7.47 7.47 0 0 0-1.588-3.755 4.502 4.502 0 0 1 5.874 2.636.818.818 0 0 1-.36.98A7.465 7.465 0 0 1 14.5 16Z" /></svg>
-                                    {g.members.length} 成员
+                                    {g.members.length + 1} 成员
                                 </div>
                             </div>
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5 text-slate-300"><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
@@ -1794,7 +1933,7 @@ ${memberTimeline || '(暂无互动记录)'}
                     .sully-chat-inputbar textarea,.sully-chat-inputbar button{pointer-events:auto!important;visibility:visible!important;}
                 `}</style>
             )}
-            {/* 公共话题盒整理状态 — 不阻塞交互 */}
+            {/* 群聊话题盒整理状态 — 不阻塞交互 */}
             {groupPalaceStatus && (
                 <div
                     className="absolute top-[100px] left-1/2 z-[150] animate-fade-in"
@@ -1842,7 +1981,7 @@ ${memberTimeline || '(暂无互动记录)'}
                 memoryPalaceStatusText={groupPalaceStatus}
                 lastTokenUsage={lastTokenUsage}
                 tokenBreakdown={tokenBreakdown}
-                statusText={`${activeGroup?.members.length ?? 0} 成员`}
+                statusText={`${(activeGroup?.members.length ?? 0) + 1} 成员`}
                 extraAction={{
                     label: '群聊记忆规则',
                     icon: <Question className="w-5 h-5" weight="bold" />,
@@ -1850,7 +1989,7 @@ ${memberTimeline || '(暂无互动记录)'}
                 }}
                 triggerIcon={isTyping ? 'stop' : 'lightning'}
                 hideTrigger={inputPreferences.sendButtonGenerates && !isTyping}
-                onClose={() => setView('list')}
+                onClose={() => launchOrigin === 'recent-conversations' ? closeApp() : setView('list')}
                 onTriggerAI={() => triggerGroupAI(messages)}
                 onShowCharsPanel={openGroupSettings}
                 hideBuffs
@@ -1875,13 +2014,19 @@ ${memberTimeline || '(暂无互动记录)'}
                 }}>{selectionMode ? `为所选角色消息配音` : '选择消息配音'}</button>
             </div>}
             {voiceDialogueLines && <DialogueVoicePanel lines={voiceDialogueLines} apiConfig={apiConfig} onClose={() => setVoiceDialogueLines(null)} />}
-            <div className="flex-1 overflow-y-auto overflow-x-hidden pt-6 pb-6 no-scrollbar" ref={scrollRef} onClick={() => { if (inputPreferences.autoReply) setShowPanel('none'); }}>
+            <div className="relative flex-1 min-h-0">
+            <div className="h-full overflow-y-auto overflow-x-hidden no-scrollbar" ref={scrollRef} onScroll={onScroll} onWheel={onWheel} onTouchStart={onTouchStart} onTouchMove={onTouchMove} onKeyDown={onKeyDown} onClick={() => { if (inputPreferences.autoReply) setShowPanel('none'); }}>
+            <div ref={contentRef} className="pt-6 pb-6">
                 {collapsedCount > 0 && activeGroup && (
                     <div className="flex justify-center mb-6">
                         <button onClick={async () => {
-                            const nextVisibleCount = visibleCount + MESSAGE_PAGE_SIZE;
+                            const groupId = activeGroup.id;
+                            const nextVisibleCount = visibleCountRef.current + MESSAGE_PAGE_SIZE;
+                            const { messages: moreMsgs, totalCount } = await DB.getRecentGroupMessagesWithCount(groupId, nextVisibleCount);
+                            if (activeGroupIdRef.current !== groupId) return;
+                            preservePrepend();
+                            visibleCountRef.current = nextVisibleCount;
                             setVisibleCount(nextVisibleCount);
-                            const { messages: moreMsgs, totalCount } = await DB.getRecentGroupMessagesWithCount(activeGroup.id, nextVisibleCount);
                             setMessages(moreMsgs);
                             setTotalMsgCount(totalCount);
                         }} className="px-4 py-2 bg-white/50 backdrop-blur-sm rounded-full text-xs text-slate-500 shadow-sm border border-white hover:bg-white transition-colors">
@@ -1942,6 +2087,14 @@ ${memberTimeline || '(暂无互动记录)'}
                     </div>
                 )}
             </div>
+            </div>
+            {hasNewMessageBelow && !selectionMode && (
+                <button aria-label="查看新消息" onClick={scrollToLatest}
+                    className="absolute right-4 bottom-3 z-30 rounded-full bg-white/90 backdrop-blur-sm border border-primary/20 px-3 py-2 text-xs font-medium text-primary shadow-sm active:scale-95 transition-transform">
+                    ↓ 新消息
+                </button>
+            )}
+            </div>
 
             {/* Redesigned Input Area (WeChat/iOS Style) */}
             {/* 回复预览条（对齐私聊 Chat.tsx 的样式与位置） */}
@@ -1953,9 +2106,9 @@ ${memberTimeline || '(暂无互动记录)'}
                 </div>
             )}
 
-            {/* 输入区 — 复用私聊 ChatInputArea（输入/表情面板/多选删除随 OS 外观设置），
-                actions 面板整体替换为群聊自己的 4 格 */}
+            {/* 输入区与功能格共用 ChatInputArea；群聊只提供自己的动作和回调。 */}
             {previewImage && <ImageViewer value={previewImage} fallback={previewImage} onClose={() => setPreviewImage(null)} />}
+            <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleImageUpload} />
             <ChatInputArea
                 input={input}
                 setInput={setInput}
@@ -1988,31 +2141,48 @@ ${memberTimeline || '(暂无互动记录)'}
                 sendButtonStyle={osTheme.chatSendButtonStyle}
                 chromeStyle={osTheme.chatChromeStyle}
                 acnh={acnh}
-                actionsContent={
-                    <div className="p-6 grid grid-cols-4 gap-8">
-                        <button onClick={() => fileInputRef.current?.click()} className="flex flex-col items-center gap-2 active:scale-95 transition-transform text-slate-600">
+                actionConversationId={activeGroup?.id}
+                groupActionTiles={[
+                        <button key="group-image" onClick={() => fileInputRef.current?.click()} className="flex flex-col items-center gap-2 active:scale-95 transition-transform text-slate-600">
                             <div className="w-14 h-14 rounded-2xl flex items-center justify-center shadow-sm border bg-pink-50 text-pink-400 border-pink-100">
                                 <ImageIcon className="w-6 h-6" weight="bold" />
                             </div>
                             <span className="text-xs font-bold">相册</span>
-                        </button>
-                        <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleImageUpload} />
+                        </button>,
 
-                        <button onClick={() => { setModalType('transfer'); setShowPanel('none'); trackEvent('打开发红包面板'); }} className="flex flex-col items-center gap-2 active:scale-95 transition-transform text-slate-600">
+                        <button key="group-side-story" onClick={() => {
+                            if (!activeGroup) return;
+                            const latest = latestGroupsRef.current.find(item => item.id === activeGroup.id);
+                            if (!latest) return;
+                            const members = latest.members.map(id => charactersRef.current.find(char => char.id === id));
+                            if (members.some(member => !member)) { addToast('群成员资料已变化，请重新进入群聊', 'error'); return; }
+                            setSideStorySource({ group: { ...latest, members: [...latest.members],
+                                memberVisibilityWindows: latest.memberVisibilityWindows && structuredClone(latest.memberVisibilityWindows) },
+                                members: members as CharacterProfile[], contextLimit });
+                            setShowPanel('none');
+                        }} className="flex flex-col items-center gap-2 active:scale-95 transition-transform text-slate-600">
+                            <div className="w-14 h-14 rounded-2xl flex items-center justify-center shadow-sm border bg-fuchsia-50 text-fuchsia-500 border-fuchsia-100">
+                                <svg viewBox="0 0 24 24" className="w-6 h-6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15l-1 6Z" /></svg>
+                            </div>
+                            <span className="text-xs font-bold">番外创作</span>
+                        </button>,
+
+                        <button key="group-transfer" onClick={() => { setModalType('transfer'); setShowPanel('none'); trackEvent('打开发红包面板'); }} className="flex flex-col items-center gap-2 active:scale-95 transition-transform text-slate-600">
                             <div className="w-14 h-14 rounded-2xl flex items-center justify-center shadow-sm border bg-orange-50 text-orange-400 border-orange-100">
                                 <Money className="w-6 h-6" weight="bold" />
                             </div>
                             <span className="text-xs font-bold">红包</span>
-                        </button>
+                        </button>,
 
-                        <button onClick={openGroupSettings} className="flex flex-col items-center gap-2 active:scale-95 transition-transform text-slate-600">
+                        <button key="group-settings" onClick={openGroupSettings} className="flex flex-col items-center gap-2 active:scale-95 transition-transform text-slate-600">
                             <div className="w-14 h-14 rounded-2xl flex items-center justify-center shadow-sm border bg-violet-50 text-violet-500 border-violet-100">
                                 <GearSix className="w-6 h-6" weight="bold" />
                             </div>
                             <span className="text-xs font-bold">群设置</span>
-                        </button>
+                        </button>,
 
                         <button
+                            key="group-reroll"
                             onClick={() => { if (canReroll) { setShowPanel('none'); handleReroll(); } }}
                             disabled={!canReroll}
                             className={`flex flex-col items-center gap-2 active:scale-95 transition-transform ${canReroll ? 'text-slate-600' : 'text-slate-300 opacity-50'}`}
@@ -2021,24 +2191,25 @@ ${memberTimeline || '(暂无互动记录)'}
                                 <ArrowsClockwise className="w-6 h-6" weight="bold" />
                             </div>
                             <span className="text-xs font-bold">重新生成</span>
-                        </button>
+                        </button>,
 
-                        <button onClick={() => { setModalType('chrome-css'); setShowPanel('none'); }} className="flex flex-col items-center gap-2 active:scale-95 transition-transform text-slate-600">
+                        <button key="group-chrome-css" onClick={() => { setModalType('chrome-css'); setShowPanel('none'); }} className="flex flex-col items-center gap-2 active:scale-95 transition-transform text-slate-600">
                             <div className="w-14 h-14 rounded-2xl flex items-center justify-center shadow-sm border bg-sky-50 text-sky-500 border-sky-100">
                                 <PaintBrush className="w-6 h-6" weight="bold" />
                             </div>
                             <span className="text-xs font-bold">白框</span>
-                        </button>
+                        </button>,
 
-                        <button onClick={() => { setModalType('chrome-sound'); setShowPanel('none'); }} className="flex flex-col items-center gap-2 active:scale-95 transition-transform text-slate-600">
+                        <button key="group-chrome-sound" onClick={() => { setModalType('chrome-sound'); setShowPanel('none'); }} className="flex flex-col items-center gap-2 active:scale-95 transition-transform text-slate-600">
                             <div className="w-14 h-14 rounded-2xl flex items-center justify-center shadow-sm border bg-amber-50 text-amber-500 border-amber-100">
                                 <BellSimpleRinging className="w-6 h-6" weight="bold" />
                             </div>
                             <span className="text-xs font-bold">提示音</span>
-                        </button>
+                        </button>,
 
-                        {/* HTML 模式：tap 切换开关；右键/长按打开自定义提示词（交互对齐私聊） */}
+                        /* HTML 模式：tap 切换开关；右键/长按打开自定义提示词（交互对齐私聊） */
                         <button
+                            key="group-html-mode"
                             onClick={() => {
                                 if (!activeGroup) return;
                                 const next = !activeGroup.htmlModeEnabled;
@@ -2055,17 +2226,35 @@ ${memberTimeline || '(暂无互动记录)'}
                                 {activeGroup?.htmlModeEnabled && <span className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-fuchsia-500 border-2 border-white" />}
                             </div>
                             <span className="text-xs font-bold">{activeGroup?.htmlModeEnabled ? 'HTML已开' : 'HTML模式'}</span>
-                        </button>
-                    </div>
-
-                }
+                        </button>,
+                ]}
             />
 
             {/* --- Modals --- */}
 
+            {sideStorySource && view === 'chat' && activeGroup?.id === sideStorySource.group.id
+                && groups.some(group => group.id === sideStorySource.group.id
+                    && groupSideStorySignature(group) === groupSideStorySignature(sideStorySource.group))
+                && sideStorySource.members.every(member => characters.some(char => char === member))
+                && <SideStoryModal key={sideStorySource.group.id} group={sideStorySource} user={userProfile} api={apiConfig}
+                    isCurrentGroup={id => activeGroupIdRef.current === id
+                        && latestGroupsRef.current.some(group => group.id === id
+                            && groupSideStorySignature(group) === groupSideStorySignature(sideStorySource.group))
+                        && sideStorySource.members.every(member => charactersRef.current.some(char => char === member))}
+                    onClose={() => setSideStorySource(null)} />}
+
             {/* Group Settings Modal */}
             <Modal isOpen={modalType === 'settings'} title="群组设置" onClose={() => setModalType('none')} footer={<button onClick={handleUpdateGroupInfo} className="w-full py-3 bg-violet-500 text-white font-bold rounded-2xl shadow-lg shadow-violet-200">保存修改</button>}>
                 <div className="space-y-6">
+                    {activeGroup && (
+                        <GroupInfoMembers
+                            group={activeGroup}
+                            characters={characters}
+                            userProfile={userProfile}
+                            onInvite={() => { setMemberEditSelection(new Set()); setModalType('invite-members'); }}
+                            onRemove={() => { setMemberEditSelection(new Set()); setModalType('remove-members'); }}
+                        />
+                    )}
                     {/* Header Info */}
                     <div className="flex justify-center">
                         <div onClick={() => groupAvatarInputRef.current?.click()} className="w-24 h-24 rounded-3xl bg-slate-100 border-2 border-dashed border-slate-300 flex items-center justify-center cursor-pointer overflow-hidden relative group hover:border-violet-400">
@@ -2103,6 +2292,26 @@ ${memberTimeline || '(暂无互动记录)'}
                                 <p className="text-[9px] text-slate-400 mt-1 leading-tight">每位成员单独调用一次 API，按顺序逐个发言（每人必发言）。更真实、彻底防串号，但更慢，token 消耗约为导演模式 × 成员数。</p>
                             </div>
                         </div>
+                    </div>
+
+                    {/* Sticker Vision (three-state, group-wide) */}
+                    <div className="pt-2 border-t border-slate-100">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 block">表情包视觉理解</label>
+                        <p className="text-[9px] text-slate-400 mt-0.5 mb-2 leading-tight">开启后，成员可以结合表情包真实图片理解其中的文字、动作和 meme 含义。只对开启后新发的表情生效，旧表情不会补识别。<b>本设置对整个群生效。</b></p>
+                        <div className="flex gap-2">
+                            {([['inherit', '跟随全局'], ['on', '强制开启'], ['off', '强制关闭']] as const).map(([value, label]) => (
+                                <button
+                                    key={value}
+                                    onClick={() => setTempStickerVisionMode(value as StickerVisionMode)}
+                                    className={`flex-1 py-2 rounded-xl border text-[11px] font-bold transition-all ${tempStickerVisionMode === value ? 'border-violet-500 bg-violet-50 ring-1 ring-violet-500 text-violet-700' : 'border-slate-200 bg-white text-slate-500'}`}
+                                >
+                                    {label}
+                                </button>
+                            ))}
+                        </div>
+                        <p className="text-[9px] text-violet-500 mt-1.5">
+                            当前实际：{resolveStickerVisionEnabled(loadGlobalStickerVisionEnabled(), tempStickerVisionMode) ? '开启' : '关闭'}{tempStickerVisionMode === 'inherit' ? '（全局默认）' : '（本群强制）'}
+                        </p>
                     </div>
 
                     {/* Bubble Appearance */}
@@ -2161,10 +2370,10 @@ ${memberTimeline || '(暂无互动记录)'}
                         <p className="text-[9px] text-slate-400 mt-1 leading-tight">群里发言时，每位成员参考的"私聊+群聊合并时间线"条数。这条时间线让角色在群里的感情与私聊衔接。</p>
                     </div>
 
-                    {/* 公共话题盒：一次总结，全群共享，并在成盒时送达所有成员私聊。 */}
+                    {/* 群聊话题盒按当时可见成员范围总结并投递。 */}
                     <div className="pt-2 border-t border-slate-100 space-y-3">
                         <div className="flex items-center justify-between">
-                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">群聊总结 · 公共话题盒</label>
+                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">群聊总结 · 话题盒</label>
                             <span className="text-[10px] text-violet-500 font-bold">{activeGroup?.topicBoxes?.length || 0} 个盒子</span>
                         </div>
                         <div className="grid grid-cols-2 gap-2 rounded-2xl bg-slate-100 p-1.5">
@@ -2187,10 +2396,10 @@ ${memberTimeline || '(暂无互动记录)'}
                             })}
                         </div>
                         <div className="rounded-2xl border border-violet-100 bg-gradient-to-br from-violet-50 to-indigo-50 p-3.5 space-y-2">
-                            <p className="text-[11px] font-bold text-violet-700">一份总结，全群共同记住</p>
+                            <p className="text-[11px] font-bold text-violet-700">按当时可见成员范围整理</p>
                             <p className="text-[10px] leading-5 text-violet-600/80">
-                                最近 {GROUP_TOPIC_HOT_ZONE} 条始终保留原文；更早的记录累计 {GROUP_TOPIC_BUFFER_THRESHOLD} 条后{(activeGroup?.topicArchiveMode || 'auto') === 'auto' ? '自动整理' : '等待你手动整理'}成公共话题盒。
-                                盒子只属于本群，同时会作为卡片送到每位成员私聊，之后可被各自的私聊上下文与归档正常理解。
+                                最近 {GROUP_TOPIC_HOT_ZONE} 条始终保留原文；更早的记录累计 {GROUP_TOPIC_BUFFER_THRESHOLD} 条后{(activeGroup?.topicArchiveMode || 'auto') === 'auto' ? '自动整理' : '等待你手动整理'}成群聊话题盒。
+                                每个盒子只会送达当时可见这段消息的成员；新加入者和离群空窗期不会收到旧内容。
                             </p>
                             <div className="flex items-center justify-between rounded-xl bg-white/70 px-3 py-2 text-[10px]">
                                 <span className="text-slate-500">热区以前待整理</span>
@@ -2201,8 +2410,8 @@ ${memberTimeline || '(暂无互动记录)'}
                         <div className="bg-white border border-slate-100 rounded-2xl p-3 flex items-center gap-3">
                             <div className="w-9 h-9 rounded-xl bg-violet-50 flex items-center justify-center">✦</div>
                             <div>
-                                <div className="text-[10px] font-bold text-slate-600">内置 · 群聊共同记忆总结</div>
-                                <p className="text-[9px] text-slate-400 mt-0.5 leading-4">总结机会读取全体成员的简介、核心设定、世界观、写作人格与核心记忆，不再复用私聊归档风格。</p>
+                                <div className="text-[10px] font-bold text-slate-600">内置 · 按可见范围总结</div>
+                                <p className="text-[9px] text-slate-400 mt-0.5 leading-4">每段只读取当时可见成员的角色资料，并仅向这些成员投递，不复用私聊归档风格。</p>
                             </div>
                         </div>
 
@@ -2244,7 +2453,7 @@ ${memberTimeline || '(暂无互动记录)'}
                                 );
                             })}
                             {(activeGroup?.topicBoxes?.length || 0) === 0 && (
-                                <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-5 text-center text-[10px] text-slate-400">聊天还在近期热区里。内容足够多后，会自动出现第一只公共话题盒。</div>
+                                <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-5 text-center text-[10px] text-slate-400">聊天还在近期热区里。内容足够多后，会自动出现第一只群聊话题盒。</div>
                             )}
                         </div>
                     </div>
@@ -2269,6 +2478,24 @@ ${memberTimeline || '(暂无互动记录)'}
                         </div>
                     </div>
                 </div>
+            </Modal>
+
+            <Modal
+                isOpen={modalType === 'invite-members'}
+                title="邀请成员"
+                onClose={() => { setMemberEditSelection(new Set()); setModalType('settings'); }}
+                footer={<button disabled={memberEditSelection.size === 0} onClick={handleAddMembers} className="w-full rounded-2xl bg-violet-500 py-3 font-bold text-white disabled:bg-slate-200 disabled:text-slate-400">确认邀请{memberEditSelection.size ? `（${memberEditSelection.size}）` : ''}</button>}
+            >
+                {activeGroup && <GroupMemberPicker mode="invite" characters={characters} characterGroups={characterGroups} currentMemberIds={activeGroup.members} selectedIds={memberEditSelection} onToggle={toggleMemberEditSelection} />}
+            </Modal>
+
+            <Modal
+                isOpen={modalType === 'remove-members'}
+                title="移除成员"
+                onClose={() => { setMemberEditSelection(new Set()); setModalType('settings'); }}
+                footer={<button disabled={memberEditSelection.size === 0 || !activeGroup || activeGroup.members.length - memberEditSelection.size < 1} onClick={handleRemoveMembers} className="w-full rounded-2xl bg-rose-500 py-3 font-bold text-white disabled:bg-slate-200 disabled:text-slate-400">确认移除{memberEditSelection.size ? `（${memberEditSelection.size}）` : ''}</button>}
+            >
+                {activeGroup && <GroupMemberPicker mode="remove" characters={characters} characterGroups={characterGroups} currentMemberIds={activeGroup.members} selectedIds={memberEditSelection} onToggle={toggleMemberEditSelection} />}
             </Modal>
 
             {/* Message Options Modal */}
@@ -2520,8 +2747,8 @@ ${memberTimeline || '(暂无互动记录)'}
                         <p>角色生成私聊回复时，会看到自己参与群聊中的最近一段消息。记录同时带具体日期和“约 N 天前”，避免把旧消息误认成刚刚发生。</p>
                     </div>
                     <div>
-                        <div className="font-bold text-slate-800 mb-1">公共话题盒</div>
-                        <p>群聊积累到一定数量后，较旧内容会被压缩成群成员共享的话题盒，并进入各成员的私聊背景。因此旧话题可能在之后再次被提起。</p>
+                        <div className="font-bold text-slate-800 mb-1">群聊话题盒</div>
+                        <p>群聊积累到一定数量后，较旧内容会按当时可见成员范围压缩成话题盒，只进入这些成员的私聊背景；加入前和离群期间的内容不会补发。</p>
                     </div>
                     <div>
                         <div className="font-bold text-slate-800 mb-1">个人群聊记忆</div>

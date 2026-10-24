@@ -3,6 +3,7 @@ import { isChatConversationEntry } from './trace';
 import { readMaintenanceSettings } from './maintenanceMode';
 import { loadRangeMessageContents } from './rangeMessagePage';
 import { loadCharacterContextMessages } from '../chatContextRange';
+import { expandPromptMacros } from '../worldbook';
 /**
  * Memory Palace — 集成管线 (Pipeline)
  *
@@ -1555,8 +1556,8 @@ export async function ingestDiaryToPalace(
     if (fakeMessages.length === 0) return { status: 'empty_input' };
 
     // 角色 / 用户档案给 LLM 当上下文
-    let charContext = `[角色档案]\n名字: ${char.name}\n核心设定:\n${char.systemPrompt || '无'}\n`;
-    if (char.worldview?.trim()) charContext += `世界观: ${char.worldview}\n`;
+    let charContext = `[角色档案]\n名字: ${char.name}\n核心设定:\n${expandPromptMacros(char.systemPrompt || '无', char.name, userName || '')}\n`;
+    if (char.worldview?.trim()) charContext += `世界观: ${expandPromptMacros(char.worldview, char.name, userName || '')}\n`;
     charContext += `\n[用户档案]\n名字: ${userName || '用户'}\n\n[来源说明]\n这是来自【交换日记】app 的一次归档，不是普通聊天，是一篇双方各写一页的正式日记。\n`;
 
     const extracted = await extractMemoriesFromBuffer(
@@ -1766,9 +1767,9 @@ async function extractAndStoreMemories(
             if (charProfile) {
                 charContext += `[角色档案]\n`;
                 charContext += `名字: ${charProfile.name}\n`;
-                charContext += `核心设定:\n${charProfile.systemPrompt || '无'}\n`;
+                charContext += `核心设定:\n${expandPromptMacros(charProfile.systemPrompt || '无', charProfile.name, userProfile?.name || '')}\n`;
                 if (charProfile.worldview?.trim()) {
-                    charContext += `世界观: ${charProfile.worldview}\n`;
+                    charContext += `世界观: ${expandPromptMacros(charProfile.worldview, charProfile.name, userProfile?.name || '')}\n`;
                 }
                 charContext += `\n`;
             }
@@ -2281,6 +2282,13 @@ export interface RangeProcessResult {
     error?: 'lock' | 'empty' | 'no_memories' | string;
 }
 
+export interface MessageSelectionScope {
+    entryId: string;
+    archiveId: string;
+    sourceMessageIds: number[];
+    branchId?: string;
+}
+
 /** 外部文本搬家到记忆宫殿的结果。 */
 export interface ExternalMemoryImportResult {
     stored: number;
@@ -2498,5 +2506,62 @@ export async function processMessageRange(
         return { stored: 0, skipped: 0, processedMessages: 0, memories: [], batches: [], error: err.message || '未知错误' };
     } finally {
         processingLocks.delete(charId);
+    }
+}
+
+/**
+ * 按调用方给出的精确消息集合归档。剧情树不能再用全局自增 ID 区间读取，否则区间会夹入
+ * 兄弟分支；这条入口保留传入顺序，并把来源范围写进每个新节点。
+ */
+export async function processMessageSelection(
+    messages: Message[],
+    targetCharId: string,
+    charName: string,
+    embeddingConfig: EmbeddingConfig,
+    llmConfig: LightLLMConfig,
+    userName: string = '',
+    onProgress?: (stage: string) => void,
+    scope?: MessageSelectionScope,
+): Promise<RangeProcessResult> {
+    if (processingLocks.has(targetCharId)) {
+        return { stored: 0, skipped: 0, processedMessages: 0, memories: [], batches: [], error: 'lock' };
+    }
+    processingLocks.add(targetCharId);
+    try {
+        const toProcess = messages.filter(message => isMessageSemanticallyRelevant(message));
+        if (toProcess.length === 0) {
+            return { stored: 0, skipped: 0, processedMessages: 0, memories: [], batches: [], error: 'empty' };
+        }
+        onProgress?.(`正在整理 ${toProcess.length} 条剧情正文...`);
+        const core = await extractAndStoreMemories(
+            toProcess, targetCharId, charName, embeddingConfig, llmConfig, userName, onProgress, false,
+        );
+        if (core.memories.length === 0) {
+            return { stored: 0, skipped: 0, processedMessages: toProcess.length, memories: [], batches: core.batches, error: 'no_memories' };
+        }
+        if (scope) {
+            for (const candidate of core.memories) {
+                const stored = await MemoryNodeDB.getById(candidate.id);
+                if (!stored || stored.charId !== targetCharId) continue;
+                await MemoryNodeDB.save({ ...stored, storyTimelineScope: { ...scope, sourceMessageIds: [...scope.sourceMessageIds] } });
+            }
+        }
+        await applyMemorySideEffects(
+            targetCharId, charName, core.memories, core.crossTimeLinks, core.eventBoxHints, core.corrections,
+            embeddingConfig, llmConfig, userName,
+        );
+        onProgress?.(`完成！新增 ${core.stored} 条记忆${core.skipped > 0 ? `，${core.skipped} 条因重复跳过` : ''}`);
+        return {
+            stored: core.stored,
+            skipped: core.skipped,
+            processedMessages: toProcess.length,
+            memories: core.memories.map(memory => ({ content: memory.content, room: memory.room, importance: memory.importance, mood: memory.mood, tags: memory.tags })),
+            batches: core.batches,
+        };
+    } catch (error: any) {
+        console.error(`❌ [Pipeline] processMessageSelection 失败 (charId=${targetCharId}):`, error);
+        return { stored: 0, skipped: 0, processedMessages: 0, memories: [], batches: [], error: error?.message || String(error) };
+    } finally {
+        processingLocks.delete(targetCharId);
     }
 }

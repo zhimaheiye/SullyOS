@@ -11,7 +11,24 @@ import { Notepad, Check, X, CheckCircle, XCircle, Hand } from '@phosphor-icons/r
 import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
 import TokenImg from '../components/os/TokenImg';
 import { trackEvent } from '../utils/analytics';
+import CharacterStudyRoom from '../components/study/CharacterStudyRoom';
 import { extractPdfText, isPdfFile } from '../utils/pdfText';
+import KnowledgeCardModal from '../components/study/KnowledgeCardModal';
+import KnowledgeGraphView from '../components/study/KnowledgeGraphView';
+import KnowledgeOrganizerModal from '../components/study/KnowledgeOrganizerModal';
+import KnowledgeRelationModal from '../components/study/KnowledgeRelationModal';
+import {
+    addKnowledgeRelation,
+    createKnowledgeCourse,
+    getStudySourceText,
+    hasKnowledgeContent,
+    isKnowledgeCourse,
+    KnowledgeOrganizerProposal,
+    removeKnowledgeNodeRelations,
+    removeKnowledgeRelation,
+    validateOrganizerProposal,
+} from '../utils/studyKnowledge';
+import { requestKnowledgeOrganizerProposal } from '../utils/studyKnowledgeOrganizer';
 
 type KatexLike = {
     renderToString: (latex: string, options: any) => string;
@@ -306,11 +323,19 @@ const BlackboardRenderer: React.FC<{ text: string, isTyping?: boolean, katexRend
 
 const StudyApp: React.FC = () => {
     const { closeApp, characters, activeCharacterId, apiConfig, addToast, userProfile, updateCharacter, characterGroups } = useOS();
-    const [mode, setMode] = useState<'bookshelf' | 'classroom' | 'quiz' | 'quiz_review' | 'practice_book'>('bookshelf');
+    const [mode, setMode] = useState<'bookshelf' | 'classroom' | 'quiz' | 'quiz_review' | 'practice_book' | 'character_study'>('bookshelf');
     const [courses, setCourses] = useState<StudyCourse[]>([]);
     const [activeCourse, setActiveCourse] = useState<StudyCourse | null>(null);
     const [selectedChar, setSelectedChar] = useState<CharacterProfile | null>(null);
     const [tutorGroupId, setTutorGroupId] = useState<string>(GROUP_FILTER_ALL); // 书架页「当前助教」的分组筛选
+    const [bookshelfTab, setBookshelfTab] = useState<'knowledge' | 'course'>('knowledge');
+    const [showKnowledgeCardModal, setShowKnowledgeCardModal] = useState(false);
+    const [relationTarget, setRelationTarget] = useState<StudyCourse | null>(null);
+    const [organizerOpen, setOrganizerOpen] = useState(false);
+    const [organizerLoading, setOrganizerLoading] = useState(false);
+    const [organizerProposal, setOrganizerProposal] = useState<KnowledgeOrganizerProposal | null>(null);
+    const [organizerErrors, setOrganizerErrors] = useState<string[]>([]);
+    const [organizerNodeIds, setOrganizerNodeIds] = useState<Record<string, string>>({});
     
     // Classroom State
     const [classroomState, setClassroomState] = useState<'idle' | 'teaching' | 'q_and_a' | 'finished'>('idle');
@@ -622,6 +647,10 @@ For each chapter, provide a title, a brief summary of what it covers, and a diff
     // --- Classroom Logic ---
 
     const startSession = (course: StudyCourse) => {
+        if (isKnowledgeCourse(course) && !hasKnowledgeContent(course)) {
+            setRelationTarget(course);
+            return;
+        }
         trackEvent('进入课程课堂');
         setActiveCourse(course);
         setMode('classroom');
@@ -640,6 +669,91 @@ For each chapter, provide a title, a brief summary of what it covers, and a diff
         }
         
         handleTeach(course, targetIdx);
+    };
+
+    const handleCreateKnowledge = async (title: string, markdown: string) => {
+        const newCourse = createKnowledgeCourse({ title, markdown });
+        try {
+            await DB.saveCourse(newCourse);
+        } catch (error: any) {
+            addToast(error.message || '知识卡保存失败', 'error');
+            return;
+        }
+        setCourses(prev => [newCourse, ...prev]);
+        setShowKnowledgeCardModal(false);
+        setBookshelfTab('knowledge');
+        trackEvent(markdown.trim() ? '新建知识卡' : '新建知识概念节点');
+        addToast(markdown.trim() ? '知识卡已保存' : '概念节点已保存', 'success');
+        if (markdown.trim()) startSession(newCourse);
+    };
+
+    const handleOpenKnowledge = (course: StudyCourse) => {
+        if (hasKnowledgeContent(course)) startSession(course);
+        else setRelationTarget(course);
+    };
+
+    const saveKnowledgeRelation = async (parentId: string, childId: string) => {
+        try {
+            const updated = addKnowledgeRelation(courses, parentId, childId);
+            const changedChild = updated.find(course => course.id === childId)!;
+            await DB.saveCourses([changedChild]);
+            setCourses(updated);
+            setRelationTarget(current => current ? updated.find(course => course.id === current.id) || null : null);
+            addToast('知识关系已添加', 'success');
+        } catch (error: any) {
+            addToast(error.message || '无法添加该关系', 'error');
+        }
+    };
+
+    const deleteKnowledgeRelation = async (parentId: string, childId: string) => {
+        try {
+            const updated = removeKnowledgeRelation(courses, parentId, childId);
+            const changedChild = updated.find(course => course.id === childId)!;
+            await DB.saveCourses([changedChild]);
+            setCourses(updated);
+            setRelationTarget(current => current ? updated.find(course => course.id === current.id) || null : null);
+            addToast('知识关系已解除', 'success');
+        } catch (error: any) {
+            addToast(error.message || '知识关系解除失败', 'error');
+        }
+    };
+
+    const openKnowledgeOrganizer = async () => {
+        setOrganizerOpen(true);
+        setOrganizerLoading(true);
+        setOrganizerProposal(null);
+        setOrganizerErrors([]);
+        setOrganizerNodeIds({});
+        try {
+            const proposal = await requestKnowledgeOrganizerProposal(courses, effectiveApi);
+            const validation = validateOrganizerProposal(courses, proposal);
+            setOrganizerProposal(proposal);
+            setOrganizerErrors(validation.errors);
+            setOrganizerNodeIds(validation.resolvedNodeIds);
+        } catch (error: any) {
+            setOrganizerErrors([error.message || 'AI 整理失败']);
+            addToast(error.message || 'AI 整理失败', 'error');
+        } finally {
+            setOrganizerLoading(false);
+        }
+    };
+
+    const applyKnowledgeOrganizer = async () => {
+        if (!organizerProposal) return;
+        const validation = validateOrganizerProposal(courses, organizerProposal, organizerNodeIds);
+        if (validation.errors.length > 0) {
+            setOrganizerErrors(validation.errors);
+            return;
+        }
+        try {
+            await DB.saveCourses(validation.courses.filter(isKnowledgeCourse));
+            setCourses(validation.courses.sort((a, b) => b.createdAt - a.createdAt));
+            setOrganizerOpen(false);
+            addToast('知识图谱已更新', 'success');
+            trackEvent('应用 AI 知识整理建议');
+        } catch (error: any) {
+            setOrganizerErrors([error.message || '知识图谱保存失败']);
+        }
     };
 
     // [MODIFIED]: buildStudyContext Removed. We now use ContextBuilder directly in handleTeach.
@@ -663,11 +777,8 @@ For each chapter, provide a title, a brief summary of what it covers, and a diff
         setClassroomState('teaching');
         setCurrentText("正在准备教案...");
         
-        // Simple chunking strategy
-        const totalLen = course.rawText.length;
-        const chunkSize = Math.floor(totalLen / course.chapters.length);
-        const start = chapterIdx * chunkSize;
-        const chunkText = course.rawText.substring(start, start + chunkSize + 2000); // Overlap
+        const sourceText = getStudySourceText(course, chapterIdx);
+        const promptSource = isKnowledgeCourse(course) ? sourceText : sourceText.substring(0, 8000);
 
         const callApi = async (personaContext: string, isFallback: boolean = false) => {
             const prompt = `${personaContext}
@@ -678,7 +789,7 @@ Difficulty: ${chapter.difficulty}
 User Preference: "${course.preference || 'Standard'}"
 
 ### [Source Material]
-${chunkText.substring(0, 8000)}
+${promptSource}
 
 ### [Task: Lecture Generation]
 Explain this chapter's key concepts to the user based strictly on the Source Material above.
@@ -799,10 +910,8 @@ You are now acting as a private tutor for ${userProfile.name}.
         setCurrentText("让我想想...");
 
         try {
-            const totalLen = activeCourse.rawText.length;
-            const chunkSize = Math.floor(totalLen / activeCourse.chapters.length);
-            const start = activeCourse.currentChapterIndex * chunkSize;
-            const chunkText = activeCourse.rawText.substring(start, start + chunkSize + 2000);
+            const sourceText = getStudySourceText(activeCourse, activeCourse.currentChapterIndex);
+            const promptSource = isKnowledgeCourse(activeCourse) ? sourceText : sourceText.substring(0, 8000);
 
             // [MODIFIED]: Use Full Context for Q&A
             await injectMemoryPalace(selectedChar, undefined, question);
@@ -816,7 +925,7 @@ User is asking a question about the study material.
 
             const prompt = `
 ### Source Material
-${chunkText.substring(0, 8000)}
+${promptSource}
 
 ### User Question
 "${question}"
@@ -852,7 +961,10 @@ Answer the question based on the source material. Be helpful and encouraging (in
         if (!activeCourse || !selectedChar) return;
         
         const updatedChapters = [...activeCourse.chapters];
-        updatedChapters[activeCourse.currentChapterIndex].isCompleted = true;
+        updatedChapters[activeCourse.currentChapterIndex] = {
+            ...updatedChapters[activeCourse.currentChapterIndex],
+            isCompleted: true,
+        };
         
         const nextIdx = activeCourse.currentChapterIndex + 1;
         const progress = Math.round((updatedChapters.filter(c => c.isCompleted).length / updatedChapters.length) * 100);
@@ -892,6 +1004,13 @@ Note: Use "我" (I) to refer to yourself.
             updateCharacter(selectedChar.id, { memories: [...(selectedChar.memories || []), newMem] });
         });
 
+        if (isKnowledgeCourse(updatedCourse)) {
+            setBookshelfTab('knowledge');
+            setMode('bookshelf');
+            trackEvent('完成知识卡学习');
+            return;
+        }
+
         // 3. Trigger next logic
         if (nextIdx >= updatedChapters.length) {
             setCurrentText("恭喜！这本书我们已经学完了！真棒！");
@@ -918,8 +1037,13 @@ Note: Use "我" (I) to refer to yourself.
 
     const confirmDeleteCourse = async () => {
         if (!deleteTarget) return;
+        let nextCourses = courses;
+        if (isKnowledgeCourse(deleteTarget)) {
+            nextCourses = removeKnowledgeNodeRelations(courses, deleteTarget.id);
+            await DB.saveCourses(nextCourses.filter(course => isKnowledgeCourse(course) && course.id !== deleteTarget.id));
+        }
         await DB.deleteCourse(deleteTarget.id);
-        setCourses(prev => prev.filter(c => c.id !== deleteTarget.id));
+        setCourses(nextCourses.filter(c => c.id !== deleteTarget.id));
         setDeleteTarget(null);
         trackEvent('删除一门课程');
         addToast('课程已删除', 'success');
@@ -946,10 +1070,8 @@ Note: Use "我" (I) to refer to yourself.
         setQuizUserAnswers({});
 
         const chapter = activeCourse.chapters[activeCourse.currentChapterIndex];
-        const totalLen = activeCourse.rawText.length;
-        const chunkSize = Math.floor(totalLen / activeCourse.chapters.length);
-        const start = activeCourse.currentChapterIndex * chunkSize;
-        const chunkText = activeCourse.rawText.substring(start, start + chunkSize + 2000);
+        const sourceText = getStudySourceText(activeCourse, activeCourse.currentChapterIndex);
+        const promptSource = isKnowledgeCourse(activeCourse) ? sourceText : sourceText.substring(0, 10000);
 
         const typeLabels: Record<string, string> = {
             choice: '选择题 (4个选项，单选)',
@@ -963,7 +1085,7 @@ You are creating a quiz based on the following study material.
 
 **Chapter**: "${chapter.title}"
 **Source Material**:
-${chunkText.substring(0, 10000)}
+${promptSource}
 
 **Requirements**:
 - Generate exactly ${quizCount} questions total
@@ -1595,6 +1717,20 @@ Answer in character. Be helpful and clear. If they're confused about a concept, 
         );
     }
 
+    if (mode === 'character_study') {
+        return (
+            <CharacterStudyRoom
+                characters={characters}
+                initialCharId={selectedChar?.id || activeCharacterId || undefined}
+                apiConfig={effectiveApi}
+                userProfile={userProfile}
+                katexRenderer={katexRenderer}
+                addToast={addToast}
+                onBack={() => setMode('bookshelf')}
+            />
+        );
+    }
+
     if (mode === 'bookshelf') {
         return (
             <div className="h-full w-full bg-[#fdfbf7] flex flex-col font-sans relative">
@@ -1618,6 +1754,18 @@ Answer in character. Be helpful and clear. If they're confused about a concept, 
                 </div>
 
                 <div className="p-6 flex-1 overflow-y-auto no-scrollbar">
+                    <button
+                        onClick={() => { trackEvent('打开角色自习室'); setMode('character_study'); }}
+                        className="mb-7 flex w-full items-center gap-4 rounded-[24px] bg-[#183d35] p-4 text-left text-white shadow-lg shadow-emerald-950/10 transition-transform active:scale-[0.98]"
+                    >
+                        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-white/10 text-2xl">✎</div>
+                        <div className="min-w-0 flex-1">
+                            <div className="font-serif text-lg font-bold">角色自习室</div>
+                            <div className="mt-1 text-xs text-emerald-50/65">这次换你来讲，让 TA 做笔记、问问题</div>
+                        </div>
+                        <span className="text-lg text-emerald-100/60">›</span>
+                    </button>
+
                     {/* Character Selector */}
                     <div className="mb-8">
                         <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">当前助教</h3>
@@ -1636,47 +1784,72 @@ Answer in character. Be helpful and clear. If they're confused about a concept, 
                         </div>
                     </div>
 
-                    <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">我的课程</h3>
-                    
-                    <div className="grid grid-cols-2 gap-4">
-                        <button onClick={() => fileInputRef.current?.click()} className="aspect-[3/4] rounded-r-xl rounded-l-sm border-2 border-dashed border-slate-300 flex flex-col items-center justify-center gap-2 text-slate-400 hover:border-emerald-400 hover:text-emerald-500 transition-colors bg-white">
-                            {isProcessing ? (
-                                <div className="text-center px-2">
-                                    <div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
-                                    <span className="text-[10px]">{processStatus}</span>
-                                </div>
-                            ) : (
-                                <>
-                                    <span className="text-3xl">+</span>
-                                    <span className="text-xs font-bold">导入学习资料</span>
-                                    <span className="px-3 text-center text-[10px] leading-relaxed">支持 PDF，让角色陪你讲解、练习</span>
-                                </>
-                            )}
-                        </button>
-                        <input type="file" ref={fileInputRef} className="hidden" accept=".pdf" onChange={handleFileSelect} disabled={isProcessing} />
-
-                        {courses.map(course => (
-                            <div key={course.id} onClick={() => startSession(course)} className="aspect-[3/4] rounded-r-xl rounded-l-sm shadow-md relative group cursor-pointer overflow-hidden transition-transform active:scale-95" style={{ background: course.coverStyle }}>
-                                <div className="absolute left-0 top-0 bottom-0 w-2 bg-black/10"></div> {/* Spine */}
-                                <div className="p-4 flex flex-col h-full text-white relative z-10">
-                                    <div className="flex-1 font-serif font-bold text-lg leading-tight line-clamp-3 drop-shadow-md">{course.title}</div>
-                                    <div className="mt-2">
-                                        <div className="text-[10px] font-bold opacity-80 mb-1">进度 {course.totalProgress}%</div>
-                                        <div className="h-1 bg-white/30 rounded-full overflow-hidden">
-                                            <div className="h-full bg-white transition-all duration-500" style={{ width: `${course.totalProgress}%` }}></div>
-                                        </div>
-                                    </div>
-                                </div>
-                                <button 
-                                    onClick={(e) => requestDeleteCourse(e, course)} 
-                                    className="absolute top-2 right-2 bg-black/20 hover:bg-red-500 text-white w-7 h-7 rounded-full flex items-center justify-center backdrop-blur-md transition-all z-20"
-                                >
-                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
-                                </button>
-                            </div>
-                        ))}
+                    <div className="mb-4 grid grid-cols-2 rounded-2xl bg-slate-100 p-1">
+                        <button onClick={() => setBookshelfTab('knowledge')} className={`rounded-xl py-2.5 text-sm font-bold transition ${bookshelfTab === 'knowledge' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-400'}`}>知识图谱</button>
+                        <button onClick={() => setBookshelfTab('course')} className={`rounded-xl py-2.5 text-sm font-bold transition ${bookshelfTab === 'course' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-400'}`}>课程</button>
                     </div>
+
+                    {bookshelfTab === 'knowledge' ? (
+                        <KnowledgeGraphView
+                            courses={courses}
+                            onCreate={() => setShowKnowledgeCardModal(true)}
+                            onOrganize={() => void openKnowledgeOrganizer()}
+                            onOpen={handleOpenKnowledge}
+                            onManage={setRelationTarget}
+                        />
+                    ) : (
+                        <>
+                            <h3 className="mb-3 text-xs font-bold uppercase tracking-widest text-slate-400">我的课程</h3>
+                            <div className="grid grid-cols-2 gap-4">
+                                <button onClick={() => fileInputRef.current?.click()} className="aspect-[3/4] rounded-r-xl rounded-l-sm border-2 border-dashed border-slate-300 flex flex-col items-center justify-center gap-2 text-slate-400 hover:border-emerald-400 hover:text-emerald-500 transition-colors bg-white">
+                                    {isProcessing ? (
+                                        <div className="text-center px-2">
+                                            <div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
+                                            <span className="text-[10px]">{processStatus}</span>
+                                        </div>
+                                    ) : (
+                                        <>
+                                            <span className="text-3xl">+</span>
+                                            <span className="text-xs font-bold">导入学习资料</span>
+                                            <span className="px-3 text-center text-[10px] leading-relaxed">支持 PDF，让角色陪你讲解、练习</span>
+                                        </>
+                                    )}
+                                </button>
+                                <input type="file" ref={fileInputRef} className="hidden" accept=".pdf" onChange={handleFileSelect} disabled={isProcessing} />
+
+                                {courses.filter(course => !isKnowledgeCourse(course)).map(course => (
+                                    <div key={course.id} onClick={() => startSession(course)} className="aspect-[3/4] rounded-r-xl rounded-l-sm shadow-md relative group cursor-pointer overflow-hidden transition-transform active:scale-95" style={{ background: course.coverStyle }}>
+                                        <div className="absolute left-0 top-0 bottom-0 w-2 bg-black/10"></div>
+                                        <div className="p-4 flex flex-col h-full text-white relative z-10">
+                                            <div className="flex-1 font-serif font-bold text-lg leading-tight line-clamp-3 drop-shadow-md">{course.title}</div>
+                                            <div className="mt-2">
+                                                <div className="text-[10px] font-bold opacity-80 mb-1">进度 {course.totalProgress}%</div>
+                                                <div className="h-1 bg-white/30 rounded-full overflow-hidden">
+                                                    <div className="h-full bg-white transition-all duration-500" style={{ width: `${course.totalProgress}%` }}></div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <button onClick={(e) => requestDeleteCourse(e, course)} className="absolute top-2 right-2 bg-black/20 hover:bg-red-500 text-white w-7 h-7 rounded-full flex items-center justify-center backdrop-blur-md transition-all z-20">
+                                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                        </>
+                    )}
                 </div>
+
+                <KnowledgeCardModal open={showKnowledgeCardModal} onClose={() => setShowKnowledgeCardModal(false)} onSave={handleCreateKnowledge} />
+                <KnowledgeRelationModal course={relationTarget} courses={courses} onClose={() => setRelationTarget(null)} onAdd={saveKnowledgeRelation} onRemove={deleteKnowledgeRelation} onDelete={setDeleteTarget} />
+                <KnowledgeOrganizerModal
+                    open={organizerOpen}
+                    loading={organizerLoading}
+                    courses={courses}
+                    proposal={organizerProposal}
+                    errors={organizerErrors}
+                    onClose={() => setOrganizerOpen(false)}
+                    onConfirm={applyKnowledgeOrganizer}
+                />
 
                 <Modal isOpen={showImportModal} title="课程设置" onClose={() => setShowImportModal(false)} footer={<button onClick={confirmImport} className="w-full py-3 bg-emerald-500 text-white font-bold rounded-2xl">开始生成</button>}>
                     <div className="space-y-4">
@@ -1767,7 +1940,7 @@ Answer in character. Be helpful and clear. If they're confused about a concept, 
                 {/* Delete Confirmation Modal */}
                 <Modal 
                     isOpen={!!deleteTarget} 
-                    title="删除课程" 
+                    title={isKnowledgeCourse(deleteTarget) ? '删除知识节点' : '删除课程'}
                     onClose={() => setDeleteTarget(null)} 
                     footer={
                         <div className="flex gap-2 w-full">
@@ -1777,8 +1950,8 @@ Answer in character. Be helpful and clear. If they're confused about a concept, 
                     }
                 >
                     <div className="py-4 text-center">
-                        <p className="text-sm text-slate-600 mb-2">确定要删除课程 <br/><span className="font-bold text-slate-800">"{deleteTarget?.title}"</span> 吗？</p>
-                        <p className="text-xs text-red-400">删除后无法恢复，学习进度将丢失。</p>
+                        <p className="text-sm text-slate-600 mb-2">确定要删除{isKnowledgeCourse(deleteTarget) ? '知识节点' : '课程'} <br/><span className="font-bold text-slate-800">"{deleteTarget?.title}"</span> 吗？</p>
+                        <p className="text-xs text-red-400">{isKnowledgeCourse(deleteTarget) ? '删除后无法恢复；其它知识节点不会被删除。' : '删除后无法恢复，学习进度将丢失。'}</p>
                     </div>
                 </Modal>
             </div>
@@ -1798,10 +1971,16 @@ Answer in character. Be helpful and clear. If they're confused about a concept, 
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
                 </button>
                 <div className="flex gap-2">
-                    <div onClick={() => { trackEvent('打开章节目录'); setShowChapterMenu(true); }} className="bg-black/30 text-white/90 px-4 py-1.5 rounded-full backdrop-blur-md text-xs font-bold border border-white/10 shadow-sm pointer-events-auto cursor-pointer flex items-center gap-2 hover:bg-black/50">
-                        <span className="truncate max-w-[150px]">{activeCourse?.chapters[activeCourse.currentChapterIndex]?.title}</span>
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3 h-3"><path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" /></svg>
-                    </div>
+                    {isKnowledgeCourse(activeCourse) ? (
+                        <div className="bg-black/30 text-white/90 px-4 py-1.5 rounded-full backdrop-blur-md text-xs font-bold border border-white/10 shadow-sm pointer-events-auto">
+                            <span className="block truncate max-w-[170px]">{activeCourse?.title}</span>
+                        </div>
+                    ) : (
+                        <div onClick={() => { trackEvent('打开章节目录'); setShowChapterMenu(true); }} className="bg-black/30 text-white/90 px-4 py-1.5 rounded-full backdrop-blur-md text-xs font-bold border border-white/10 shadow-sm pointer-events-auto cursor-pointer flex items-center gap-2 hover:bg-black/50">
+                            <span className="truncate max-w-[150px]">{activeCourse?.chapters[activeCourse.currentChapterIndex]?.title}</span>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3 h-3"><path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" /></svg>
+                        </div>
+                    )}
                     {/* Character Visibility Toggle */}
                     <button onClick={() => setShowAssistant(!showAssistant)} className={`bg-black/30 p-2 rounded-full backdrop-blur-md border border-white/10 pointer-events-auto transition-colors ${showAssistant ? 'text-emerald-400' : 'text-white/40'}`}>
                         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5"><path d="M10 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM3.465 14.493a1.23 1.23 0 0 0 .41 1.412A9.957 9.957 0 0 0 10 18c2.31 0 4.438-.784 6.131-2.1.43-.333.604-.903.408-1.41a7.002 7.002 0 0 0-13.074.003Z" /></svg>
@@ -1810,7 +1989,7 @@ Answer in character. Be helpful and clear. If they're confused about a concept, 
             </div>
 
             {/* Chapter Menu Sidebar */}
-            {showChapterMenu && (
+            {showChapterMenu && !isKnowledgeCourse(activeCourse) && (
                 <div className="absolute inset-0 z-50 flex">
                     <div className="flex-1 bg-black/50 backdrop-blur-sm" onClick={() => setShowChapterMenu(false)}></div>
                     <div className="w-64 bg-slate-900 border-l border-white/10 h-full flex flex-col p-4 animate-slide-in-right">
@@ -1884,7 +2063,7 @@ Answer in character. Be helpful and clear. If they're confused about a concept, 
                                 <Notepad size={24} />
                             </button>
                             <button onClick={handleFinishChapter} className="flex-1 h-12 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl font-bold shadow-lg shadow-emerald-900/30 active:scale-95 transition-all flex items-center justify-center gap-2">
-                                下一章 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" /></svg>
+                                {isKnowledgeCourse(activeCourse) ? '完成学习' : '下一章'} {!isKnowledgeCourse(activeCourse) && <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" /></svg>}
                             </button>
                         </>
                     )}

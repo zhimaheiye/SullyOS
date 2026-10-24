@@ -5,7 +5,7 @@
 
 import { safeResponseJson } from './safeApi';
 import { DB } from './db';
-import { getProxyWorkerUrl } from './proxyWorker';
+import { requireProxyWorkerUrl } from './proxyWorker';
 import { nowInTimeZone } from './timezone';
 import {
     performSearch as performSearchCore,
@@ -109,7 +109,7 @@ export const defaultRealtimeConfig: RealtimeConfig = {
     xhsMcpConfig: {
         enabled: false,
         mode: 'lite',
-        serverUrl: `${getProxyWorkerUrl()}/api`,
+        serverUrl: '',
         cookie: undefined,
         platform: undefined,
         rnoteApiKey: undefined,
@@ -247,7 +247,7 @@ export const RealtimeContextManager = {
     fetchBraveNews: async (apiKey: string): Promise<NewsItem[]> => {
         try {
             // 使用自建的 Cloudflare Worker 代理
-            const workerUrl = `${getProxyWorkerUrl()}/news?q=热点新闻&count=5&country=cn`;
+            const workerUrl = `${requireProxyWorkerUrl()}/news?q=热点新闻&count=5&country=cn`;
 
             const response = await fetch(workerUrl, {
                 headers: {
@@ -497,7 +497,7 @@ export interface NotionDiaryEntry {
 export const NotionManager = {
 
     // Worker 代理地址（中心配置，用户可在设置里换成自部署实例）
-    get WORKER_URL() { return getProxyWorkerUrl(); },
+    get WORKER_URL() { return requireProxyWorkerUrl(); },
 
     /**
      * 测试 Notion 连接（通过 Worker 代理）
@@ -1340,7 +1340,7 @@ function formatFeishuDiaryContent(content: string, mood?: string, characterName?
 export const FeishuManager = {
 
     // Worker 代理地址（中心配置，用户可在设置里换成自部署实例）
-    get WORKER_URL() { return getProxyWorkerUrl(); },
+    get WORKER_URL() { return requireProxyWorkerUrl(); },
 
     /**
      * 获取飞书 tenant_access_token（通过 Worker 代理，带缓存）

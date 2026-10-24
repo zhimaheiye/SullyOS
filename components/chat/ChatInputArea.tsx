@@ -1,18 +1,19 @@
 import EmojiExportDialog from './EmojiExportDialog';
 import ChatCamera from './ChatCamera';
 import React, { useRef, useState, useEffect, useMemo } from 'react';
-import { ShareNetwork, Trash, Plus, Smiley, PaperPlaneTilt, Lightning, Money, BookOpenText, GearSix, Image, Lock, ArrowsClockwise, ChatCircleDots, CalendarBlank, ForkKnife, Coffee, Code, Brain, PencilSimple, BellSimpleRinging, Alarm, Sparkle, FadersHorizontal, LinkSimple, Star, Briefcase } from '@phosphor-icons/react';
+import { ShareNetwork, Trash, Plus, Smiley, PaperPlaneTilt, Lightning, Money, BookOpenText, GearSix, Image, Lock, ArrowsClockwise, ChatCircleDots, CalendarBlank, ForkKnife, Coffee, Code, Brain, PencilSimple, HandTap, Alarm, Sparkle, FadersHorizontal, LinkSimple, Star, Briefcase, Monitor } from '@phosphor-icons/react';
 import { CharacterProfile, ChatTheme, EmojiCategory, Emoji } from '../../types';
 import { PRESET_THEMES } from './ChatConstants';
 import TokenImg from '../os/TokenImg';
 import { AcnhActionTile } from '../os/acnhIcons';
 import { isIOSStandaloneWebApp } from '../../utils/iosStandalone';
 import { trackEvent } from '../../utils/analytics';
+import { filterTriggeredEmojis, removeEmojiTrigger, resolveEmojiTrigger, type EmojiTriggerMatch } from '../../utils/emojiTrigger';
 import { findEmojiSuggestions } from '../../utils/emojiSuggestions';
 import { useEmojiThumbnailCache } from '../../utils/useEmojiThumbnailCache';
+import ChatActionOrganizer from './ChatActionOrganizer';
 
 const EMOJI_PAGE_SIZE = 40;
-const ACTION_PAGE_SIZE = 8;
 
 interface ChatInputAreaProps {
     compactHome?: boolean;
@@ -34,12 +35,16 @@ interface ChatInputAreaProps {
     autoReplySeconds?: number | null;
     onCancelAutoReply?: () => void;
     onInputFocusChange?: (focused: boolean) => void;
+    screenCaptureAvailable?: boolean;
+    screenCaptureActive?: boolean;
+    onToggleScreenCapture?: () => void;
     onDeleteSelected: () => void;
     onForwardSelected?: () => void;
     onFavoriteSelected?: () => void;
     favoriteSelectedCount?: number;
     selectedCount: number;
     emojis: Emoji[];
+    triggerEmojis?: Emoji[];
     emojiSuggestionsEnabled?: boolean;
     /** Visible library across all categories; also invalidates removed/replaced cached thumbnails. */
     suggestionEmojis?: Emoji[];
@@ -53,8 +58,9 @@ interface ChatInputAreaProps {
     onUpdateTheme?: (id: string) => void;
     onRemoveTheme?: (id: string) => void;
     activeThemeId?: string;
-    /** 提供时整体替换内置 actions 双页网格——群聊传自己的功能格。不传 = 原行为 */
-    actionsContent?: React.ReactNode;
+    /** 群聊提供自己的稳定 key 功能格；排序、分页和拖动仍共用同一容器。 */
+    groupActionTiles?: React.ReactElement[];
+    actionConversationId?: string;
     onPanelAction: (type: string, payload?: any) => void;
     onImageSelect: (file: File) => void;
     isSummarizing: boolean;
@@ -89,11 +95,12 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
     showPanel, setShowPanel, onSend, onDeleteSelected, onForwardSelected, onFavoriteSelected, favoriteSelectedCount = 0, selectedCount,
     sendButtonGenerates = false, enterToSend = true, onGenerate,
     autoReplyEnabled = false, autoReplySeconds = null, onCancelAutoReply, onInputFocusChange,
-    emojis, characters = [], activeCharacterId = '', onCharSelect = () => {},
+    screenCaptureAvailable = false, screenCaptureActive = false, onToggleScreenCapture,
+    emojis, triggerEmojis = emojis, characters = [], activeCharacterId = '', onCharSelect = () => {},
     emojiSuggestionsEnabled = false, suggestionEmojis = emojis,
     unreadMessages = {},
     customThemes = [], onUpdateTheme = () => {}, onRemoveTheme = () => {}, activeThemeId = '',
-    actionsContent,
+    groupActionTiles, actionConversationId,
     previewActionsPage=0,
     onPanelAction, onImageSelect, isSummarizing,
     categories = [], activeCategory = 'default',
@@ -152,7 +159,6 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
         document.addEventListener('pointerdown', blurOnOutsidePointer, true);
         return () => document.removeEventListener('pointerdown', blurOnOutsidePointer, true);
     }, [canEndEditing, isInputFocused]);
-    const [actionsPage, setActionsPage] = useState(previewActionsPage);
     // 气泡样式面板：搜索 + 两步确认删除（防止 hover 小 × 误删）
     const [bubbleSearch, setBubbleSearch] = useState('');
     // 会话面板的主要用途仍是切换聊天；气泡选择作为次级工具默认收起。
@@ -161,6 +167,7 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
     const [emojiSelectionMode, setEmojiSelectionMode] = useState(false);
     const [exportEmojis, setExportEmojis] = useState<Emoji[] | null>(null);
     const [selectedEmojis, setSelectedEmojis] = useState<Emoji[]>([]);
+    const [emojiTrigger, setEmojiTrigger] = useState<EmojiTriggerMatch | null>(null);
     // 手动分页避免旧版/第三方 WebView 不触发 IntersectionObserver，永远卡在「加载中」。
     const [emojiPaging, setEmojiPaging] = useState({category: activeCategory, page: 0});
     const [emojiPanelVisited, setEmojiPanelVisited] = useState(showPanel === 'emojis');
@@ -181,20 +188,66 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
     const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const startPos = useRef({ x: 0, y: 0 });
     const isLongPressTriggered = useRef(false); // Track if long press action fired
-    const actionsSwipeStart = useRef<{ x: number; y: number } | null>(null);
-    const actionsSwipeMoved = useRef(false);
     const useIOSStandaloneInputFix = isIOSStandaloneWebApp();
 
     const handleKeyDown = (e: React.KeyboardEvent) => {
         // 候选词确认不能当发送；229 兼容部分输入法在确认时漏报 isComposing。
         if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-        if (e.key === 'Escape' && canEndEditing) {
-            textareaRef.current?.blur();
+        if (e.key === 'Escape') {
+            if (emojiTrigger) {
+                e.preventDefault();
+                setEmojiTrigger(null);
+                return;
+            }
+            if (canEndEditing) {
+                textareaRef.current?.blur();
+            }
         }
         if (enterToSend && e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
             onSend();
         }
+    };
+
+    const updateEmojiTrigger = (value: string, cursorPosition: number | null) => {
+        const nextTrigger = resolveEmojiTrigger(value, cursorPosition);
+        setEmojiTrigger(nextTrigger);
+        if (nextTrigger) setShowPanel('none');
+    };
+
+    const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+        setInput(e.target.value);
+        updateEmojiTrigger(e.target.value, e.target.selectionStart);
+    };
+
+    const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+        const itemImage = Array.from(e.clipboardData.items)
+            .find(item => item.kind === 'file' && item.type.startsWith('image/'))
+            ?.getAsFile();
+        const fileImage = Array.from(e.clipboardData.files)
+            .find(file => file.type.startsWith('image/'));
+        const imageFile = itemImage ?? fileImage;
+
+        if (!imageFile) return;
+
+        e.preventDefault();
+        onImageSelect(imageFile);
+    };
+
+    const triggeredEmojis = emojiTrigger
+        ? filterTriggeredEmojis(triggerEmojis, emojiTrigger.query)
+        : [];
+
+    const handleTriggerEmojiSelect = (emoji: Emoji) => {
+        if (!emojiTrigger) return;
+        const nextInput = removeEmojiTrigger(input, emojiTrigger);
+        setInput(nextInput);
+        setEmojiTrigger(null);
+        onPanelAction('send-emoji', emoji);
+        window.requestAnimationFrame(() => {
+            textareaRef.current?.focus();
+            textareaRef.current?.setSelectionRange(emojiTrigger.triggerStart, emojiTrigger.triggerStart);
+        });
     };
 
     const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>, type: 'chat' | 'bg') => {
@@ -270,48 +323,6 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
         clearTimer();
     };
 
-    // --- Actions Panel Swipe (left/right page switch) ---
-    const handleActionsSwipeStart = (e: React.TouchEvent) => {
-        const t = e.touches[0];
-        actionsSwipeStart.current = { x: t.clientX, y: t.clientY };
-        actionsSwipeMoved.current = false;
-    };
-
-    const handleActionsSwipeMove = (e: React.TouchEvent) => {
-        if (!actionsSwipeStart.current) return;
-        const t = e.touches[0];
-        const dx = t.clientX - actionsSwipeStart.current.x;
-        const dy = t.clientY - actionsSwipeStart.current.y;
-        if (Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy)) {
-            actionsSwipeMoved.current = true;
-        }
-    };
-
-    const handleActionsSwipeEnd = (e: React.TouchEvent) => {
-        if (!actionsSwipeStart.current) return;
-        const t = e.changedTouches[0];
-        const dx = t.clientX - actionsSwipeStart.current.x;
-        const dy = t.clientY - actionsSwipeStart.current.y;
-        actionsSwipeStart.current = null;
-        const SWIPE_THRESHOLD = 40;
-        if (Math.abs(dx) > SWIPE_THRESHOLD && Math.abs(dx) > Math.abs(dy)) {
-            if (dx < 0 && actionsPage < actionPageCount - 1) {
-                setActionsPage(actionsPage + 1);
-            } else if (dx > 0 && actionsPage > 0) {
-                setActionsPage(actionsPage - 1);
-            }
-        }
-    };
-
-    const handleActionsClickCapture = (e: React.MouseEvent) => {
-        if (actionsSwipeMoved.current) {
-            e.stopPropagation();
-            e.preventDefault();
-            actionsSwipeMoved.current = false;
-        }
-    };
-
-
     // Wrapper for Click to prevent conflicts
     const handleItemClick = (e: React.MouseEvent, item: any, type: 'emoji' | 'category') => {
         // If long press action triggered, block the click event (do not send)
@@ -376,6 +387,12 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
             setSelectedEmojis(prev => prev.filter(se => names.has(se.name)));
         }
     }, [emojis]);
+
+    React.useEffect(() => {
+        if (emojiTrigger && !input.startsWith(`[${emojiTrigger.query}`, emojiTrigger.triggerStart)) {
+            setEmojiTrigger(null);
+        }
+    }, [emojiTrigger, input]);
 
     const isDiscordStyle = inputStyle === 'discord';
     const isPixelStyle = inputStyle === 'pixel' || chromeStyle === 'pixel';
@@ -504,8 +521,7 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
             <span className="text-xs font-bold">转账</span>
         </button>,
         <button key="poke" onClick={() => onPanelAction('poke')} className={`flex flex-col items-center gap-2 active:scale-95 transition-transform ${acnh ? 'text-[#725d42]' : isDiscordStyle ? 'text-slate-200' : 'text-slate-600'}`}>
-            {acnh ? <AcnhActionTile kind="poke" /> : (
-            <div className={`w-14 h-14 rounded-2xl flex items-center justify-center shadow-sm border ${isDiscordStyle ? 'bg-slate-800 border-sky-400/20' : 'bg-sky-50 border-sky-100'}`}><img src="https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/72x72/1f449.png" alt="poke" className="w-6 h-6" /></div>)}
+            <div className={`w-14 h-14 rounded-2xl flex items-center justify-center shadow-sm border ${isDiscordStyle ? 'bg-slate-800 text-rose-300 border-rose-400/20' : 'bg-rose-50 text-rose-500 border-rose-100'}`}><HandTap className="w-6 h-6" weight="bold" /></div>
             <span className="text-xs font-bold">戳一戳</span>
         </button>,
         <button key="image" onClick={() => setCameraOpen(true)} className={`flex flex-col items-center gap-2 active:scale-95 transition-transform ${acnh ? 'text-[#725d42]' : isDiscordStyle ? 'text-slate-200' : 'text-slate-600'}`}>
@@ -601,6 +617,14 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
           </div>)}
           <span className="text-xs font-bold">{htmlModeEnabled ? 'HTML已开' : 'HTML模式'}</span>
         </button>,
+        <button key="card-creation" onClick={() => onPanelAction('card-creation')} className={`flex flex-col items-center gap-2 active:scale-95 transition-transform ${acnh ? 'text-[#725d42]' : isDiscordStyle ? 'text-slate-200' : 'text-slate-600'}`}>
+          <div className={`w-14 h-14 rounded-2xl border grid place-items-center ${isDiscordStyle ? 'bg-slate-800 text-fuchsia-300 border-fuchsia-400/20' : 'bg-fuchsia-50 text-fuchsia-600 border-fuchsia-100'}`}><Code className="w-6 h-6" weight="bold" /></div>
+          <span className="text-xs font-bold">卡片创作</span>
+        </button>,
+        <button key="side-story" onClick={() => onPanelAction('side-story')} className={`flex flex-col items-center gap-2 active:scale-95 transition-transform ${acnh ? 'text-[#725d42]' : isDiscordStyle ? 'text-slate-200' : 'text-slate-600'}`}>
+          <div className={`w-14 h-14 rounded-2xl border grid place-items-center ${isDiscordStyle ? 'bg-slate-800 text-fuchsia-300 border-fuchsia-400/20' : 'bg-fuchsia-50 text-fuchsia-600 border-fuchsia-100'}`}><span className="text-2xl" aria-hidden="true">✍</span></div>
+          <span className="text-xs font-bold">番外创作</span>
+        </button>,
         <button key="thinking-settings"
           onClick={() => onPanelAction('thinking-settings')}
           className={`flex flex-col items-center gap-2 active:scale-95 transition-transform ${acnh ? 'text-[#725d42]' : isDiscordStyle ? 'text-slate-200' : 'text-slate-600'}`}
@@ -650,9 +674,7 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
           </span>
           <span className="text-xs font-bold">收藏</span>
         </button>
-    ].filter(tile=>!compactHome||['transfer','poke','image','reroll','memory-link','favorites'].includes(String(tile.key)));
-    const actionPageCount = Math.max(1, Math.ceil(actionTiles.length / ACTION_PAGE_SIZE));
-    useEffect(() => setActionsPage(page => Math.min(page, actionPageCount - 1)), [actionPageCount]);
+    ];
 
     return (
         <>
@@ -720,16 +742,81 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                 </div>
             ) : (
                 <div className="sully-chat-composer p-3 px-4 flex gap-3 items-end relative">
-                    <button aria-label="聊天功能" aria-expanded={showPanel === 'actions'} onClick={() => setShowPanel(showPanel === 'actions' ? 'none' : 'actions')} className={`sully-chat-actions-button ${actionButtonClass}`}>
+                    {emojiTrigger && (
+                        <div
+                            className={`absolute left-3 right-3 bottom-full z-50 mb-2 rounded-[1.5rem] border shadow-2xl overflow-hidden animate-fade-in ${
+                                isDiscordStyle
+                                    ? 'bg-slate-900/95 border-white/10 text-slate-100 backdrop-blur-xl'
+                                    : isPixelStyle
+                                      ? 'bg-[#f8f0e0] border-[#8f674a]/40 text-[#6a4c35]'
+                                      : acnh
+                                        ? 'bg-[#fffaf0]/95 border-[#e0d6c0] text-[#725d42] backdrop-blur-xl'
+                                        : 'bg-white/95 border-slate-200 text-slate-700 backdrop-blur-xl'
+                            }`}
+                            data-testid="emoji-trigger-picker"
+                        >
+                            <div className="h-9 px-3 flex items-center gap-2 border-b border-current/10">
+                                <span className="text-[11px] font-bold truncate flex-1">表情包 · [{emojiTrigger.query}</span>
+                                <button
+                                    type="button"
+                                    aria-label="关闭表情包快捷选择"
+                                    onClick={() => setEmojiTrigger(null)}
+                                    className="w-7 h-7 rounded-full grid place-items-center text-lg opacity-45 hover:opacity-90"
+                                >
+                                    ×
+                                </button>
+                            </div>
+                            {triggeredEmojis.length > 0 ? (
+                                <div className="flex gap-2 overflow-x-auto no-scrollbar p-3">
+                                    {triggeredEmojis.map(emoji => (
+                                        <button
+                                            type="button"
+                                            key={emoji.name}
+                                            onClick={() => handleTriggerEmojiSelect(emoji)}
+                                            className="w-[72px] shrink-0 rounded-2xl p-1.5 hover:bg-current/5 active:scale-95 transition-transform"
+                                            title={emoji.name}
+                                        >
+                                            <img
+                                                src={emoji.url}
+                                                alt={emoji.name}
+                                                loading="lazy"
+                                                decoding="async"
+                                                className="w-16 h-16 rounded-xl object-contain bg-white/40"
+                                            />
+                                            <span className="block mt-1 text-[10px] truncate opacity-65">{emoji.name}</span>
+                                        </button>
+                                    ))}
+                                </div>
+                            ) : (
+                                <div className="px-4 py-5 text-center text-xs opacity-45">没有找到“{emojiTrigger.query}”</div>
+                            )}
+                        </div>
+                    )}
+                    <button aria-label="聊天功能" aria-expanded={showPanel === 'actions'} onClick={() => { setEmojiTrigger(null); setShowPanel(showPanel === 'actions' ? 'none' : 'actions'); }} className={`sully-chat-actions-button ${actionButtonClass}`}>
                         <Plus className="w-6 h-6" weight="bold" />
                     </button>
+                    {screenCaptureAvailable && onToggleScreenCapture && (
+                        <button
+                            type="button"
+                            onClick={onToggleScreenCapture}
+                            aria-pressed={screenCaptureActive}
+                            aria-label={screenCaptureActive ? '关闭屏幕伴聊' : '开启屏幕伴聊'}
+                            title={screenCaptureActive ? '屏幕伴聊中：每次发送文字都会附带当前屏幕截图' : '开启屏幕伴聊'}
+                            className={`${actionButtonClass} relative ${screenCaptureActive ? '!bg-rose-500 !text-white ring-2 ring-rose-200' : ''}`}
+                        >
+                            <Monitor className="w-5 h-5" weight={screenCaptureActive ? 'fill' : 'regular'} />
+                            {screenCaptureActive && <span className="absolute right-0.5 top-0.5 h-2.5 w-2.5 rounded-full border-2 border-white bg-red-600 animate-pulse" />}
+                        </button>
+                    )}
                     <div className={`sully-chat-input-wrap flex-1 min-w-0 flex items-center px-1 transition-all ${useIOSStandaloneInputFix ? 'overflow-visible' : 'overflow-hidden'} ${inputWrapClass} ${isPixelStyle ? 'focus-within:bg-[#fff7ed]' : isDiscordStyle ? 'focus-within:bg-slate-800 focus-within:border-white/20' : 'border border-transparent focus-within:bg-white focus-within:border-primary/30'}`}>
                         <textarea
                             ref={textareaRef}
-                            rows={1}
-                            value={input}
-                            onChange={(e) => setInput(e.target.value)}
-                            onKeyDown={handleKeyDown}
+                            rows={1} 
+                            value={input} 
+                            onChange={handleTextChange}
+                            onSelect={(e) => updateEmojiTrigger(e.currentTarget.value, e.currentTarget.selectionStart)}
+                            onPaste={handlePaste}
+                            onKeyDown={handleKeyDown} 
                             onFocus={handleInputFocus}
                             onBlur={() => setIsInputFocused(false)}
                             onCompositionStart={() => setIsComposing(true)}
@@ -742,7 +829,7 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                             placeholder="Message..."
                             style={{ height: 'auto' }}
                         />
-                        <button hidden={compactHome} onClick={() => setShowPanel(showPanel === 'emojis' ? 'none' : 'emojis')} className={`p-2 shrink-0 ${isDiscordStyle ? 'text-slate-400 hover:text-sky-300' : isPixelStyle ? 'text-[#8f674a] hover:text-[#a16207]' : 'text-slate-400 hover:text-primary'}`}>
+                        <button hidden={compactHome} onClick={() => { setEmojiTrigger(null); setShowPanel(showPanel === 'emojis' ? 'none' : 'emojis'); }} className={`p-2 shrink-0 ${isDiscordStyle ? 'text-slate-400 hover:text-sky-300' : isPixelStyle ? 'text-[#8f674a] hover:text-[#a16207]' : 'text-slate-400 hover:text-primary'}`}>
                             <Smiley className="w-6 h-6" weight="regular" />
                         </button>
                     </div>
@@ -934,35 +1021,13 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                         </div>
                     )}
 
-                    {/* Actions Panel：外部提供 actionsContent 时整体替换内置双页网格 */}
-                    {showPanel === 'actions' && actionsContent && (
-                        <div className="overflow-y-auto no-scrollbar">
-                            {actionsContent}
-                        </div>
-                    )}
-                    {/* Actions Panel: eight entries per page, with a stable two-row height */}
-                    {showPanel === 'actions' && !actionsContent && (
-                        <div
-                            className="overflow-y-auto no-scrollbar"
-                            onTouchStart={handleActionsSwipeStart}
-                            onTouchMove={handleActionsSwipeMove}
-                            onTouchEnd={handleActionsSwipeEnd}
-                            onClickCapture={handleActionsClickCapture}
-                        >
-                          <input type="file" ref={chatImageInputRef} className="hidden" accept="image/*" onChange={(e) => handleImageChange(e, 'chat')} />
-                          {Array.from({length: actionPageCount}, (_, page) => (
-                            <div key={page} role="group" aria-label={`聊天功能第 ${page + 1} 页`} className={`p-6 grid grid-cols-4 grid-rows-[repeat(2,96px)] gap-x-4 gap-y-8 ${actionsPage === page ? '' : 'hidden'}`}>
-                              {actionTiles.slice(page * ACTION_PAGE_SIZE, (page + 1) * ACTION_PAGE_SIZE)}
-                            </div>
-                          ))}
-                          <div className="flex items-center justify-center gap-3 pb-3 -mt-2">
-                            {Array.from({length: actionPageCount}, (_, page) => (
-                              <button key={page} type="button" aria-label={`第 ${page + 1} 页`} aria-current={actionsPage === page ? 'page' : undefined} onClick={() => setActionsPage(page)}
-                                className={`w-2 h-2 rounded-full transition-all ${actionsPage === page ? (isDiscordStyle ? 'bg-slate-200 w-5' : 'bg-slate-500 w-5') : (isDiscordStyle ? 'bg-slate-600' : 'bg-slate-300')}`} />
-                            ))}
-                          </div>
-                        </div>
-                     )}
+                    {showPanel === 'actions' && <>
+                        {!groupActionTiles && <input type="file" ref={chatImageInputRef} className="hidden" accept="image/*" onChange={(e) => handleImageChange(e, 'chat')} />}
+                        <ChatActionOrganizer key={groupActionTiles ? `group:${actionConversationId}` : `private:${activeCharacterId}`}
+                            scope={groupActionTiles ? 'group' : 'private'} tiles={groupActionTiles || actionTiles}
+                            visibleIds={compactHome && !groupActionTiles ? ['transfer', 'image', 'reroll', 'memory-link', 'favorites'] : undefined}
+                            initialPage={previewActionsPage} dark={isDiscordStyle} />
+                    </>}
                      {showPanel === 'chars' && (
                         <div className="p-5 space-y-6 overflow-y-auto no-scrollbar">
                             <div>

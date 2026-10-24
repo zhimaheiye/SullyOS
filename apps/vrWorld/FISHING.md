@@ -29,17 +29,11 @@
 
 普通房间不新增水域提示词，不初始化水域存档。模块商店、Chat、Date 的原有 SAR canonical / surface 边界不变。
 
-## 信号坠落处
-
-入口缩小并移到世界第二页「往期活动」。纪念馆/星图/自己的署名记录继续可读；未写完的原诗也保留。管理员只保留删稿维护，不再显示恢复活动按钮。
-
-`worker/post-office/src/index.ts` 已移除旧写诗执行体；所有公开诗歌写入及新册/恢复接口在访问 D1 前返回 410。纪念馆 GET 只执行 SELECT，不执行自动建册、播种或旧册规格迁移。2026-09-06 的历史交接记录仅确认本地代码和部署包，当时未部署线上 Worker、未删除远端数据；本次个人线更新不变更该服务，不据此推断线上部署状态。
-
 ## 验证与复现
 
-核心回归包含 `utils/vrWorld/fishing*.test.ts` 和 `worker/post-office/src/endedEvent.test.ts`；角色会话测试使用假模型，无真实 LLM 消费。额外跑过原有 SAR / Chat / Date 回归与隔离 Vite 生产构建。
+核心回归以 `utils/vrWorld/fishing*.test.ts` 为准；角色会话测试使用假模型，无真实 LLM 消费。额外跑过原有 SAR / Chat / Date 回归与隔离 Vite 生产构建。
 
-浏览器：`scripts/test-fishing-ui.mjs` 测钓获/逃脱/收竿/全屏/挂单/评论/归档/付款/刷新；`scripts/test-kanata-ui.mjs` 用真实 OS/Music Provider 测独立 SAR 水域入口及世界往期纪念馆。均为独立浏览器空档，后者拦截远端请求，没有动用户浏览器数据。
+浏览器：`scripts/test-fishing-ui.mjs` 测钓获/逃脱/收竿/全屏/挂单/评论/归档/付款/刷新；均为独立浏览器空档，拦截远端请求，没有动用户浏览器数据。
 
 准备项目既有 Tailwind CDN 的本地测试缓存（生产仍使用原有 index.html，不改依赖）：
 

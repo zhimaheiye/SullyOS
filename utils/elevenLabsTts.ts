@@ -11,7 +11,7 @@ import { normalizeApiKey } from './minimaxApiKey';
 import { hashTtsParams, getCachedTts, saveCachedTts } from './ttsCache';
 import type { TtsResult } from './minimaxTts';
 import { normalizeVoiceTags } from './sanitize';
-import { getProxyWorkerUrl } from './proxyWorker';
+import { requireProxyWorkerUrl } from './proxyWorker';
 import { isStaticWebDeployment } from './staticWebDeployment';
 import {
   normalizeElevenLabsModel,
@@ -277,7 +277,7 @@ const elevenLabsFetchAudio = async (
   }
 
   const url = useStaticWorker()
-    ? `${getProxyWorkerUrl()}/elevenlabs/tts?${query}`
+    ? `${requireProxyWorkerUrl()}/elevenlabs/tts?${query}`
     : `/api/elevenlabs/tts?${query}`;
   const response = await fetch(url, {
     method: 'POST',

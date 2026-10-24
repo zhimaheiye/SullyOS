@@ -99,14 +99,6 @@
 
 关键实现：`components/chat/ChatHistoryCleanupModal.tsx`、`utils/chatHistoryCleanup.ts`；确认校验、并发修改、跨角色隔离和十万条清理测试在 `utils/chatHistoryCleanup.test.ts`。
 
-### 大量归档后的聊天气泡刷新
-
-每条回复气泡落库后，后处理调用 `DB.getRecentMessagesByCharId(charId, 200)` 刷新近期消息。该读取沿 `charId` 索引按消息主键倒序进行，默认排除宫殿水位线之前的原文；这个 DB 参数不直接读取角色的宫殿开关。
-
-近期未归档消息不足 200 条时，游标到达水位线必须立即停止，不能为了凑满窗口继续遍历几万条已归档记录。此前会逐气泡重复扫描旧记录，能造成 API 实际用量已经显示但气泡迟迟出现、相邻气泡间隔过长；同一角色的记录和水位恢复到新站点后仍可能触发。固定拟人打字等待的文字气泡上限为 2 秒，不能用它解释十几秒的重复间隔。
-
-修复仅收窄无效扫描，不修改记忆、原文、水位线或角色开关。显式传入 `includeProcessed=true` 的历史读取仍可读取已归档原文，群聊记录仍不混入私聊窗口。`utils/recentMessages.test.ts` 覆盖一万条已归档记录上的连续刷新、全归档空窗口和显式完整读取。
-
 ### 一、仿大脑结构——七个房间
 
 | 房间 | 模拟脑区 | 职责 | 容量 | 衰减 |
@@ -408,7 +400,19 @@ active(新建) → anchor(7天+，心理锚点) → fulfilled / disappointed
 - 显影动画可在入口右上角设置中永久跳过，偏好保存在 `os_memory_repair_skip_animation`。
 - 打开入口时先关闭聊天加号面板；退出整个记忆链接时再次清空面板状态，保证落回聊天正文。线索编辑抽屉的关闭只返回本次修补现场，不会丢失诊断结果。
 
+### AI 修补提案与逐条审批
+
+- AI 的批处理权限只到“理解当前召回现场并生成多条修补提案”为止；`proposeRecallMemoryRepairs()` 不依赖任何数据库写入或向量更新函数。
+- 用户完成诊断后，候选范围固定为 `suspectIds ∩ 当前 RecallRepairSnapshot`；未先诊断时也只允许使用当前快照中的节点，不会另行搜索整个记忆库。
+- 模型只返回 `nodeId / proposedContent / reason`。原文、节点类型和 Event Box 身份由客户端按照当前快照补全；越权 ID、重复 ID、空内容和 no-op 修改会被程序丢弃。
+- 提案进入 `1 / N` 审核队列，只有当前条目的“同意并写回”会复用现有 `patchRecallMemory()` 单条提交；跳过与手动调整本身均不写库，没有“全部同意”或自动写回入口。
+- 每次同意前都会重新读取该节点并比较提案生成时的原文。节点已删除或原文已经变化时，当前提案进入冲突状态并停留在原处，不覆盖新内容，也不继续提交后面的提案。
+- 同一 Event Box 的摘要、活跃节点和归档节点可以被分组提示，但仍是相互独立的提案，必须分别审批。
+- 当前召回正文和修补指令会发送给 SullyOS 已配置的聊天 API 来生成草案；发送范围不超出当前快照。提案队列不持久化，关闭本次记忆链接即丢弃未处理提案。
+
 关键实现：`components/chat/MemoryRepairPortal.tsx`、`utils/memoryPalace/memoryRepair.ts`。
+
+- 提交：`bcbfa09a`（`feat: review memory repair proposals`）。
 
 ### 3D 家园上下文与后处理（2026-10-04）
 

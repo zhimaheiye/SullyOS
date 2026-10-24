@@ -14,6 +14,7 @@ import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } fr
 import { House, User, Package, Warning } from '@phosphor-icons/react';
 import { mergeSocialComments, prependUniqueSocialPosts, updateSocialPost } from '../utils/socialFeedMerge';
 import { trackEvent } from '../utils/analytics';
+import CharacterActivityProfile from '../components/social/CharacterActivityProfile';
 import TokenImg from '../components/os/TokenImg';
 
 const TWEMOJI_BASE = 'https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/72x72';
@@ -163,6 +164,7 @@ const SocialApp: React.FC = () => {
     const [isCreateOpen, setIsCreateOpen] = useState(false); 
     
     const [selectedPost, setSelectedPost] = useState<SocialPost | null>(null);
+    const [activityProfileCharacterId, setActivityProfileCharacterId] = useState('');
     const [isRefreshing, setIsRefreshing] = useState(false);
     const [loadingComments, setLoadingComments] = useState(false);
     
@@ -868,7 +870,7 @@ ${buildSparkCommentHistory(post)}
             <div className="p-3">
                 <div className="flex justify-between items-center gap-2">
                     <div className="flex flex-1 items-center gap-2 min-w-0">
-                        <TokenImg value={post.authorAvatar} className="w-5 h-5 rounded-full object-cover shrink-0 ring-1 ring-white/50" />
+                        {post.authorCharId ? <button type="button" onClick={(e) => { e.stopPropagation(); setActivityProfileCharacterId(post.authorCharId!); }} className="shrink-0" aria-label={`查看 ${post.authorName} 的主页`}><TokenImg value={post.authorAvatar} className="w-5 h-5 rounded-full object-cover ring-1 ring-white/50" alt={post.authorName} /></button> : <TokenImg value={post.authorAvatar} className="w-5 h-5 rounded-full object-cover shrink-0 ring-1 ring-white/50" />}
                         <span className="text-[11px] text-slate-700 truncate font-medium">{post.authorName}</span>
                     </div>
                     <div className="flex shrink-0 items-center gap-1 text-slate-400 group-hover:text-slate-600 transition-colors">
@@ -901,7 +903,7 @@ ${buildSparkCommentHistory(post)}
                     <div className="flex items-center justify-between px-4 bg-white/60 backdrop-blur-xl border-b border-white/20 shrink-0 relative z-20" style={{ paddingTop: 'max(12px, var(--safe-top))', paddingBottom: '12px' }}>
                         <button onClick={handleClosePost} className="p-2 -m-2 active:opacity-60"><Icons.Back /></button>
                         <div className="flex items-center gap-2">
-                            <TokenImg value={selectedPost.authorAvatar} className="w-8 h-8 rounded-full object-cover border border-white/50" />
+                            {selectedPost.authorCharId ? <button type="button" onClick={() => setActivityProfileCharacterId(selectedPost.authorCharId!)} aria-label={`查看 ${selectedPost.authorName} 的主页`}><TokenImg value={selectedPost.authorAvatar} className="w-8 h-8 rounded-full object-cover border border-white/50" alt={selectedPost.authorName} /></button> : <TokenImg value={selectedPost.authorAvatar} className="w-8 h-8 rounded-full object-cover border border-white/50" />}
                             <span className="text-sm font-bold text-slate-800">{selectedPost.authorName}</span>
                         </div>
                         <button onClick={() => { setShowShareModal(true); trackEvent('打开分享帖子面板'); }} className="p-2 -m-2 active:opacity-60"><Icons.Share onClick={() => setShowShareModal(true)} className="w-6 h-6 text-slate-800 cursor-pointer hover:text-[#ff2442]" /></button>
@@ -937,7 +939,7 @@ ${buildSparkCommentHistory(post)}
                                 {selectedPost.comments.length === 0 && !loadingComments && <div className="text-center text-slate-300 text-xs py-10">快来抢沙发...</div>}
                                 {selectedPost.comments.map(c => (
                                     <div key={c.id} className="flex gap-3 animate-fade-in group">
-                                        <TokenImg value={c.authorAvatar} className="w-9 h-9 rounded-full object-cover shrink-0 border border-slate-100" />
+                                        {c.authorCharId ? <button type="button" onClick={() => setActivityProfileCharacterId(c.authorCharId!)} className="shrink-0" aria-label={`查看 ${c.authorName} 的主页`}><TokenImg value={c.authorAvatar} className="w-9 h-9 rounded-full object-cover border border-slate-100" alt={c.authorName} /></button> : <TokenImg value={c.authorAvatar} className="w-9 h-9 rounded-full object-cover shrink-0 border border-slate-100" />}
                                         <div className="flex-1">
                                             <div className="flex justify-between items-start">
                                                 <span className={`text-xs font-bold ${c.isCharacter ? 'text-slate-800' : 'text-slate-500'}`}>{c.authorName}</span>
@@ -1281,6 +1283,7 @@ ${buildSparkCommentHistory(post)}
             </div>
 
             {selectedPost && renderDetail()}
+            {activityProfileCharacterId && <CharacterActivityProfile characterId={activityProfileCharacterId} characters={characters} onClose={() => setActivityProfileCharacterId('')} topPadding="max(12px, var(--safe-top))" />}
         </div>
     );
 };

@@ -111,6 +111,6 @@ HTML 卡片仍在独立 iframe 沙盒中；白框控制其外壳和排版，不�
 
 外壳变量不强制抹除各卡片原有的内部背景；需要重画内容区时使用 `.sully-chat-card-content` 的后代选择器并覆盖相应内联样式。不要隐藏转账金额、状态、接收/退回、文件打开或返回/发送按钮。图片和表情保持比例，长文字能换行，避免持续模糊动画。
 
-回归：`pnpm vitest run utils/chatWhitebox.test.ts utils/chatDecoration.test.ts utils/collaborationMakers.test.ts utils/beautyShare.test.ts`；另做手机宽度下的心象、转账、长卡片、滚动和旧预设验证。
+回归：`.\node_modules\.bin\vitest.cmd run utils/chatWhitebox.test.ts utils/chatDecoration.test.ts utils/collaborationMakers.test.ts utils/beautyShare.test.ts`；另做手机宽度下的心象、转账、长卡片、滚动和旧预设验证。
 
 内置白框新增「星轨 · 深空」「星轨 · 雾紫」，在聊天装扮的全部/白框分类和「我的搭配」选择器中展示。入口通过 `utils/builtinWhitebox.ts` 读取 `presets/chat/*.json`，只使用本地静态素材，不写入收藏库或替换用户已有设置；应用沿用角色选择确认流程。两款源文件与构建脚本在 `art/acid-orbit`：依次执行 `build-lace.mjs`、`build.mjs`、`build-builtins.mjs`、`build-preview.mjs` 可同步 CSS、导入文件和内置包。蕾丝为用户提供的 CC0 scallop2（来源见 `art/acid-orbit/SCALLOP-LICENSE.txt`）。

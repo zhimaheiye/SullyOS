@@ -5,6 +5,7 @@ import {BEAUTY_PREVIEW_AVATAR} from './beautyPreviewAssets';
 const base = {charId:'whitebox-preview',role:'assistant' as const,timestamp:1790386860000};
 const msg = (id:number,type:MessageType,content:string,metadata?:Record<string,unknown>,role:Message['role']='assistant'):Message => ({...base,id,type,content,metadata,role});
 export const CHAT_TYPE_SAMPLES = {
+ secret_note:msg(29,'secret_note','仅供排版预览的悄悄话。'),
  text:msg(1,'text','欢迎回家。今天也有想和你分享的小事。'),
  image:msg(2,'image',BEAUTY_PREVIEW_AVATAR),
  emoji:msg(3,'emoji',BEAUTY_PREVIEW_AVATAR),

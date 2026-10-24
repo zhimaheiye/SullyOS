@@ -2,6 +2,7 @@ import { defineConfig, type ProxyOptions } from 'vite';
 import react from '@vitejs/plugin-react';
 import { execSync } from 'node:child_process';
 import { bakeVoiceMiddleware } from './server/bake-voice-middleware';
+import { closeAllMcpStdioServers, mcpStdioMiddleware } from './server/mcp-stdio-middleware';
 import { staticCachePlugin } from './scripts/static-cache-build';
 import { startupRecoveryPlugin } from './scripts/startup-recovery-plugin';
 import { APP_VERSION_TAG } from './utils/appVersion';
@@ -71,6 +72,13 @@ if (process.env.VITE_HIDE_BUILD_BADGE === '1') showBuildBadge = false;
 if (process.env.VITE_SHOW_BUILD_BADGE === '1') showBuildBadge = true;
 
 export default defineConfig({
+  // SullyOS 根目录偶尔会暂存独立原型或参考项目。开发服务器只能从自己的
+  // index.html 建依赖图，不能把这些目录里的 index.html 当成第二个应用扫描。
+  // 否则 Vite/chokidar 会持有整个参考目录，Windows 上会表现为关闭 SullyOS
+  // 前无法移动或删除该目录，即使业务代码从未 import 它。
+  optimizeDeps: {
+    entries: ['index.html'],
+  },
   resolve: {
     // Live2D subclasses Pixi containers, so both the renderer and the engine
     // must share the same Pixi prototype/extension registry in dev and builds.
@@ -93,6 +101,28 @@ export default defineConfig({
         server.middlewares.use('/api/minimax/bake-voice', bakeVoiceMiddleware);
       },
     },
+    {
+      name: 'mcp-stdio-middleware',
+      configureServer(server) {
+        server.middlewares.use('/api/mcp-stdio', mcpStdioMiddleware);
+        server.httpServer?.once('close', closeAllMcpStdioServers);
+      },
+    },
+    {
+      name: 'minimax-region-router',
+      configureServer(server) {
+        server.middlewares.use((req, _res, next) => {
+          const url = req.url || '';
+          if (url.startsWith('/api/minimax/') && !url.startsWith('/api/minimax/bake-voice')) {
+            const region = String(req.headers['x-minimax-region'] || '').toLowerCase();
+            if (region === 'overseas') {
+              req.url = url.replace('/api/minimax/', '/api/minimax/overseas/');
+            }
+          }
+          next();
+        });
+      },
+    },
   ],
   define: {
     __BUILD_BRANCH__: JSON.stringify(gitInfo.branch),
@@ -108,7 +138,32 @@ export default defineConfig({
     drop: ['debugger'],
   },
   server: {
+    watch: {
+      // UnitOS 是一次性参考源码，不是 SullyOS 运行依赖。大小写两种名称都排除，
+      // 让它在 dev server 运行期间也能被独立移动/删除。
+      ignored: ['**/UnitOS/**', '**/unityos/**', '**/cinema-data/media/**', '**/cinema-data/cache/**'],
+    },
     proxy: {
+      // MiniMax 海外站代理 (由 minimax-region-router 中间件在检测到 X-MiniMax-Region: overseas 时重写)
+      '/api/minimax/overseas/t2a': {
+        target: 'https://api.minimax.io',
+        changeOrigin: true,
+        secure: true,
+        rewrite: () => '/v1/t2a_v2',
+      },
+      '/api/minimax/overseas/get-voice': {
+        target: 'https://api.minimax.io',
+        changeOrigin: true,
+        secure: true,
+        rewrite: () => '/v1/get_voice',
+      },
+      '/api/minimax/overseas/music': {
+        target: 'https://api.minimax.io',
+        changeOrigin: true,
+        secure: true,
+        rewrite: () => '/v1/music_generation',
+      },
+      // MiniMax 国内站代理 (默认)
       '/api/minimax/t2a': {
         target: 'https://api.minimaxi.com',
         changeOrigin: true,
@@ -206,7 +261,7 @@ export default defineConfig({
             if (id.includes('pixi-filters') || id.includes('@pixi/') || /[\\/]node_modules[\\/]pixi\.js[\\/]/.test(id)) {
               return 'vendor-live2d';
             }
-            if (id.includes('react') || id.includes('react-dom') || id.includes('scheduler')) {
+            if (/[\\/]node_modules[\\/](?:react|react-dom|scheduler)[\\/]/.test(id)) {
               return 'vendor-react';
             }
             if (id.includes('@phosphor-icons')) {

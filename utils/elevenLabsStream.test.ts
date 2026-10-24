@@ -4,7 +4,10 @@ import { streamElevenLabsSpeech, streamElevenLabsDialogue, VoiceTextQueue, strea
 import { DB } from './db';
 
 vi.mock('./db', () => ({ DB: { getAssetRaw: vi.fn(), saveAssetRaw: vi.fn() } }));
-vi.mock('./proxyWorker', () => ({ getProxyWorkerUrl: () => 'https://proxy.example.test' }));
+vi.mock('./proxyWorker', () => ({
+  getProxyWorkerUrl: () => 'https://proxy.example.test',
+  requireProxyWorkerUrl: () => 'https://proxy.example.test',
+}));
 const char = { id: 'a', voiceProfile: { elevenLabsVoiceId: 'voice_abcdefgh' } } as CharacterProfile;
 const config = { elevenLabsApiKey: 'test-only', elevenLabsModel: 'eleven_v4' } as APIConfig;
 const frame = { audio_base64: 'AAD/fw==', alignment: { characters: ['你', '好'], character_start_times_seconds: [0, 0.1], character_end_times_seconds: [0.1, 0.2] } };

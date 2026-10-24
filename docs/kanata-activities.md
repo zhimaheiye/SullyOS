@@ -6,12 +6,12 @@
 
 | 分类 | 子玩法 |
 | --- | --- |
-| 普通空间 | 图书馆、剧院、听歌房、留言簿、娱乐室、邮局 |
+| 普通空间 | 图书馆、剧院、听歌房、留言簿、娱乐室 |
 | SAR 活动室 | 抽芯片演绎、模块商店、水域钓鱼、布告板、恐龙箱庭 |
 
 首层提供「随便逛逛」，SAR 二级菜单提供「在活动室随便玩一样」。返回箭头、系统返回与 Esc 先回到大分类，再关闭选择器。菜单沿用系统安全区，矮屏采用两列布局。
 
-抽芯片演绎对应角色既有的临时芯片与随笔玩法，包括抽取与推演；不是替用户操作付费扭蛋或发用户藏品。仓库、图鉴、凯恩和艾文个人线属于用户操作，不加入角色活动池。信号坠落处仍走专门的活动入口，不进随机池；尚未开放的研发中心也不列入。
+抽芯片演绎对应角色既有的临时芯片与随笔玩法，包括抽取与推演；不是替用户操作付费扭蛋或发用户藏品。仓库、图鉴、凯恩和艾文个人线属于用户操作，不加入角色活动池。尚未开放的研发中心不列入。
 
 图书馆受角色阅读范围约束；范围内无书时禁用并提示。恐龙箱庭需要开启共同摆弄且桌上有恐龙，未满足时显示具体原因。手动邀请箱庭沿用既有手动来访规则，不自动开启共同摆弄。
 
@@ -45,11 +45,12 @@
 - `utils/vrWorld/activityChoices.ts`：可执行子玩法目录、SAR 权重和过滤规则，UI 与执行器共用 ID。
 - `VRWorldCharState.excludedAutoRooms` / `excludedAutoSARActivities`：每个角色的排除项，缺省或空数组表示不限制；随角色备份保存。`VRSARActivity` 集中定义五种子玩法。
 - `VRActivityPicker.tsx`：两级手动菜单与高级选项。高级选项使用函数式角色更新，避免快速连续勾选覆盖上一项。
-- 手动链路为 `triggerNow(charId, room, letterId, sarActivity)` → 回调 `(charId, room, letterId, manual, sarActivity)` → `runVRSession.forcedSARActivity`。原邮局指定信件的参数位置保持不变。
+- 手动链路为 `triggerNow(charId, room, sarActivity)` → 回调 `(charId, room, manual, sarActivity)` → `runVRSession.forcedSARActivity`。
 - `runSession.ts`：自动活动在房间层和 SAR 层都过滤；指定的房间/活动不可用时跳过，不随机替换成另一项。
 - `participation.ts`：活动结果落库保留最新排除设置。
 - 模块商店独立使用逛店说明，不混入芯片演绎操作；没有改动角色经济额度、模块购买结算或主动消息系统。
 
-验证：`activityChoices.test.ts`、`fishingSession.test.ts` 覆盖过滤、全禁用零模型调用、手动绕过、完整路由、旧概率、旧参数兼容及最新配置保护。`scripts/test-vr-activities.mjs` 在隔离浏览器验证菜单、持久化、备份和安全区。
+验证：`activityChoices.test.ts`、`fishingSession.test.ts` 覆盖过滤、全禁用零模型调用、手动绕过、完整路由、旧概率及最新配置保护。`scripts/test-vr-activities.mjs` 在隔离浏览器验证菜单、持久化、备份和安全区。
 
+- 2026-10-01：修正活动选择器底部「随便逛逛」及 SAR 随机按钮的悬停样式，悬停保持紫色，按下时才变暗；其它按钮仍使用浅色悬停。
 布告板手动刷新中的多人路人生成见 [布告板路人群像](./sar-market-npcs.md)。这条路径一轮生成多位路人的公开互动，自家角色仍沿用本页的独立活动流程。

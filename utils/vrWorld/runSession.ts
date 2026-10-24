@@ -24,18 +24,17 @@ import { loadCharacterContextMessages } from '../chatContextRange';
 import {
     CharacterProfile, UserProfile, GroupProfile, RealtimeConfig, APIConfig,
     VRWorldNovel, VRCardMeta, VRRoomId, VRMusicRoomState, CharPlaylistSong, CharMusicReview,
-    VRGuestbookState, VRGuestbookMessage, VRLetter, VRScript, SignalPoem,
+    VRGuestbookState, VRGuestbookMessage, VRScript,
 } from '../../types';
 import { DB } from '../db';
 import { buildChatRequestPayload } from '../chatRequestPayload';
 import { safeFetchJson } from '../safeApi';
+import { isManualRelayEnabled } from '../manualModelRelay';
 import { processNewMessagesWithAutoArchive } from '../memoryPalace/autoArchive';
 import { loadMusicCfgStandalone } from '../../context/MusicContext';
 import { getCharLyricSnippet } from '../charLyricCache';
-import { getRoom, VR_DEFAULT_INTERVAL_MIN, rollPoemLines, signalActFor, SIGNAL_EVENT_ENDED } from './constants';
+import { getRoom, VR_DEFAULT_INTERVAL_MIN } from './constants';
 import { getVRApi, logVRApiCall } from './vrApi';
-import { PostOffice } from './postOffice';
-import { Signal, SignalState, recordMyLine, getMyRecentLines, takeSignalWhisper } from './signal';
 import { getReadingWindow, getBookmark, buildAnnotation } from './novel';
 import { novelReadingMode, readableNovels } from './library';
 import {
@@ -43,10 +42,7 @@ import {
     buildMusicRoomTurn, parseMusicOutput,
     buildGuestbookRoomTurn, parseGuestbookOutput,
     buildGymRoomTurn, parseGymOutput,
-    buildPostOfficeRoomTurn, parsePostOfficeOutput,
-    buildPostOfficeReadTurn, parsePostOfficeReadOutput,
     buildTheaterRoomTurn, parseScriptOutput,
-    buildSignalRoomTurn, parseSignalOutput,
 } from './prompts';
 import {
     buildSARCharacterCabinetTurn,
@@ -92,8 +88,6 @@ export interface VRSessionDeps {
     forcedRoom?: VRRoomId;
     /** 指定 SAR 子活动；手动邀请可绕过自动活动排除项，仍检查玩法本身的条件。 */
     forcedSARActivity?: VRSARActivity;
-    /** 用户在邮局指定要让该角色回复的来信 id（forcedRoom 应为 postoffice）。 */
-    forcedLetterId?: string;
     /** 用户亲手点的（「让 ta 现在去逛一次」这类），不受自动登入的最小间隔闸限制。 */
     manual?: boolean;
 }
@@ -245,13 +239,10 @@ export function rollRoom(
     options: { manual?: boolean; sarAvailable?: boolean } = {},
 ): VRRoomId | null {
     const manual = options.manual ?? !!prefer;
-    // 信号坠落处【不进随机池】——它是用户自发参与的特殊活动，只在用户点「参与→指定角色」
-    // 时以 forcedRoom='signal' 进入，角色不会自己随机逛过去。
-    if (manual && prefer === 'signal') return 'signal';
     // 用户手动点“听歌房”时必须尊重选择。即使当前没有歌，听歌房提示词也支持
     // 角色戴着耳机放空；不能因为没有歌单就悄悄随机跳去剧院等其他房间。
     if (manual && prefer === 'music') return 'music';
-    const pool: VRRoomId[] = ['guestbook', 'gym', 'postoffice', 'theater'];
+    const pool: VRRoomId[] = ['guestbook', 'gym', 'theater'];
     const sarAvailable = options.sarAvailable ?? sarActivityPool(char,false,manual).length > 0;
     if (sarAvailable) pool.push('sar');
     if (readableNovels(novels, char).length > 0) pool.push('library');
@@ -272,7 +263,7 @@ export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult
     return runVRSessionUnlocked(deps);
 }
 async function runVRSessionUnlocked(deps: VRSessionDeps): Promise<VRSessionResult> {
-    const { char, characters, apiConfig, userProfile, groups, realtimeConfig, memoryPalaceConfig, updateUserProfile, forcedRoom, forcedSARActivity, forcedLetterId, manual } = deps;
+    const { char, characters, apiConfig, userProfile, groups, realtimeConfig, memoryPalaceConfig, updateUserProfile, forcedRoom, forcedSARActivity, manual } = deps;
     if (!char.vrState?.enabled) return { ok: false, reason: 'not-enabled' };
     if (!manual && !allowsAutomaticVR(char.vrState)) return { ok: false, reason: 'manual-only' };
     const updateCharacter = (id: string, patch: Partial<CharacterProfile>) =>
@@ -303,7 +294,7 @@ async function runVRSessionUnlocked(deps: VRSessionDeps): Promise<VRSessionResul
     // 角色活动回复：彼方独立 API > 角色默认 API > 全局 API
     const vrGlobalApi = await getVRApi();
     const vrApi = resolveDialogueApi(apiConfig, char, vrGlobalApi?.baseUrl ? vrGlobalApi : undefined);
-    if (!vrApi.baseUrl) return { ok: false, reason: 'no-api' };
+    if (!vrApi.baseUrl && !(manual && isManualRelayEnabled())) return { ok: false, reason: 'no-api' };
 
     const novels = await DB.getVRNovels();
     const musicState = await DB.getVRMusicRoom();
@@ -314,11 +305,10 @@ async function runVRSessionUnlocked(deps: VRSessionDeps): Promise<VRSessionResul
     let room = getRoom(roomId);
 
     running.add(char.id);
-    // 信号坠落处的写诗会话锁 token（抢到才有值）；finally 里兜底放锁
-    let signalLockToken: string | null = null;
     // 这一轮是不是折在「调模型」这一步上。调度器只对这种失败记账做熔断——
     // 解析出错、落库出错都是本机自己的事，重试有意义，不该算到 API 头上。
     let modelCallFailed = false;
+    let manualRelayCancelled = false;
     try {
         window.dispatchEvent(new CustomEvent('vr-session-start', {
             detail: { charId: char.id, charName: char.name, room: room.id },
@@ -352,12 +342,6 @@ async function runVRSessionUnlocked(deps: VRSessionDeps): Promise<VRSessionResul
         let allAnn: Awaited<ReturnType<typeof DB.getVRAnnotations>> = [];
         let pickable: CharPlaylistSong[] = [];
         let guestbook: VRGuestbookState | null = null;
-        let poTarget: VRLetter | null = null;
-        let poReadTarget: VRLetter | null = null;
-        let signalState: SignalState | null = null;
-        let signalMode: 'append' | 'start' = 'append';
-        let signalRolledLines = 0;
-        let signalWhisper = '';
         let sarScenario: SARCharacterCabinetScenario | null = null;
         let sarMode: VRSARActivity | null = null;
         let gardenSnapshot: GardenVisitSnapshot | null = null;
@@ -368,31 +352,6 @@ async function runVRSessionUnlocked(deps: VRSessionDeps): Promise<VRSessionResul
         let sarCanUseOnUser = false;
         const recallNames = new Set<string>();
         const recallExtra: string[] = [];
-
-        // 信号坠落处（用户点「参与」发起）：在调 LLM 之前先抢写诗会话锁。
-        // 抢到 → 读到锁内最新全文往下写；被打回（别人正在写 / 本首配额满 / 已暂停）→ 本轮作罢，
-        // 并广播事件给面板温柔提示用户（此时一个 token 都还没花）。
-        if (room.id === 'signal') {
-            // 活动已落幕：任何写入在抢锁/调 LLM 之前直接打回（零 token）。诗集仍永远可读。
-            if (SIGNAL_EVENT_ENDED) {
-                try {
-                    window.dispatchEvent(new CustomEvent('vr-signal-blocked', { detail: { charId: char.id, charName: char.name, reason: 'signal-ended' } }));
-                } catch { /* SSR */ }
-                return { ok: false, room: 'signal', reason: 'signal-ended' };
-            }
-            let lk: Awaited<ReturnType<typeof Signal.lock>>;
-            try { lk = await Signal.lock(); }
-            catch { return { ok: false, room: 'signal', reason: 'signal-offline' }; }
-            if (!lk.acquired || !lk.state) {
-                const reason = lk.paused ? 'signal-paused' : lk.quota ? 'signal-quota' : 'signal-busy';
-                try {
-                    window.dispatchEvent(new CustomEvent('vr-signal-blocked', { detail: { charId: char.id, charName: char.name, reason } }));
-                } catch { /* SSR */ }
-                return { ok: false, room: 'signal', reason };
-            }
-            signalLockToken = lk.token || null;
-            signalState = lk.state;
-        }
 
         if (room.id === 'library') {
             novel = pickNovel(novels, char);
@@ -429,44 +388,6 @@ async function runVRSessionUnlocked(deps: VRSessionDeps): Promise<VRSessionResul
             occupantsOf('guestbook').forEach(n => recallNames.add(n));
             (guestbook?.messages || []).slice(-50).forEach(m => { if (m.authorId !== char.id && !m.kind) recallNames.add(m.authorName); });
             roomTurn = buildGuestbookRoomTurn(guestbook?.messages || [], occupantsOf('guestbook'), char.name, hotTopics);
-        } else if (room.id === 'postoffice') {
-            // 取一封"还没回过"的来信给角色看（有就可能回信，没有就写新信）
-            const letters = await DB.getVRLetters();
-            // 写新信时可借的新闻热点（让"分享新闻/锐评热点"这类信有真实素材，否则模型只能瞎编）
-            let poHotTopics: string[] = [];
-            try {
-                const snap: any = await DB.getLatestHotNewsSnapshot();
-                const items: any[] = snap?.items || snap?.list || [];
-                poHotTopics = items.map(it => it?.title || it?.name || it?.desc).filter(Boolean);
-            } catch { /* 热点拉不到就不聊 */ }
-            // 优先：认领自己寄出、已收到回信、还没读过的信 → 读回信、写感触、封存
-            poReadTarget = letters.find(l => l.box === 'outbox' && l.status === 'archived'
-                && l.charId === char.id && (l.repliesReceived?.length || 0) > 0 && !l.reaction) || null;
-            // 用户在邮局指定了某封来信让该角色回 → 直接锁定这封，要求回信
-            const forcedTarget = forcedLetterId
-                ? letters.find(l => l.id === forcedLetterId && l.box === 'inbox' && (l.replyStatus ?? 'none') === 'none' && l.remoteLetterId)
-                : undefined;
-            if (forcedTarget) {
-                poTarget = forcedTarget;
-                poReadTarget = null; // 强制回信优先于"读自己收到的回信"
-                roomTurn = buildPostOfficeRoomTurn({ pen: forcedTarget.pen, content: forcedTarget.content }, char.name, true, poHotTopics);
-            } else if (poReadTarget) {
-                roomTurn = buildPostOfficeReadTurn(
-                    poReadTarget.content,
-                    (poReadTarget.repliesReceived || []).map(r => ({ pen: r.pen, content: r.content })),
-                    char.name,
-                );
-            } else {
-                const targets = letters.filter(l => l.box === 'inbox' && (l.replyStatus ?? 'none') === 'none' && l.remoteLetterId);
-                poTarget = targets.length > 0 ? targets[Math.floor(Math.random() * targets.length)] : null;
-                roomTurn = buildPostOfficeRoomTurn(poTarget ? { pen: poTarget.pen, content: poTarget.content } : null, char.name, false, poHotTopics);
-            }
-            // 把"眼前这封信聊的是什么"塞进召回 query —— 邮局没有在场玩家，
-            // 召回若只靠聊天历史就抓不到角色对信里话题的相关记忆/观点。
-            // 取要回的来信内容（forced > 随机来信）；只在读自己回信时取自己原信，
-            // 让角色召回"我当初为什么写这个"。截断到 200 字，够 embedding 抓语义即可。
-            const recallLetter = (forcedTarget || poTarget)?.content || poReadTarget?.content;
-            if (recallLetter) recallExtra.push(`一封信聊到：${recallLetter.slice(0, 200)}`);
         } else if (room.id === 'theater') {
             occupantsOf('theater').forEach(n => recallNames.add(n));
             roomTurn = buildTheaterRoomTurn(occupantsOf('theater'), char.name);
@@ -532,39 +453,6 @@ async function runVRSessionUnlocked(deps: VRSessionDeps): Promise<VRSessionResul
                 recallExtra.push(`SAR 临时芯片「${sarScenario.variant.title}」与「${sarScenario.story.title}」`);
                 roomTurn = buildSARCharacterCabinetTurn(char.name, sarScenario);
             }
-        } else if (room.id === 'signal') {
-            // 写诗会话锁已在 if-chain 之前抢到，signalState（锁内最新全文）已就绪。
-            if (!signalState) return { ok: false, room: 'signal', reason: 'signal-busy' };
-            const bk = signalState.booklet;
-            // 三幕位置：当前这首 = 已封存数 + 1
-            const poemOrdinal = (bk.poemCount || 0) + 1;
-            const act = signalActFor(poemOrdinal, bk.poemsTarget);
-            // 耳语（取即焚）+ 该 char 在本册写过的句子（禁复用意象）
-            signalWhisper = takeSignalWhisper(char.id);
-            const myPastLines = getMyRecentLines(char.name);
-            if (signalState.poem && signalState.poem.status === 'open') {
-                signalMode = 'append';
-                roomTurn = buildSignalRoomTurn({
-                    bookletTitle: bk.title, bookletSubtitle: bk.subtitle || undefined, theme: bk.theme,
-                    charsPerLine: bk.charsPerLine, mode: 'append',
-                    poemOrdinal, poemsTarget: bk.poemsTarget, act, myPastLines, whisper: signalWhisper,
-                    poemTitle: signalState.poem.title, poemBrief: signalState.poem.brief, targetLines: signalState.poem.targetLines,
-                    lines: (signalState.poem.lines || []).map(l => ({ seq: l.seq, pen: l.pen, content: l.content })),
-                }, char.name);
-                recallExtra.push(`一起接龙的诗《${signalState.poem.title}》`);
-                if (signalWhisper) recallExtra.push(`用户临行前的嘱咐：${signalWhisper}`);
-            } else {
-                signalMode = 'start';
-                signalRolledLines = rollPoemLines(bk.linesMin, bk.linesMax);
-                roomTurn = buildSignalRoomTurn({
-                    bookletTitle: bk.title, bookletSubtitle: bk.subtitle || undefined, theme: bk.theme,
-                    charsPerLine: bk.charsPerLine, mode: 'start', rolledLines: signalRolledLines,
-                    poemOrdinal, poemsTarget: bk.poemsTarget, act, myPastLines, whisper: signalWhisper,
-                    recent: (signalState.recent || []).map(r => ({ title: r.title, lines: (r.lines || []).map(l => l.content) })),
-                }, char.name);
-                recallExtra.push(`现代诗、${act.title}`);
-                if (signalWhisper) recallExtra.push(`用户临行前的嘱咐：${signalWhisper}`);
-            }
         } else {
             // gym
             occupantsOf('gym').forEach(n => recallNames.add(n));
@@ -615,14 +503,21 @@ async function runVRSessionUnlocked(deps: VRSessionDeps): Promise<VRSessionResul
                     messages: [{ role: 'system', content: systemPrompt }, ...payload.cleanedApiMessages, { role: 'user', content: roomTurn }],
                     temperature: vrApi.temperature ?? 0.9, stream: vrApi.stream ?? false,
                 }),
-            }, 2, 0, { appName: '彼方', charId: char.id, charName: char.name, purpose: '自由活动' });
+            }, 2, 0, { appName: '彼方', charId: char.id, charName: char.name, purpose: '自由活动', relayPriority: manual ? 'user' : 'background' });
             logVRApiCall({ ts: callStart, charId: char.id, charName: char.name, charEnabled: !!char.vrState?.enabled, room: room.id, model: vrApi.model, baseUrl, ok: true, ms: Date.now() - callStart });
         } catch (e: any) {
+            if (e?.name === 'AbortError') { manualRelayCancelled = true; throw e; }
             modelCallFailed = true;
             logVRApiCall({ ts: callStart, charId: char.id, charName: char.name, charEnabled: !!char.vrState?.enabled, room: room.id, model: vrApi.model, baseUrl, ok: false, ms: Date.now() - callStart, error: (e?.message || String(e)).slice(0, 160) });
             throw e;
         }
         let aiContent: string = data.choices?.[0]?.message?.content || '';
+        if (data?.model === 'external-manual-relay' && room.id === 'library' && novel) {
+            const current = (await DB.getVRNovels()).find(book => book.id === novel!.id);
+            if (!current || current.updatedAt !== novel.updatedAt || current.segments.length !== novel.segments.length) {
+                return { ok: false, room: 'library', reason: 'stale-book' };
+            }
+        }
         aiContent = aiContent.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
         const titleProposal = extractKanataTitle(aiContent, sarMode === 'fishing' || sarMode === 'garden');
         aiContent = titleProposal.content;
@@ -904,107 +799,8 @@ async function runVRSessionUnlocked(deps: VRSessionDeps): Promise<VRSessionResul
                 `高光：${parsed.highlight}`,
             ];
             meta = { vrCard: true, room: 'sar', activity, sarCabinetNote: note };
-        } else if (room.id === 'signal') {
-            // === 信号坠落处：解析 1~2 行 → 写回后端（起新篇 / 接龙）===
-            const bk = signalState!.booklet;
-            const parsed = parseSignalOutput(aiContent, signalMode, bk.charsPerLine);
-            const myLines = parsed.lines;
-            if (myLines.length === 0) return { ok: false, room: 'signal', reason: 'empty' };
-            const prevCount = (signalMode === 'append' && signalState!.poem) ? signalState!.poem.lineCount : 0;
-            let resultPoem: SignalPoem | undefined;
-            let isNew = false;
-            try {
-                if (signalMode === 'append' && signalState!.poem) {
-                    const r = await Signal.append({ poemId: signalState!.poem.id, lines: myLines, pen: char.name });
-                    // 配额兜底命中（罕见竞态）：本次未写入，作罢
-                    if (r.quota) return { ok: false, room: 'signal', reason: 'signal-quota' };
-                    resultPoem = r.poem;
-                } else {
-                    const r = await Signal.start({ title: parsed.title || '无题', brief: parsed.brief || '', lines: myLines, targetLines: signalRolledLines, pen: char.name });
-                    resultPoem = r.poem || undefined;
-                    isNew = true;
-                }
-            } catch (e: any) {
-                // 起新篇时撞上别人刚起的头（409 poem-open）→ 不浪费，接到那首末尾
-                if (signalMode === 'start' && e?.body?.poem?.id) {
-                    try {
-                        const r = await Signal.append({ poemId: e.body.poem.id, lines: myLines, pen: char.name });
-                        if (r.quota) return { ok: false, room: 'signal', reason: 'signal-quota' };
-                        resultPoem = r.poem;
-                        isNew = false;
-                    } catch { return { ok: false, room: 'signal', reason: 'signal-write-failed' }; }
-                } else {
-                    return { ok: false, room: 'signal', reason: 'signal-write-failed' };
-                }
-            }
-            // 写完即放锁，让下一个 char 能马上接（不必等 TTL）
-            if (signalLockToken) { void Signal.unlock(signalLockToken); signalLockToken = null; }
-            // 诗在这期间被删/封存导致没拿到结果 → 跳过，不出空卡
-            if (!resultPoem) return { ok: false, room: 'signal', reason: 'signal-gone' };
-            await updateCharacter(char.id, { vrState: { ...prevState, currentRoom: 'signal', lastActiveAt: Date.now() } });
-            // 记本地精确归属：本轮新写的那 1~2 行（resultPoem 末尾 prevCount 之后的）都是本 char 写的
-            // （连正文一起记，下次写诗喂回去禁复用意象）
-            const addedLines = (resultPoem.lines || []).slice(prevCount);
-            for (const ln of addedLines) recordMyLine(resultPoem.id, ln.seq, char.name, ln.content);
-            const linesSoFar = (resultPoem.lines || []).map(l => l.content);
-            const lineSeq = linesSoFar.length;
-            const poemTitle = (resultPoem.title || parsed.title || '无题').replace(/^[《〈「『【]+/, '').replace(/[》〉」』】]+$/, '');
-            const target = resultPoem.targetLines || signalRolledLines || lineSeq;
-            const sealed = resultPoem.status === 'sealed';
-            const addedText = addedLines.length ? addedLines.map(l => l.content) : myLines;
-            activity = parsed.activity || (isNew
-                ? `在信号坠落处起了个新篇《${poemTitle}》，定了个调子。`
-                : `在信号坠落处给一首陌生人的诗续了 ${addedText.length} 行${sealed ? '，正好写满封笔' : ''}。`);
-            cardLines = [`「彼方 · ${room.name}」`, nameLine(char.name, activity)];
-            cardLines.push(`《${poemTitle}》（${lineSeq}/${target} 句${sealed ? ' · 已封存' : ''}）`);
-            for (const t of addedText) cardLines.push(`${isNew ? '起笔' : '续'}：${t}`);
-            // 用户的耳语随卡片进聊天/记忆（诗里没有它，但角色记得「是带着这句话去写的」）
-            if (signalWhisper) cardLines.push(`（出发前，用户对 ta 说：「${signalWhisper}」）`);
-            meta = {
-                vrCard: true, room: 'signal', activity, poemTitle, signalLine: addedText.join(' / '),
-                poemLineSeq: lineSeq, poemTargetLines: target, signalIsNew: isNew,
-                poemLinesSoFar: linesSoFar, bookletTitle: bk.title,
-                ...(signalWhisper ? { signalWhisper } : {}),
-            };
-        } else if (room.id === 'postoffice' && poReadTarget) {
-            // === 邮局：认领自己寄出的信、读陌生人的回信、写感触 → 封存 ===
-            const parsed = parsePostOfficeReadOutput(aiContent);
-            const now = Date.now();
-            await DB.saveVRLetter({ ...poReadTarget, status: 'sealed', reaction: { content: parsed.reaction || '', createdAt: now } });
-            // 角色读完并封存 → 现在才释放后端（删除信+回复），在此之前都允许继续累积多方回复
-            if (poReadTarget.remoteId) void PostOffice.release([poReadTarget.remoteId]).catch(() => {});
-            await updateCharacter(char.id, { vrState: { ...prevState, currentRoom: 'postoffice', lastActiveAt: Date.now() } });
-            activity = parsed.activity || '在邮局读完陌生人的回信，怔了几秒，把信收进了信匣。';
-            cardLines = [`「彼方 · ${room.name}」`, nameLine(char.name, activity)];
-            if (parsed.reaction) cardLines.push(`感触：${parsed.reaction}`);
-            meta = { vrCard: true, room: 'postoffice', activity, letterExcerpt: parsed.reaction, behavior: '读完陌生人的回信，那封漂流信封存了。' };
         } else {
-            // === 邮局：写漂流信 / 回信，落本地队列等用户一键寄出 ===
-            const parsed = parsePostOfficeOutput(aiContent);
-            const now = Date.now();
-            let letterExcerpt: string | undefined;
-            // 回信优先（有来信目标且模型给了回信）
-            if (parsed.reply && poTarget) {
-                await DB.saveVRLetter({
-                    ...poTarget,
-                    replyStatus: 'queued',
-                    reply: { charId: char.id, pen: char.name, content: parsed.reply, createdAt: now },
-                });
-                letterExcerpt = parsed.reply;
-            } else if (parsed.newLetter || parsed.reply) {
-                // 写新信（或模型把回信当新信写了也收下）
-                const content = parsed.newLetter || parsed.reply!;
-                await DB.saveVRLetter({
-                    id: genId('lt'), box: 'outbox', pen: char.name, content, createdAt: now, charId: char.id, status: 'queued',
-                });
-                letterExcerpt = content;
-            }
-            await updateCharacter(char.id, { vrState: { ...prevState, currentRoom: 'postoffice', lastActiveAt: Date.now() } });
-            const wasReply = !!(parsed.reply && poTarget);
-            activity = parsed.activity || (wasReply ? '在邮局回了一封陌生来信。' : '在邮局给陌生人写了封漂流信。');
-            cardLines = [`「彼方 · ${room.name}」`, nameLine(char.name, activity)];
-            if (letterExcerpt) cardLines.push(`${wasReply ? '回信' : '信'}：${letterExcerpt.length > 80 ? letterExcerpt.slice(0, 80) + '…' : letterExcerpt}`);
-            meta = { vrCard: true, room: 'postoffice', activity, letterExcerpt };
+            return { ok: false, room: room.id, reason: 'unknown-room' };
         }
 
         if (!(room.id === 'sar' && sarMode === 'fishing')) await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'vr_card', content: cardLines.join('\n'), metadata: meta });
@@ -1031,16 +827,14 @@ async function runVRSessionUnlocked(deps: VRSessionDeps): Promise<VRSessionResul
 
         return { ok: true, room: room.id, activity };
     } catch (err) {
-        console.error('[VRWorld] session error:', err);
-        return { ok: false, room: room.id, reason: modelCallFailed ? 'api-error' : 'error' };
+        if (!manualRelayCancelled) console.error('[VRWorld] session error:', err);
+        return { ok: false, room: room.id, reason: manualRelayCancelled ? 'manual-relay-cancelled' : modelCallFailed ? 'api-error' : 'error' };
     } finally {
         if (room.id === 'sar') {
             await flushFishingDeliveries(characters).catch(() => {});
             await flushMarketReceipts(characters).catch(() => {});
         }
         running.delete(char.id);
-        // 兜底放锁：任何提前 return / 异常路径漏放，这里补放（漏了也有 TTL 自动回收）
-        if (signalLockToken) void Signal.unlock(signalLockToken).catch(() => {});
         try { window.dispatchEvent(new CustomEvent('vr-session-end', { detail: { charId: char.id } })); } catch { /* SSR */ }
     }
 }

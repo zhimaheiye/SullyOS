@@ -77,7 +77,7 @@ describe('stripSensitiveCardFields', () => {
   });
 
   it('清单覆盖四类敏感字段', () => {
-    for (const k of ['emotionConfig', 'embeddingConfig', 'bubbleStyle', 'chatVoiceLang', 'memoryPalaceWaterline', 'activeBuffs', 'phoneState']) {
+    for (const k of ['emotionConfig', 'embeddingConfig', 'lifeConfig', 'bubbleStyle', 'chatVoiceLang', 'memoryPalaceWaterline', 'activeBuffs', 'phoneState']) {
       expect(CARD_STRIPPED_FIELDS).toContain(k);
     }
   });

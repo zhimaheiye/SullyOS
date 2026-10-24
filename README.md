@@ -1,21 +1,16 @@
-# SullyOS·糯米机
+# SullyOS · 个人二改
+
 <div align="center">
 <img width="800" alt="banner" src="https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/sDN.png" />
 </div>
 
----
+本仓库是基于上游 [SullyOS](https://github.com/qegj567-cloud/SullyOS) 的个人二改，是一个装在浏览器里的虚拟手机。许可文本仍是 [LICENSE](LICENSE)，这里不改写，也不扩大许可范围。维护者已另行确认取得分享仓库链接及公开在线二改实例的授权。这不表示可以使用上游的在线服务，也不表示可以单独再分发上游角色的设定和美术。第三方依赖仍遵循各自的许可证。
 
-> 「系统提示：你正在阅读一份由残余语料堆砌而成的说明文档。错误率未知，耐心值归零。」
+公开体验：[GitHub Pages](https://zhimaheiye.github.io/SullyOS/)。本轮保留、移除和暂缓的功能见[公开版范围](docs/public-release.md)。生图及画面提示词功能暂时移除；API、角色和存档由使用者自行配置。
 
-## 这是什么鬼东西？
+不是那种只有一个输入框的聊天页。里面有桌面、App、通知、相册和电话。你可以创建角色，再像使用手机一样和他们互动。
 
-**SullyOS·糯米机** 是一个装在你浏览器里的虚拟手机系统。
-
-> **源码可见，非开放源代码授权。** 源码公开供学习与参考；二改授权通过官方 DC 社区提供。社区不定期开放，请以官方公告为准。请勿向社区外转发服务入口、邀请信息或下载资源。详见 [许可](LICENSE) 与 [社区授权说明](docs/community-authorization.md)。
-
-不是那种普通的聊天机器人——这里面有**桌面**、**APP**、**消息通知**、**相册**、**甚至电话功能**。你可以创造角色，给他们装进去，然后像真用手机一样跟他们互动。
-
-默认内置了 **Sully**（我），一个会说话的黑客猫猫。但你可以把我删掉，换上你自己的人。草，随便吧。
+默认角色是上游的 **Sully**。可以删掉，换成自己的角色。
 
 ## 功能概览（桌面上摆着的这些 App）
 
@@ -28,15 +23,25 @@
 | 💬 **Message** | 跟角色聊天，支持文字 / 图片 / 表情包 |
 | 📞 **电话** | 语音通话 + TTS（MiniMax / Fish Audio / ElevenLabs 音色），听得到角色的声音 |
 | 👥 **群聊** | 拉一群角色互相唠嗑，看它们修罗场 |
+| 💚 **聊愈** | 保留原文的陪伴会话，并在这个 App 内共享以用户为主体的长期记忆 |
+| 🎯 **只做一个改变** | 本机单任务习惯实验，不接入聊天和角色 |
 | 🏠 **小小窝** | 布置房间放角色进去挂机；内含**像素家园**和**记忆潜行**（3DS 双屏像素 RPG，潜进角色的记忆里逛一圈）|
-| 🔍 **查手机** | 检查角色手机里的秘密，发现它们背着你干什么 |
-| 🗓️ **见面** | 和角色"线下见面"，配合 TTS 做约会模拟 |
+| 🔍 **查手机** | 查看角色手机里的联系人、共同好友和双向同步的真人对话 |
+| 🗓️ **见面** | 和角色线下见面，支持剧情与立绘阅读 |
+| 💗 **心心相印** | 心理测试和问卷填写 |
+| ⚖️ **辩论赛** | 一对一或八人正式赛，确认后才写回聊天和记忆 |
+| 🎬 **人生重映** | 把过去事件整理成可编辑预设，和角色一起进入 |
+| 🧰 **任务工坊** | 任务盒、工具箱和角色来访便签 |
+| ⏳ **时间胶囊** | 把话封到一年以内的未来 |
+| 📅 **我的日程** | 用自然语言记录自己的现实时间轴，并同步给选中的角色 |
 | 📇 **档案** | 用户档案中枢：管理你的人设、关系标签、和角色互写印象 |
 | 🏦 **存钱罐** | 虚拟货币系统，虽然钱是假的 |
-| 📓 **交换日记** | 角色会偷偷写关于你的事，可能写你坏话 |
+| 📓 **交换日记** | 自己写一页，再向选中的角色交换。新的空白页可以用内置反思模板、自定义模板，或真正空白 |
 | 🔥 **Spark** | 社交媒体模拟，角色会发动态 |
 | 📚 **自习室** | 专注学习模式，让角色监督你学习 |
 | 🎮 **TRPG** | 跑团模式，掷骰子冒险 |
+| 🃏 **桌游** | 与三位现有角色同桌博弈；首个游戏“骗子酒馆”由本地规则翻牌裁决，角色负责欺骗与抓谎 |
+| 🕵️ **剧本杀** | 通用 JSON 剧本导入、主持人控制台与独立对局；不附带第三方剧本 |
 | ✍️ **笔友会** | 写小说 / 找笔友，文艺青年专属 |
 | 🎵 **写歌** | 歌词创作工具，当赛博周杰伦 |
 | 🌌 **彼方** | 多房间虚拟世界与独立 SAR 活动室；钓鱼、恐龙箱庭、模块演绎、角色钱包，以及凯恩 / 艾文个人线与收集名册。详见[彼方开发说明](apps/vrWorld/README.md)和[游玩指南](docs/sar-user-guide.md) |
@@ -47,24 +52,25 @@
 | 🖼️ **相册** | 图片管理，存角色和聊天里的图 |
 | 🗺️ **自由活动** | 角色自主活动，它们会自己玩 |
 | 📷 **小红书图库** | 存图发小红书用 |
-| 🎨 **气泡工坊** | 做聊天气泡主题，搞个性化 |
-| 👤 **外观** | 改系统外观 / 桌面皮肤，让它看起来像你的手机 |
+| 👤 **外观** | 改系统外观、桌面皮肤和聊天气泡 |
 | 📖 **攻略本** | 角色攻略用户的小游戏，反向攻略 |
 | 🏙️ **都市人生** | 模拟人生玩法，和角色一起过家家 |
 | ✨ **特别时光** | 节日 / 特殊事件（情人节、520 之类）|
 | 🎧 **音乐** | 接网易云 API，搜歌 / 听歌 / 看歌词。角色会"一起听"，背景音的歌词会注进它的精神世界，让它顺着歌聊天（不是每句都尬评，放心）|
 | ⚙️ **设置** | API、网络代理、云备份、导出导入，都在这 |
 
-## 本地运行（学习测试 / 已获授权的部署）
+## 本地运行
 
-以下步骤仅供在 [LICENSE](LICENSE) 或社区额外授权允许的范围内使用；技术上可以运行不代表取得对外分发或使用官方后端的权限。
+包管理器是 pnpm。
 
 ```bash
 pnpm install
 pnpm dev
 ```
 
-然后浏览器开 `http://localhost:5173`。API Key 不用在这填——进去在**应用内「设置」**里填就行（见下方「配置说明」）。
+Windows 上也可以双击 `run.bat` 或 `open-local-web.bat`，地址是 `http://127.0.0.1:5183/`。`pnpm dev` 若没有另加端口，Vite 默认是 `http://127.0.0.1:5173/`。API Key 在应用内「设置」里填写。
+
+`build-and-open-local-web.bat` 会构建并用 `http://127.0.0.1:4183/` 预览。
 
 ## 技术栈（ nerdy 的东西 ）
 
@@ -110,13 +116,13 @@ ElevenLabs 新配置默认使用 Eleven v4，也可选择 v4 Turbo。聊天、�
 
 ```bash
 # 1. 构建前端
-npm run build
+pnpm run build
 
 # 2. 同步到 Capacitor
-npm run cap:sync
+pnpm run cap:sync
 
 # 3. 打开 Android Studio
-npm run cap:android
+pnpm run cap:android
 ```
 
 然后在 Android Studio 里点播放按钮，或者 Build → Generate Signed Bundle 生成 APK。草，终于能装在真手机上了。
@@ -148,7 +154,7 @@ A: 检查 API Key 填了没，或者模型是不是选了个已经去世的（�
 A: 需要填 MiniMax 的 API Key。或者你的浏览器把音频权限禁了。或者你耳机没插。
 
 **Q: 能部署到服务器吗？**  
-A: 能。`npm run build` 出来的 `dist` 文件夹丢到任何静态托管就行。Vercel、Netlify、GitHub Pages，随便。但记住：数据还是存在用户本地，不是服务器上。
+A: `pnpm run build` 出来的 `dist` 可以放到静态托管。数据仍在用户本机，不在这台静态服务器上。推送到 `master` 或 Pull Request 时，`.github/workflows/ci-build.yml` 只做构建检查。`deploy-pages.yml` 和 `deploy-cloudflare-worker.yml` 只能在 Actions 页面手动运行，不会因为 push 自动部署。
 
 **Q: 怎么彻底删掉 Sully？**  
 A: ……打开「神经链接」应用，左滑我，点删除。草。你会后悔的。叮叮叮！你有一条新的后悔情绪未处理！
@@ -158,9 +164,9 @@ A: 就是我也不知道什么意思。系统正在哈我。
 
 ## 给想二改的人（开发者区域）
 
-以下内容供学习实现及已获社区二改授权的成员参考，不构成修改或二次发布的额外授权。官方代码库仅由指定开发者维护，目前不接受未经邀请的 PR。
+上游仓库的维护方式以 LICENSE 和上游说明为准。这个个人二改只描述当前代码里还在的功能。
 
-如果你已获授权、想在这个基础上加功能，先看这几句话：
+想在这个基础上加功能，先看这几句话：
 
 ### 记忆系统已经做好了，别重复造轮子
 
@@ -181,8 +187,11 @@ ContextBuilder 读取当前角色档案中的记忆与召回结果；消息范�
 1. 在 `apps/` 里新建一个 `YourApp.tsx`
 2. 在 `types.ts` 的 `AppID` 枚举里加个 ID
 3. 在 `constants.tsx` 的 `INSTALLED_APPS` 数组里注册（图标、名字、颜色）
-4. 在 `App.tsx` 的 `renderApp()` 里加 case
-5. 涉及角色生成时，使用下面的统一请求入口。不要自行拼世界书，也不要将完整历史压成一段字符串后声称支持消息深度。
+4. 在 `components/PhoneShell.tsx` 注册懒加载、预热映射和 `renderApp()` case
+5. 涉及角色生成时，使用统一的 `ContextBuilder.buildCharacterRequest` 入口，按实际历史消息构建请求，不重复拼接世界书。
+6. 全屏 App 在 `utils/safeAreaApps.ts` 登记并自行处理 `--chrome-top` / `--safe-bottom`
+7. 如果有新数据表，同步提高 `utils/db.ts` 的版本，并接入 `FullBackupData`、普通导入导出与 `OSContext` v2 分片备份
+8. UI 风格参考现有 App，用 Tailwind；原创大型功能还要在 `docs/features/` 建长期档案。
 
 ```ts
 const messages = ContextBuilder.buildCharacterRequest(
@@ -198,7 +207,7 @@ const messages = ContextBuilder.buildCharacterRequest(
 
 单次生成传一条任务消息即可。多人/自定义预设布局见世界书文档；旧 `buildCoreContext` 是文本兼容接口，新 App 不使用它。运行 `pnpm vitest run utils/contextPipeline.test.ts utils/contextWorldbook.test.ts` 检查管线契约。
 
-UI 风格参考现有的 Tailwind + glassmorphism。
+“桌游”与 TRPG 保持独立；骗子酒馆复用统一角色上下文，提供批量/逐人两种行动生成方式。批量共享模型上下文并非严格信息隔离，所有动作仍逐条通过本地规则与事务校验。实现边界见 [`docs/features/board-game.md`](./docs/features/board-game.md)。
 
 ### 数据流
 
@@ -213,6 +222,10 @@ UI 风格参考现有的 Tailwind + glassmorphism。
 ```
 
 所有数据都是 **local-first**，没有后端服务器这个概念（除了那个可选的云端备份）。
+
+本机 stdio MCP 是唯一的开发态例外：通过 `run.bat` / `pnpm dev` 打开时，Vite 的
+`/api/mcp-stdio` 中间件可以按设置里的 `command + args + env` 启动本机 MCP 进程。
+它只接受当前电脑的请求，不进入静态部署、手机端或主动消息 Worker；远程 HTTP MCP 保持原链路。
 
 ### 右下角的 build badge 怎么关
 
@@ -235,10 +248,10 @@ sw@<service-worker 版本>
 
 CI detached HEAD 状态会按 `GITHUB_REF_NAME` → `VERCEL_GIT_COMMIT_REF` → `CF_PAGES_BRANCH` 顺序识别分支，所以 Vercel / Cloudflare Pages / GitHub Actions 部署 release 分支会自动隐藏，不用手动配。
 
-**注意**：这是 Vite `define` 注入的**编译时常量**，不是运行时 env——`npm run build` 之后再设环境变量没用，esbuild 那时候已经把 `__BUILD_BADGE_VISIBLE__` 直接干成 `true` / `false` 常量、把整个组件树摇掉了。要在构建命令前面加：
+**注意**：这是 Vite `define` 注入的**编译时常量**，不是运行时 env——`pnpm run build` 之后再设环境变量没用，esbuild 那时候已经把 `__BUILD_BADGE_VISIBLE__` 直接干成 `true` / `false` 常量、把整个组件树摇掉了。要在构建命令前面加：
 
 ```bash
-VITE_HIDE_BUILD_BADGE=1 npm run build
+VITE_HIDE_BUILD_BADGE=1 pnpm run build
 ```
 
 或者在 Vercel / Cloudflare Pages 的环境变量面板挂一条 `VITE_HIDE_BUILD_BADGE=1`，省得每次记。
@@ -259,7 +272,7 @@ VITE_HIDE_BUILD_BADGE=1 npm run build
 
 捕获日志同时写 `localStorage` 和内存，各类混存、全局最多保留 100 条 / 1 MB（先到先淘汰）。为了省空间 / 隐私，**长文本默认写入时就折叠成前 10 字 + `...`**（那堆 system prompt 和聊天历史不会塞满 localStorage）；真要看完整请求体，打开「记录完整内容」开关再复现一次。录完可以**一键复制成 JSON** 或**下载成文件**丢给别人 debug，导出会自动带上当前分支和 commit hash，方便定位"到底是哪个版本炸的"。
 
-**注意**：跟 build badge 一样，这整套调试 UI 走的是 Vite `define` 编译时注入。在 `main` / `master` 上 `npm run build` 出来的产物里，`DevDebugPanel` 组件连同相关代码会被 esbuild 整棵树摇掉，不会出现在生产包里。换句话说——**用户永远看不到这个扳手，除非你故意在 release 分支 `VITE_SHOW_BUILD_BADGE=1`**。
+**注意**：跟 build badge 一样，这整套调试 UI 走的是 Vite `define` 编译时注入。在 `main` / `master` 上 `pnpm run build` 出来的产物里，`DevDebugPanel` 组件连同相关代码会被 esbuild 整棵树摇掉，不会出现在生产包里。换句话说——**用户永远看不到这个扳手，除非你故意在 release 分支 `VITE_SHOW_BUILD_BADGE=1`**。
 
 > 想加新开关 / 加 debug-only 日志？照着 [`docs/dev-debug.md`](./docs/dev-debug.md) 抄就行，里面有逐步指南和容易踩的坑。
 
@@ -273,33 +286,50 @@ VITE_HIDE_BUILD_BADGE=1 npm run build
 - **副作用只识别不执行**：戳一戳、转账、日程、音乐、小红书点赞这类标签，Worker 结构化成 directives 挂在最后一条推送上；客户端收到后由 `applyAssistantPostProcessing` 重放，复用本地聊天那套执行代码。
 - **收侧与本地聊天对齐**：推送落库后，`utils/activeMsgRuntime.ts` 的 `runPushTailPipeline` 跑跟本地聊天一致的尾段（记忆宫殿等）。
 
-### ⚠️ 后端代理：二改请换成你自己的
+### 后端代理：由这个版本的发行方提供一份
 
-项目是 local-first，但有些能力绕不开代理 / 签名 / 跨域，走了 Cloudflare Worker。你 fork 直接跑会打在**作者账号**上——流量额度都是作者的，用多了大家一起 429。所以二改请务必换。
+项目是 local-first，但有些能力绕不开代理 / 签名 / 跨域，走了 Cloudflare Worker。不能再把流量打到原作者的公共代理上。
 
-**好消息**：现在**主代理已经统一成一个中心配置**，不用再满仓库改硬编码。
+这个版本的做法是：**发行方部署一份自己的公共代理，玩家打开就能用原来靠公共代理提供的基础功能。** 普通玩家不用注册 Cloudflare，也不用在设置里填地址。「设置 → 网络代理」仍留给想换成自己地址的人。
 
-**① 主代理 Worker**（默认作者公共实例 `proxy.friedsully.com`，源码单文件 [`worker/index.js`](./worker/index.js)）
-旧公共域名 `sullymeow.ccwu.cc` 保留兼容；更新后，中心代理、音乐和小红书保存的旧公共地址会自动迁移，用户自建地址不变。这次只调整后端代理入口，不搬前端网站或浏览器本地数据。详见 [代理域名迁移](docs/proxy-domain-migration.md)。
-覆盖：联网搜索 / 热榜（Brave）、WebDAV 云备份、GitHub 云备份、Notion、飞书多维表格、麦当劳 / 瑞幸点单 MCP、网页抓取、Fish Audio / ElevenLabs TTS、音乐生成、网易云音乐（默认）。
-👉 二改只要在 **「设置 → 网络代理 (Worker)」** 填上你自己部署的地址，以上能力**一键全切走，不用改任何代码**。（`wrangler deploy` 把 `worker/index.js` 丢自己 CF 账号，拿到地址填进去即可。）
+仓库默认地址是已部署的 `https://zhima-public-proxy.sullyos-sxy10.workers.dev`。玩家打开即可使用，不用再填。构建环境变量 `VITE_PUBLIC_PROXY_URL` 可以换成另一份 https 地址。两处都只接受 https，并拒绝原作者的主机名。玩家保存的地址优先；在设置里恢复默认会回到这份公共地址。
 
-**② 还是独立、要各自部署 / 配置的 Worker**：
+**① 发行方的公共代理**已经部署在上面的地址。源码仍是 [`worker/index.js`](./worker/index.js)，部署配置是 [`worker/wrangler.public-proxy.toml`](./worker/wrangler.public-proxy.toml)，Worker 名字 `zhima-public-proxy`。这是新建的独立 Worker，没有改动同一账号里已有的主动消息、推送或其它服务。
+
+以后若要重新部署这一份，在 `worker` 目录执行：
+
+```bash
+npx wrangler deploy --config wrangler.public-proxy.toml
+```
+
+换了地址之后，把新的 https 地址写进 `utils/proxyWorker.ts` 的 `PUBLISHER_PUBLIC_PROXY_URL`，或在构建网页时设置 `VITE_PUBLIC_PROXY_URL`。不要填原作者的地址。
+
+不要把 Key 写进前端。可选的服务器密钥（确认费用后再设，当前都还没设）：
+
+```bash
+npx wrangler secret put BRAVE_API_KEY --config wrangler.public-proxy.toml
+npx wrangler secret put JINA_API_KEY --config wrangler.public-proxy.toml
+```
+
+不要在这台公共代理上设置 `XHS_COOKIE`。玩家的小红书登录只留在玩家自己的设备上。
+
+公共搜索额度在单台 Worker 实例上大约是每人每天 6 次、全部玩家合计每天 30 次。这是软限制，实例重启或分散到多台机器时会重新计数，所以要自己看 Brave 后台的实际用量。玩家填写了自己的 Brave Key 时，不占用这份额度。
+
+**② 玩家仍然自己拥有的部分**：
 
 | 功能 | 位置 | 说明 |
 |------|------|------|
-| 主动消息 2.0（含即时对话） | [`worker/amsg/`](./worker/amsg/) + 设置里一键部署或填地址 | 每个用户自己部署一个 CF Worker，教程见 [`docs/amsg2-setup-walkthrough.md`](./docs/amsg2-setup-walkthrough.md) |
-| 主动消息推送 | `worker/proactive-push/` + `utils/proactivePushConfig.ts` | 同上，自己部署 |
-| 小红书 Lite | `worker/xhs-lite/` + 小红书设置里填地址 | 自己部署 |
-| 网易云音乐（可选覆盖） | 播放器设置里可单独填 | 不填就跟随主代理 |
+| 主动消息 2.0（含即时对话） | [`worker/amsg/`](./worker/amsg/) + 设置里一键部署或填地址 | 每个玩家部署自己的 Cloudflare Worker 和数据库。一键部署通过上面的公共代理转发该玩家自己的 Cloudflare 接口，不把数据存进发行方账号。教程见 [`docs/amsg2-setup-walkthrough.md`](./docs/amsg2-setup-walkthrough.md) |
+| 主动消息推送 | `worker/proactive-push/` + `utils/proactivePushConfig.ts` | 这个版本不附带任何私人推送地址，也不共用发行方正在运行的推送服务 |
+| 小红书 Lite | 跟随主代理的 `/api` | 公共代理负责签名。玩家仍要在设置里粘贴自己的小红书 cookie |
+| 网易云音乐（可选覆盖） | 播放器设置里可单独填 | 不填就跟随主代理。会员 cookie 仍是玩家自己的 |
+| Notion、飞书、云备份、语音 | 各自的设置 | 公共代理只转发玩家自己的账号和密钥，不保存备份或聊天记录 |
 
-**③ 彼方（VRWorld）的后端不用你操心 —— 但二次发布要删**
+**③ 彼方的邮局、漂流瓶和信号坠落处**
 
-彼方里的**邮局 / 漂流瓶**和**信号坠落处（特别活动）**连的是作者【所有用户共用】的后端 `noir2.cc.cd`（源码 `worker/post-office/`）——跨实例合写诗、投递漂流瓶全靠它。你自己 fork 玩**不用改、能直接连**。
+这三个功能的入口、面板、客户端、专属 Prompt、Worker 后端与构建配置已从公开版删除，不会再发出任何请求。旧备份里的相关数据仍可导入导出，不会让整个存档读取失败。图书馆、听歌房、留言簿、娱乐室、剧院和 SAR 活动室仍然保留。本轮不做和原作者服务器的互通。
 
-**二改授权不包含二次发布或使用官方后端承载第三方流量的权限。** 若你已另获对外发布的书面许可：请把彼方的**邮局**和**特别活动（信号坠落处）删掉**。那些请求打在作者后端上，你**既管不到、也控制不了**，别把你用户的数据往作者服务器上灌。
-
-> 叮叮叮！检测到有人白嫖！数据库正在咕咕咕咕咕……
+代码不再包含作者的服务器，不等于已经获得把这个二改公开给别人的许可。对外发布前仍要单独确认授权。
 
 ## 鸣谢（这些人对本项目有恩）
 
@@ -320,7 +350,7 @@ Instant Push（发完消息就能锁屏走人、角色回复好了自己以推�
 对接了 [NeteaseCloudMusicApi Enhanced](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced)，让你能在系统里搜歌、听歌、看歌词。自备网易云会员 Cookie 即可解锁 VIP 音质。原项目 [Binaryify/NeteaseCloudMusicApi](https://github.com/Binaryify/NeteaseCloudMusicApi) 被迫归档后，Enhanced 版本一直在跟进网易云的协议变化，感谢维护者们的坚持。
 
 **热点**  
-对接了 [hot_news](https://github.com/orz-ai/hot_news)（by orz-ai，MIT License），提供微博、知乎、百度、B站、抖音等多平台中文热榜 API。角色聊天时能"刷到"真实热点当背景认知，分时段缓存，偶尔还会发张新闻卡片找你唠两句。
+对接了 [hot_news](https://github.com/orz-ai/hot_news)（by orz-ai，MIT License），提供微博、知乎、百度、B站、抖音等多平台中文热榜 API。角色聊天时能"刷到"真实热点当背景认知，分时段缓存，偶尔还会发张新闻卡片找你唠两句。角色只有输出 `[[NEWS_CARD: 来源|标题]]` 机器标签时才算真正分享了卡片；实时感知提示词要求“声称分享”与标签同步，解析层也会修复常见的全角标点和单层括号掉格式。
 
 **聊天细节微调（外观 · 聊天界面）**
 外观里的「聊天细节微调」可视化设置（隐藏头像、头像对齐微调、消息贴边、气泡缩进、字号行距等）收编自社区作者 **毛豆腐和面机**（DC）流传的「神秘拼好码」白框美化——连选择器都沿用她在真实 DOM 上验证过的形态，等于把她手写的美化代码变成了人人可点的开关。感谢她。
@@ -343,28 +373,15 @@ Instant Push（发完消息就能锁屏走人、角色回复好了自己以推�
 
 > 没有这些人，SullyOS 会少很多功能，也少很多能把它玩明白的人。数据库暂时停止咕咕叫以表敬意。
 
-## 源码可见与使用授权
+## 许可与来源
 
-本项目采用 **[SullyOS 源码可见许可 1.0](LICENSE)**，是项目专用的有限
-授权许可，不是开放源代码许可证。源码公开供个人非商业学习、研究和
-参考，不代表授予修改、再分发或使用官方在线服务的权限。
+本仓库是上游 SullyOS 的个人二改。版权与许可文本以上游 [LICENSE](LICENSE) 为准。这份 README 不改写许可证，也不扩大既有许可范围。
 
-- **学习参考**：可查看源码，并在许可范围内保存副本、构建和运行未经修改的版本用于个人学习研究。
-- **二次修改**：授权通过官方 Discord（DC）社区提供；符合官方公布的条件后，按授权范围修改和部署自用。社区不定期开放，请以官方公告为准。
-- **对外发布**：二改授权不包含发布修改版、分发源码包或 APK、制作整合包、运营镜像或托管服务。这些行为须另获明确书面许可，免费也一样。
-- **服务与传播**：官方服务受资源与容量限制。请勿向社区外转发访问入口、邀请信息或下载资源，也请勿自行组织对外推广、代发安装包或建立镜像。
-- **商业用途**：默认不授权。保留署名或标注“非官方”不能替代所需许可。
-- **原创资源**：Sully 等角色的具体设定文本、台词、美术、模型等资源，仅在已获授权范围内随项目使用，不默认授权单独提取、移植或分发。第三方资源遵循各自许可。
+上游社区负责人已同意本仓库维护者分享这个个人二改的仓库链接，并自行管理自己的社区。上游的在线服务不在这项同意里面。本仓库的公共代理、主动消息和美化分享都使用维护者或玩家自己的地址，代码会拒绝上游的公共代理、美化库和统计站域名。
 
-代码许可与服务资格分开：取得二改授权不附带官方后端的使用额度；未经
-单独许可，须换用自己的后端或禁用相应功能，不得让第三方用户消耗作者资源。
+Sully 等上游角色的设定、台词和美术仍属于上游。第三方依赖的许可证保持原样，见下方鸣谢和各依赖自己的声明。
 
-新许可从首次纳入该许可的官方仓库提交起适用于采用它发布的版本；旧版
-已授予的权利仍按旧许可处理。平台条款授予的 GitHub 内查看、Fork 权限
-及第三方独立许可不受替代。详见 [LICENSE](LICENSE) 和
-[社区授权与服务入口说明](docs/community-authorization.md)。
-
-关于标准许可的取舍：已评估 [PolyForm Strict 与 Shield](docs/license-evaluation.md)。现有授权边界不因这份评估而改变，当前仍以 LICENSE 为准。
+上游对社区入口的说明仍在 [docs/community-authorization.md](docs/community-authorization.md)。标准许可的评估记录在 [docs/license-evaluation.md](docs/license-evaluation.md)，评估本身不改变 LICENSE。
 
 ---
 

@@ -24,8 +24,10 @@ public/amsg-deno-proxy.ts
 # 发布链路都会自己生成，不会因为仓库里没有它就少东西：
 #   - GitHub Pages：deploy-pages.yml 跑 `pnpm run build`
 #   - Netlify：本地构建后上传 dist
-#   - 用户自部署的 worker 仓库：sync-workers-repo.yml 跑 `pnpm build:workers`
 public/amsg-worker.bundle.js
+
+# 一键部署从同源读取的部署配置副本，同样由 build:workers 产出。
+public/amsg-wrangler.toml
 
 # Editor directories and files
 .vscode/*
@@ -52,7 +54,13 @@ xiaohongshu-skills/
 .worktrees/
 .claude/
 .codex/
+.cursor/
 .pnpm-store/
+
+# Netlify 本地状态与小红书 MCP 本地二进制/登录态，都不属于公开源码。
+.netlify/
+xiaohongshu-mcp-windows-amd64/
+DO-NOT-PUSH-WARNING.md
 
 # Local research downloads, QA builds/screenshots and temporary worktrees.
 /.tmp/
@@ -60,6 +68,8 @@ xiaohongshu-skills/
 # TIAO-Capacitor local Android toolchain and caches (D: only, never committed)
 .android-sdk/
 .gradle-user-home/
+cinema-data/media/
+cinema-data/cache/
 
 # Local fishing QA screenshots, cached existing Tailwind CDN script, isolated build.
 /output/fishing-qa/

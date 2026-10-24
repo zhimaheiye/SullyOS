@@ -9,11 +9,11 @@ const messages=[{id:'u',sessionId:'s',role:'user' as const,content:'查看仓库
 const server=(id:string,charIds?:string[]):mcp.McpServerConfig=>({id,name:id,url:'https://tools.example/'+id,enabled:true,charIds,token:'tool-secret',updatedAt:1,tools:[{name:'read.file',description:'读取文件',inputSchema:{type:'object',properties:{path:{type:'string'}},required:['path']}}]});
 const answer=(content:string)=>({choices:[{message:{role:'assistant',content}}]});
 const native=(name:string,args='{"path":"README.md"}')=>({choices:[{message:{content:'我看看仓库。',tool_calls:[{id:'',type:'function',function:{name,arguments:args}}]}}]});
-let request:ReturnType<typeof vi.spyOn>,tool:ReturnType<typeof vi.spyOn>;
+let request:import('vitest').MockInstance<typeof api.safeFetchJson>,tool:import('vitest').MockInstance<typeof mcp.callMcpTool>;
 beforeEach(()=>{localStorage.removeItem('aetheros.mcp.servers');mcp.setMcpUseNativeTools(true);mcp.saveMcpServers([server('github',['char-a'])]);request=vi.spyOn(api,'safeFetchJson');tool=vi.spyOn(mcp,'callMcpTool').mockResolvedValue({success:true,data:{text:'README 内容来自工具'}});});
 afterEach(()=>{vi.restoreAllMocks();vi.unstubAllGlobals();});
 const turn=(extra={})=>runCollaborationTurn({profile,contextSnapshot:'当前协同任务',messages,characterId:'char-a',userName:'用户',...extra});
-const body=(index:number)=>JSON.parse(request.mock.calls[index][1].body);
+const body=(index:number)=>JSON.parse(String(request.mock.calls[index][1].body));
 const name=()=>buildMcpOpenAITools('char-a').tools[0].function.name;
 
 it('executes real mapped tools, returns linked results, and only exposes the final reply',async()=>{

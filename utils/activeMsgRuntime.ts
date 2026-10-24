@@ -1809,6 +1809,7 @@ const flushInboxToChatImpl = async (trigger: FlushTrigger, charId?: string): Pro
       window.dispatchEvent(new CustomEvent('active-msg-received', {
         detail: {
           charId: message.charId,
+          instantChat: isInstantReply,
           charName: message.charName,
           body: message.previewBody || message.body,
           avatarUrl: message.avatarUrl,

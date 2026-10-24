@@ -389,16 +389,16 @@ SW 跑在自己的 context，没法直接访问 page 的 `localStorage` / `appen
 在 `catch` 里调用它：
 
 ```
-URL: https://proxy.friedsully.com/api/health
+URL: https://example.invalid/api/health
 请求: GET · 失败于 43ms
 错误: TypeError: Failed to fetch
-目标域名: proxy.friedsully.com（跨域请求，受 CORS 约束）
+目标域名: example.invalid（跨域请求，受 CORS 约束）
 本页来源: https://xxx.pages.dev
 浏览器联网状态: 在线
 Resource Timing: responseStatus=429, transferSize=0 → 对方其实回了 HTTP 429，是响应被 CORS 拦掉的，不是网络不通
 初判: 请求在拿到响应头之前就失败了——浏览器没告诉我们具体是哪一步断的。
 可能原因: 梯子/代理把这个域名的连接掐了 · DNS 解析不到 · ...
-连通性复检: no-cors 直连 proxy.friedsully.com 成功 → 网络路径是通的，问题出在响应本身（...）
+连通性复检: no-cors 直连 example.invalid 成功 → 网络路径是通的，问题出在响应本身（...）
 ```
 
 两个关键设计：
@@ -443,6 +443,23 @@ Resource Timing: responseStatus=429, transferSize=0 → 对方其实回了 HTTP 
 
 `NETWORK_SELF_CHECK_STEPS` 同时被调试终端（`components/os/StatusBar.tsx`，网络类错误时折叠展示）复用。
 改文案改那一处即可，两边不会不同步。
+
+---
+
+## 十三、思考过程 / 心象卡片不显示时先换模型交叉验证
+
+“输出思考过程”开关只表示 SullyOS 会请求、解析并展示模型返回的思考内容，不保证每个模型都会实际生成该通道。已确认过一例：在其它设置完全不变时，Gemini Flash 没有生成可展示的思考；只把模型切换为 Gemini Pro 后，心象卡片便恢复。
+
+因此排查顺序应为：
+
+1. 保持 API、角色和思考开关不变，只换成已确认支持思考输出的模型（例如同渠道的 Gemini Pro）重试。
+2. Pro 有、Flash 没有：优先判定为模型能力或该渠道对该模型的响应行为差异，不修改 `.sully-psyche` 渲染代码。
+3. 支持思考的模型也没有：再检查 API 响应是否包含 `reasoning_content`、`reasoning`、`thinking` 或内联 `<think>`，以及首条助手消息是否写入 `metadata.thinkingChain`。
+4. `metadata.thinkingChain` 已有值但界面不显示，最后才进入 `.sully-psyche` 样式、折叠状态和 `MessageItem` 渲染排查。
+
+代码仍需兼容不同接口的字段命名，但“响应里根本没有思考内容”和“有内容却被解析/渲染丢失”是两类问题，记录结论时不得混写成同一个根因。
+
+---
 
 ## SAR 剧情与表情校对
 

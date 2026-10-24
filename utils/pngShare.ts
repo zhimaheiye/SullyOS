@@ -47,6 +47,21 @@ function crc32(bytes: Uint8Array): number {
 export function isPng(bytes: Uint8Array): boolean {
     return SIGNATURE.every((b, i) => bytes[i] === b);
 }
+/** Tolerant scan for a chunk type; used to sniff import formats, not to validate files. */
+export function pngHasChunkType(bytes: Uint8Array, type: string): boolean {
+    if (!isPng(bytes) || bytes.length < 16) return false;
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    for (let start = 8; start + 12 <= bytes.length;) {
+        const length = view.getUint32(start);
+        const end = start + length + 12;
+        if (end > bytes.length) return false;
+        const chunkType = String.fromCharCode(...bytes.subarray(start + 4, start + 8));
+        if (chunkType === type) return true;
+        if (chunkType === 'IEND') return false;
+        start = end;
+    }
+    return false;
+}
 function chunks(bytes: Uint8Array): { type: string; start: number; end: number; data: Uint8Array }[] {
     if (!isPng(bytes)) throw new Error('请选择 PNG 原文件；截图或转换格式后的图片无法导入');
     if (bytes.length > MAX_PNG_BYTES) throw new Error('图片过大，请使用原格式文件导入');

@@ -1,11 +1,155 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { CharacterProfile, FullBackupData, Message } from '../types';
+import type { CharacterProfile, FullBackupData, Message, StoryTheaterEntry } from '../types';
 import { DB, openDB } from './db';
 import * as StoryTheater from './storyTheater';
 import { loadCharacterContextRange } from './chatContextRange';
 import { buildChatRequestPayload } from './chatRequestPayload';
 import { hasUnansweredUserTurn, withChatContinuation } from './chatContinuation';
-import { protectPendingChatTurn } from './storyTheaterTimeline';
+import {
+    activeStoryPath,
+    applicableStoryArchives,
+    archiveAppliesToStoryPath,
+    canAppendToActiveStoryPath,
+    makeStoryBranch,
+    migrateStoryTimeline,
+    storyDescendantIds,
+    storyMessageBranchId,
+    storyMessageParentId,
+    storyPathToMessage,
+    switchStoryTimelineTo,
+    protectPendingChatTurn,
+} from './storyTheaterTimeline';
+
+const entry = (real = false): StoryTheaterEntry => ({
+    id: real ? 'real-story' : 'fiction-story',
+    title: '雨夜',
+    premise: '',
+    characterIds: ['actor'],
+    writesToCharacterMemory: real,
+    characterMemoryDates: {},
+    carryCharacterMemory: true,
+    characterContextLimits: {},
+    archiveAfter: 10,
+    archiveKeepRecent: 3,
+    archiveStrategy: 'summary',
+    archives: [],
+    selectedWorldbookIds: [],
+    createdAt: 1,
+    updatedAt: 1,
+});
+
+const message = (id: number, role: Message['role'] = id % 2 ? 'user' : 'assistant', metadata: Record<string, unknown> = {}): Message => ({
+    id,
+    charId: 'story-theater:fiction-story',
+    role,
+    type: 'text',
+    content: `message-${id}`,
+    timestamp: id * 10,
+    metadata: { source: 'story_theater', ...metadata },
+});
+
+describe('虚构剧情时间线迁移', () => {
+    it('把旧线性楼层原子迁移所需的数据映射为根路线，并保持原文身份不变', () => {
+        const source = [message(7), message(11), message(18)];
+        const result = migrateStoryTimeline(entry(), source, 100);
+
+        expect(result.changed).toBe(true);
+        expect(result.messages.map(item => [item.id, item.role, item.content, item.timestamp])).toEqual(source.map(item => [item.id, item.role, item.content, item.timestamp]));
+        expect(result.messages.map(storyMessageParentId)).toEqual([null, 7, 11]);
+        expect(new Set(result.messages.map(storyMessageBranchId)).size).toBe(1);
+        expect(result.entry.timeline?.activeCursorMessageId).toBe(18);
+
+        const repeated = migrateStoryTimeline(result.entry, result.messages, 200);
+        expect(repeated.changed).toBe(false);
+        expect(repeated.entry.updatedAt).toBe(100);
+    });
+
+    it('真实陪伴完全跳过树迁移', () => {
+        const source = [message(1), message(2)];
+        const result = migrateStoryTimeline(entry(true), source);
+        expect(result).toEqual({ entry: entry(true), messages: source, changed: false });
+    });
+
+    it('旧归档补齐精确 messageIds，之后不再依赖数字区间判断', () => {
+        const old = { ...entry(), archives: [{ id: 'a', strategy: 'summary' as const, fromMessageId: 7, toMessageId: 18, messageCount: 3, summary: '旧事', createdAt: 1 }] };
+        const result = migrateStoryTimeline(old, [message(7), message(11), message(18)]);
+        expect(result.entry.archives[0].messageIds).toEqual([7, 11, 18]);
+    });
+});
+
+describe('虚构剧情分支与当前路径', () => {
+    const migrated = migrateStoryTimeline(entry(), [message(1), message(2), message(3)], 10);
+
+    it('创建分支只产生空路线，并允许从岔路点写第一条新消息', () => {
+        const branched = makeStoryBranch(migrated.entry, migrated.messages[1], 20);
+        expect(branched.timeline?.branches).toHaveLength(2);
+        expect(branched.timeline?.activeCursorMessageId).toBe(2);
+        expect(canAppendToActiveStoryPath(branched, migrated.messages)).toBe(true);
+        expect(migrated.messages).toHaveLength(3);
+    });
+
+    it('切到有后续的历史节点时禁止隐式续写', () => {
+        const switched = switchStoryTimelineTo(migrated.entry, migrated.messages[1], 20);
+        expect(canAppendToActiveStoryPath(switched, migrated.messages)).toBe(false);
+    });
+
+    it('兄弟分支只把当前祖先链送入会话', () => {
+        const root = migrated.entry.timeline!.rootBranchId;
+        const rows = [
+            ...migrated.messages,
+            message(4, 'assistant', { storyParentMessageId: 2, storyBranchId: 'branch-b' }),
+        ];
+        const branchEntry: StoryTheaterEntry = {
+            ...migrated.entry,
+            timeline: {
+                ...migrated.entry.timeline!,
+                activeBranchId: 'branch-b',
+                activeCursorMessageId: 4,
+                branches: [...migrated.entry.timeline!.branches, { id: 'branch-b', name: '另一场雨', parentBranchId: root, forkMessageId: 2, createdAt: 2, updatedAt: 2 }],
+            },
+        };
+        expect(activeStoryPath(branchEntry, rows).map(item => item.id)).toEqual([1, 2, 4]);
+        expect(storyPathToMessage(rows, 3).map(item => item.id)).toEqual([1, 2, 3]);
+    });
+
+    it('损坏的循环 parent 不会造成无限循环', () => {
+        const rows = [message(1, 'user', { storyParentMessageId: 2, storyBranchId: 'x' }), message(2, 'assistant', { storyParentMessageId: 1, storyBranchId: 'x' })];
+        expect(storyPathToMessage(rows, 2).map(item => item.id)).toEqual([1, 2]);
+    });
+});
+
+describe('分支归档隔离', () => {
+    const rows = [
+        message(1, 'user', { storyParentMessageId: null, storyBranchId: 'root' }),
+        message(2, 'assistant', { storyParentMessageId: 1, storyBranchId: 'root' }),
+        message(3, 'user', { storyParentMessageId: 2, storyBranchId: 'a' }),
+        message(4, 'user', { storyParentMessageId: 2, storyBranchId: 'b' }),
+    ];
+    const archive = { id: 'archive-a', strategy: 'summary' as const, fromMessageId: 1, toMessageId: 3, messageCount: 3, messageIds: [1, 2, 3], branchId: 'a', summary: 'A 路线', createdAt: 1 };
+
+    it('只有完整包含精确楼层序列的路径才应用事件盒', () => {
+        expect(archiveAppliesToStoryPath(archive, storyPathToMessage(rows, 3))).toBe(true);
+        expect(archiveAppliesToStoryPath(archive, storyPathToMessage(rows, 4))).toBe(false);
+        const scoped = { ...entry(), timeline: { version: 1 as const, rootBranchId: 'root', activeBranchId: 'b', activeCursorMessageId: 4, branches: [] }, archives: [archive] };
+        expect(applicableStoryArchives(scoped, storyPathToMessage(rows, 4))).toEqual([]);
+    });
+
+    it('子树删除只包含后代，不误删共享祖先和兄弟路线', () => {
+        expect(storyDescendantIds(rows, 3)).toEqual([3]);
+        expect(new Set(storyDescendantIds(rows, 2))).toEqual(new Set([2, 3, 4]));
+    });
+});
+
+describe('大规模剧情树', () => {
+    it('1000 个节点仍能在线性时间内恢复当前路径', () => {
+        const root = 'root';
+        const rows = Array.from({ length: 1000 }, (_, index) => message(index + 1, index % 2 ? 'assistant' : 'user', { storyParentMessageId: index === 0 ? null : index, storyBranchId: root }));
+        const path = storyPathToMessage(rows, 1000);
+        expect(path).toHaveLength(1000);
+        expect(path[0].id).toBe(1);
+        expect(path.at(-1)?.id).toBe(1000);
+    });
+});
 
 const realTime = new Date('2026-10-10T18:48:00Z').getTime();
 const futureTime = new Date('2026-10-22T18:48:00Z').getTime();

@@ -8,6 +8,17 @@ import type {
 
 export type WorldbookLike = Worldbook | MountedWorldbook;
 
+export const isMountedWorldbookUsable = (book: MountedWorldbook): boolean => book.mountPaused !== true;
+
+export const setMountedWorldbookGroupPaused = (
+    current: MountedWorldbook[], ids: ReadonlySet<string>, paused: boolean,
+): MountedWorldbook[] => current.map(book => {
+    if (!ids.has(book.id)) return book;
+    if (paused) return { ...book, mountPaused: true };
+    const { mountPaused, ...rest } = book;
+    return rest;
+});
+
 export interface WorldbookScanMessage {
     role?: string;
     content: unknown;
@@ -104,7 +115,10 @@ export const upsertMountedWorldbooks = (
     const incomingIds = new Set(books.map(book => book.id));
     return [
         ...current.filter(book => !incomingIds.has(book.id)),
-        ...books.map(toMountedWorldbook),
+        ...books.map(book => {
+            const existing = current.find(mounted => mounted.id === book.id);
+            return { ...toMountedWorldbook(book), ...(existing?.mountPaused === true ? { mountPaused: true } : {}) };
+        }),
     ];
 };
 
@@ -165,7 +179,7 @@ export const isWorldbookEntryActive = (
     book: WorldbookLike,
     messages: WorldbookScanMessage[] = [],
 ): boolean => {
-    if (book.disable) return false;
+    if (book.disable || ('mountPaused' in book && book.mountPaused === true)) return false;
 
     const primary = book.key || [];
     const isConstant = book.constant ?? primary.length === 0;
@@ -188,12 +202,21 @@ export const isWorldbookEntryActive = (
     return true;
 };
 
-export const expandWorldbookMacros = (content: string, charName: string, userName: string): string => {
+/**
+ * 通用角色卡宏展开：{{char}} / {{user}}。
+ *
+ * 存储侧（角色 systemPrompt/worldview、世界书条目、Tavern 导入）一律保留宏原文，
+ * 只在真正构造 LLM prompt 的路径上调用本函数；charName/userName 为空时对应宏原样保留。
+ */
+export const expandPromptMacros = (content: string, charName: string, userName: string): string => {
     let expanded = content;
     if (charName) expanded = expanded.replace(/{{\s*char\s*}}/gi, charName);
     if (userName) expanded = expanded.replace(/{{\s*user\s*}}/gi, userName);
     return expanded;
 };
+
+/** 兼容旧名：世界书条目展开与通用宏展开是同一套语义。 */
+export const expandWorldbookMacros = expandPromptMacros;
 
 export const resolveWorldbookEntries = (
     books: WorldbookLike[] = [],

@@ -1,4 +1,6 @@
 [build]
+  # 只允许需要时从本机手动发布；Git 连续部署继续跳过，避免每次 push 消耗额度。
+  ignore = "true"
   functions = "netlify/functions"
   publish = "dist"
 

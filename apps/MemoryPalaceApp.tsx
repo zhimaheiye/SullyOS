@@ -13,6 +13,7 @@ import { MainApiMemoryChoice, SkipVectorMemoryChoice } from '../components/Memor
 import { useFirstUseGuideStep, GUIDE_SULLY_ID } from '../utils/firstUseGuide';
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useOS } from '../context/OSContext';
+import { loadFeatureApiSettings, resolveFeatureApi, saveFeatureApiSetting } from '../utils/featureApi';
 import {
     MemoryRoom, MemoryNode, ROOM_CONFIGS, ROOM_LABELS, getRoomLabel,
     MemoryNodeDB, AnticipationDB, MemoryLinkDB, EventBoxDB,
@@ -674,7 +675,18 @@ const MemoryWaterlineEditor: React.FC<{
 
 export default function MemoryPalaceApp() {
     const guideStep = useFirstUseGuideStep();
-    const { activeCharacterId, characters, updateCharacter, setActiveCharacterId, closeApp, apiPresets, userProfile, memoryPalaceConfig, updateMemoryPalaceConfig, remoteVectorConfig, updateRemoteVectorConfig, addToast, apiConfig, characterGroups, groups, realtimeConfig } = useOS();
+    const { activeCharacterId, characters, updateCharacter, setActiveCharacterId, closeApp, apiPresets, userProfile, memoryPalaceConfig: storedMemoryPalaceConfig, updateMemoryPalaceConfig, remoteVectorConfig, updateRemoteVectorConfig, addToast, apiConfig, characterGroups, groups, realtimeConfig } = useOS();
+    const [featureApiRevision, setFeatureApiRevision] = useState(0);
+    useEffect(() => {
+        const refresh = () => setFeatureApiRevision(value => value + 1);
+        window.addEventListener('sully-feature-api-changed', refresh);
+        return () => window.removeEventListener('sully-feature-api-changed', refresh);
+    }, []);
+    const memoryPalaceConfig = useMemo(() => ({ ...storedMemoryPalaceConfig,
+        lightLLM: resolveFeatureApi('memoryLight', { mainApi: apiConfig, memoryApi: storedMemoryPalaceConfig.lightLLM }).api || { baseUrl: '', apiKey: '', model: '' },
+    }), [storedMemoryPalaceConfig, apiConfig, featureApiRevision]);
+    const savedLightInitial = loadFeatureApiSettings().memoryLight;
+    const lightInitial = savedLightInitial?.mode === 'independent' ? savedLightInitial.api : memoryPalaceConfig.lightLLM;
     const char = characters.find(c => c.id === activeCharacterId);
     const [selectGroupId, setSelectGroupId] = useState(GROUP_FILTER_ALL); // 选角色页的分组筛选
 
@@ -896,9 +908,9 @@ export default function MemoryPalaceApp() {
     const [testResult, setTestResult] = useState<string | null>(null);
 
     // 副 API 配置（全局配置）
-    const [lightUrl, setLightUrl] = useState(memoryPalaceConfig.lightLLM.baseUrl || '');
-    const [lightKey, setLightKey] = useState(memoryPalaceConfig.lightLLM.apiKey || '');
-    const [lightModel, setLightModel] = useState(memoryPalaceConfig.lightLLM.model || '');
+    const [lightUrl, setLightUrl] = useState(lightInitial.baseUrl || '');
+    const [lightKey, setLightKey] = useState(lightInitial.apiKey || '');
+    const [lightModel, setLightModel] = useState(lightInitial.model || '');
     const [lightSaved, setLightSaved] = useState(false);
     const [testingLight, setTestingLight] = useState(false);
     const [lightTestResult, setLightTestResult] = useState<string | null>(null);
@@ -927,9 +939,11 @@ export default function MemoryPalaceApp() {
         setEmbKey(memoryPalaceConfig.embedding.apiKey || '');
         setEmbModel(memoryPalaceConfig.embedding.model || 'BAAI/bge-m3');
         setEmbDimensions(memoryPalaceConfig.embedding.dimensions || 1024);
-        setLightUrl(memoryPalaceConfig.lightLLM.baseUrl || '');
-        setLightKey(memoryPalaceConfig.lightLLM.apiKey || '');
-        setLightModel(memoryPalaceConfig.lightLLM.model || '');
+        const featureLight = loadFeatureApiSettings().memoryLight;
+        const effectiveLight = featureLight?.mode === 'independent' ? featureLight.api : memoryPalaceConfig.lightLLM;
+        setLightUrl(effectiveLight.baseUrl || '');
+        setLightKey(effectiveLight.apiKey || '');
+        setLightModel(effectiveLight.model || '');
         setRrEnabled(!!memoryPalaceConfig.rerank?.enabled);
         setRrUrl(memoryPalaceConfig.rerank?.baseUrl || '');
         setRrKey(memoryPalaceConfig.rerank?.apiKey || '');
@@ -1539,8 +1553,8 @@ export default function MemoryPalaceApp() {
             apiKey: lightKey.trim(),
             model: lightModel.trim(),
         };
-        // 只写全局 lightLLM；与情绪 API（emotionConfig.api）完全独立，互不影响。
-        updateMemoryPalaceConfig({ lightLLM: api });
+        // 与系统设置的记忆宫殿功能卡写同一份配置；旧 lightLLM 留作跟随来源。
+        saveFeatureApiSetting('memoryLight', { mode: 'independent', api });
         setLightSaved(true);
         setTimeout(() => setLightSaved(false), 2000);
     };
@@ -2942,6 +2956,9 @@ export default function MemoryPalaceApp() {
         </React.Suspense>;
     }
 
+    if (!char && view !== 'globalSettings') {
+        return null;
+    }
     // ─── 未启用记忆宫殿 ─────────────────────────────────
     // 走到这里时只有全局配置页可能没有 char（上面的 picker 分支兜住了其它 view），
     // 下面各个角色视图都带上 char 判断，免得从选人页直接进全局配置时读空角色崩掉
@@ -3202,7 +3219,7 @@ export default function MemoryPalaceApp() {
                         <span>副 API（后台处理用）</span>
                     </div>
                     <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 10, lineHeight: 1.6 }}>
-                        用于<b>记忆提取、关联分析、认知消化</b>等后台任务。此配置全局生效，所有角色共用。
+                        用于<b>记忆提取、关联分析、认知消化</b>等后台任务。这里与「系统设置 → 副 API 管理 → 记忆宫殿轻量分析」保存到同一份功能配置，所有角色共用。
                         <span style={{ color: '#9ca3af' }}>仅作用于记忆宫殿相关流程，不影响主聊天，也不影响情绪感知。</span>
                     </div>
                     <MainApiMemoryChoice />
@@ -3211,7 +3228,7 @@ export default function MemoryPalaceApp() {
                         border: '1px solid #fed7aa', borderRadius: 8, padding: '6px 8px',
                         marginBottom: 12, lineHeight: 1.6,
                     }}>
-                        下方<b>不填</b>（URL 留空）时，记忆宫殿会<b>自动回退用主 API</b> 跑后台处理。
+                        沿用原有来源时，先使用旧版记忆宫殿轻量副 API；旧版未配置才使用主 API。下方保存会切换为本功能独立配置。
                         想让后台任务走更便宜的账户 / 不想占主 API 额度，就在这里填一个便宜模型。
                         看不懂怎么选？直接挑一个<b>每百万 token 几毛钱</b>的模型即可，后台任务不需要推理能力。
                     </div>}
@@ -4965,6 +4982,8 @@ create table if not exists memory_vectors (
             </div>
         );
     }
+ 
+    if (!char) return null;
 
     // ─── 宫殿概览视图 ────────────────────────────────
 

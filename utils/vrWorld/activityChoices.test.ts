@@ -53,20 +53,18 @@ describe('自由活动排除',()=>{
         expect(sample(true).filter(a=>a==='garden')).toHaveLength(20);
         expect(sample(true).filter(a=>a==='module-shop')).toHaveLength(1);
     });
-    it('未实现的空间和特别活动不进入普通随机池',()=>{
-        for(let i=0;i<100;i++)expect(['cafe','signal']).not.toContain(rollRoom(char(),[],null,undefined,()=>i/100));
+    it('未实现的空间不进入普通随机池',()=>{
+        for(let i=0;i<100;i++)expect(rollRoom(char(),[],null,undefined,()=>i/100)).not.toBe('cafe');
     });
     it('活动落库不覆盖运行期间刚改的排除项',()=>{
         const latest=char({excludedAutoRooms:['sar'],excludedAutoSARActivities:['cabinet']});
         expect(withLatestVRParticipation(latest,{vrState:char().vrState}).vrState).toMatchObject({excludedAutoRooms:['sar'],excludedAutoSARActivities:['cabinet']});
     });
-    it('手动子活动通过调度器完整传递，旧邮局参数位置保持不变',()=>{
+    it('手动子活动通过调度器完整传递',()=>{
         vi.stubGlobal('document',{visibilityState:'hidden',addEventListener(){},removeEventListener(){}});
         vi.stubGlobal('window',{addEventListener(){},removeEventListener(){}});
         const trigger=vi.fn();VRScheduler.onTrigger(trigger);
-        VRScheduler.triggerNow('choices','sar',undefined,'module-shop');
-        expect(trigger).toHaveBeenLastCalledWith('choices','sar',undefined,true,'module-shop');
-        VRScheduler.triggerNow('choices','postoffice','letter-1');
-        expect(trigger).toHaveBeenLastCalledWith('choices','postoffice','letter-1',true);
+        VRScheduler.triggerNow('choices','sar','module-shop');
+        expect(trigger).toHaveBeenLastCalledWith('choices','sar',true,'module-shop');
     });
 });

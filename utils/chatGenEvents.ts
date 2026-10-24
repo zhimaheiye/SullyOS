@@ -86,7 +86,7 @@ export const CHAT_VIEW_CHANGED_EVENT = 'chat-view-changed';
 interface ChatViewSnapshot {
     /** 当前是否开着 Chat App */
     chatOpen: boolean;
-    /** Chat App 当前会话的角色 id（chatOpen=false 时无意义） */
+    /** 当前真正显示的私聊角色；null 表示 recent 等非私聊详情，chatOpen=false 时也为 null */
     charId: string | null;
 }
 
@@ -119,4 +119,9 @@ export function getChatViewSnapshot(): ChatViewSnapshot {
         return {chatOpen: true, charId: [...embeddedChatViews.values()].at(-1)!};
     }
     return chatView;
+}
+
+/** 用户此刻是否真的在看这个角色的私聊：整屏 Chat 详情，或家园小手机这类内嵌聊天。 */
+export function isPrivateChatActivelyVisible(charId: string): boolean {
+    return (chatView.chatOpen && chatView.charId === charId) || isEmbeddedChatVisible(charId);
 }

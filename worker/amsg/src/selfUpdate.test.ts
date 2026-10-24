@@ -185,6 +185,7 @@ describe('handleSelfUpdate 上传时带的 metadata', () => {
           CF_SCRIPT_NAME: 'sullyos-amsg',
           CF_ACCOUNT_ID: 'acc-1',
           AMSG_MASTER_KEY: 'mk',
+          AMSG_BUNDLE_URL: 'https://raw.githubusercontent.com/example/worker/main/worker.bundle.js',
         } as any,
       );
       return { result, calls };
@@ -218,21 +219,19 @@ describe('handleSelfUpdate 上传时带的 metadata', () => {
 });
 
 describe('resolveBundleUrl', () => {
-  const official = 'https://raw.githubusercontent.com/Tosd0/sullyos-workers/main/amsg/worker.bundle.js';
-
-  it('不配就是官方成品包', () => {
-    expect(resolveBundleUrl({})).toBe(official);
-    expect(resolveBundleUrl({ AMSG_BUNDLE_URL: '   ' })).toBe(official);
+  it('不配就没有成品包来源（公开版不默认指向第三方仓库）', () => {
+    expect(resolveBundleUrl({})).toBeNull();
+    expect(resolveBundleUrl({ AMSG_BUNDLE_URL: '   ' })).toBeNull();
   });
 
-  it('配了 https 地址就取那儿（fork / 测试 Worker 用）', () => {
+  it('配了 https 地址就用它', () => {
     expect(resolveBundleUrl({ AMSG_BUNDLE_URL: 'https://example.com/x/worker.bundle.js' })).toBe('https://example.com/x/worker.bundle.js');
   });
 
-  it('不是 https 一律回落到官方，别把明文 http 或乱填的东西当成品包源', () => {
+  it('不是 https 一律当作未配置，别把明文 http 或乱填的东西当成品包源', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
-    expect(resolveBundleUrl({ AMSG_BUNDLE_URL: 'http://example.com/w.js' })).toBe(official);
-    expect(resolveBundleUrl({ AMSG_BUNDLE_URL: 'not a url' })).toBe(official);
+    expect(resolveBundleUrl({ AMSG_BUNDLE_URL: 'http://example.com/w.js' })).toBeNull();
+    expect(resolveBundleUrl({ AMSG_BUNDLE_URL: 'not a url' })).toBeNull();
   });
 });
 

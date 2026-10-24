@@ -12,7 +12,7 @@
  * （worker/amsg/src/selfUpdate.ts），能保住密钥；这里是从零装，密钥是新生成的。
  */
 
-import { getProxyWorkerUrl } from './proxyWorker';
+import { requireProxyWorkerUrl } from './proxyWorker';
 import { generateVapidKeyPair, generateClientToken } from './vapidGen';
 
 /** 部署出来的 Worker / D1 默认叫这个，跟 worker/amsg/wrangler.toml 对齐。 */
@@ -22,9 +22,45 @@ export const AMSG_D1_NAME = 'sullyos-amsg';
 /** 上传时的模块名，同时是 metadata.main_module，两处必须一致。 */
 const MAIN_MODULE = 'worker.bundle.js';
 
-const BUNDLE_BASE = 'https://raw.githubusercontent.com/Tosd0/sullyos-workers/main/amsg';
-const BUNDLE_URL = `${BUNDLE_BASE}/${MAIN_MODULE}`;
-const WRANGLER_URL = `${BUNDLE_BASE}/wrangler.toml`;
+/**
+ * 随站点一起发布的成品代码与配置。公开版只从当前站点同源读取，不默认拉取任何
+ * 第三方仓库；站点构建会产出这两个文件（见 scripts/build-workers.mjs）。
+ */
+const BUNDLED_BUNDLE_FILE = 'amsg-worker.bundle.js';
+const BUNDLED_WRANGLER_FILE = 'amsg-wrangler.toml';
+
+function bundledAssetUrl(file: string, baseUrl?: string): string | null {
+  const base = baseUrl ?? (typeof document !== 'undefined' ? document.baseURI : undefined);
+  if (!base) return null;
+  try {
+    return new URL(file, base).toString();
+  } catch {
+    return null;
+  }
+}
+
+/** 一键部署上传用的成品包地址（同源静态资源）。 */
+export function shippedBundleUrl(baseUrl?: string): string | null {
+  return bundledAssetUrl(BUNDLED_BUNDLE_FILE, baseUrl);
+}
+
+/**
+ * 自更新要一个 Worker 自己能访问的 https 地址。从本机或局域网打开站点时没有这种
+ * 地址，返回 null；此时前端不会写 AMSG_BUNDLE_URL，Worker 侧会明确要求显式配置。
+ */
+export function publicSelfUpdateBundleUrl(baseUrl?: string): string | null {
+  const raw = bundledAssetUrl(BUNDLED_BUNDLE_FILE, baseUrl);
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'https:') return null;
+    const host = url.hostname.toLowerCase();
+    if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host.endsWith('.local')) return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
 
 /**
  * 读不到线上 wrangler.toml 时用的兜底，值抄自 worker/amsg/wrangler.toml。
@@ -93,6 +129,10 @@ export interface ProvisionInput {
   databaseName?: string;
   /** 复用已有密钥（重装时传，避免换掉 Master Key 让旧任务解不开）。 */
   secrets?: Partial<AmsgSecrets>;
+  /** 成品包地址；默认取当前站点同源发布的 amsg-worker.bundle.js。 */
+  bundleUrl?: string;
+  /** 写进 Worker、供自更新使用的公网成品包地址；本机/局域网打开时留空。 */
+  selfUpdateBundleUrl?: string;
   onProgress?: (p: ProvisionProgress) => void;
 }
 
@@ -334,7 +374,7 @@ interface CfResponse<T = unknown> {
 }
 
 const relayUrl = (apiPath: string): string =>
-  `${getProxyWorkerUrl()}/cf-api?path=${encodeURIComponent(apiPath)}`;
+  `${requireProxyWorkerUrl()}/cf-api?path=${encodeURIComponent(apiPath)}`;
 
 async function cfApi<T = unknown>(
   token: string,
@@ -427,7 +467,7 @@ export async function uploadWorkerScript(
 /** 当前生效的网络代理 Worker 支不支持一键部署（老版本没有 /cf-api 这条路由）。 */
 export async function checkRelayAvailable(): Promise<boolean> {
   try {
-    const res = await fetch(`${getProxyWorkerUrl()}/cf-api`, { method: 'GET' });
+    const res = await fetch(`${requireProxyWorkerUrl()}/cf-api`, { method: 'GET' });
     if (!res.ok) return false;
     const body = (await res.json()) as { relay?: string };
     return body?.relay === 'cf-api';
@@ -601,10 +641,14 @@ export async function ensureSubdomain(
   return { ok: true, subdomain: desired.trim().toLowerCase() };
 }
 
-async function fetchBundle(): Promise<{ ok: true; code: string; config: WorkerDeployConfig } | { ok: false; error: string }> {
+export async function fetchBundle(
+  bundleUrl?: string,
+): Promise<{ ok: true; code: string; config: WorkerDeployConfig } | { ok: false; error: string }> {
+  const url = bundleUrl?.trim() || shippedBundleUrl();
+  if (!url) return { ok: false, error: '当前页面找不到随站点发布的 Worker 代码，无法部署。' };
   let code: string;
   try {
-    const res = await fetch(BUNDLE_URL, { cache: 'no-store' });
+    const res = await fetch(url, { cache: 'no-store' });
     if (!res.ok) return { ok: false, error: `拉取 Worker 代码失败（HTTP ${res.status}）。` };
     code = await res.text();
   } catch (e) {
@@ -618,11 +662,14 @@ async function fetchBundle(): Promise<{ ok: true; code: string; config: WorkerDe
     return { ok: false, error: '拉到的文件不像是打包好的 Worker，没敢往上传。' };
   }
 
-  // 配置跟着 bundle 一起从线上拿，拿不到就用兜底，不因为这个中断部署。
+  // 配置从同源发布的配置副本读；拿不到就用兜底，不因为这个中断部署。
   let config = FALLBACK_CONFIG;
+  const wranglerUrl = bundledAssetUrl(BUNDLED_WRANGLER_FILE);
   try {
-    const res = await fetch(WRANGLER_URL, { cache: 'no-store' });
-    if (res.ok) config = parseWranglerConfig(await res.text());
+    if (wranglerUrl) {
+      const res = await fetch(wranglerUrl, { cache: 'no-store' });
+      if (res.ok) config = parseWranglerConfig(await res.text());
+    }
   } catch {
     /* 用兜底 */
   }
@@ -695,6 +742,8 @@ export async function attachUpdateCapability(input: {
   /** 地址是自定义域名 / 代理时认不出来，由界面问出来再传进来。 */
   scriptName?: string;
   accountId?: string;
+  /** 自己审核过的成品包公网 https 地址；留空则只补钥匙，不写自更新来源。 */
+  bundleUrl?: string;
   onProgress?: (p: ProvisionProgress) => void;
 }): Promise<
   | { ok: true; accountId: string; scriptName: string }
@@ -774,9 +823,12 @@ export async function attachUpdateCapability(input: {
   }
 
   report('upload', '写入更新用的钥匙…');
-  // 两条：token 本身，外加脚本名——地址套了代理时 Worker 认不出自己叫什么，
-  // 显式写进去它才知道要更新哪一个。
-  for (const [name, text] of [['CF_API_TOKEN', token], ['CF_SCRIPT_NAME', scriptName]]) {
+  // token、脚本名，以及（有公网地址时）成品包来源。地址套了代理时 Worker 认不出
+  // 自己叫什么，显式写进去它才知道要更新哪一个；成品包地址不写就取不到更新代码。
+  const secretsToWrite: Array<[string, string]> = [['CF_API_TOKEN', token], ['CF_SCRIPT_NAME', scriptName]];
+  const bundleUrl = input.bundleUrl?.trim();
+  if (bundleUrl && /^https:\/\//i.test(bundleUrl)) secretsToWrite.push(['AMSG_BUNDLE_URL', bundleUrl]);
+  for (const [name, text] of secretsToWrite) {
     const written = await cfApi(token, `${scriptPath(accountId)}/secrets`, {
       method: 'PUT',
       body: JSON.stringify({ name, text, type: 'secret_text' }),
@@ -858,22 +910,23 @@ export async function provisionAmsgBackend(input: ProvisionInput): Promise<Provi
   const sub = await ensureSubdomain(token, accountId, input.desiredSubdomain);
   if (!sub.ok) return { ok: false, code: sub.code, message: sub.error };
 
-  report('bundle', '下载最新的后端代码…');
-  const bundle = await fetchBundle();
+  report('bundle', '读取随站点发布的后端代码…');
+  const bundle = await fetchBundle(input.bundleUrl);
   if (!bundle.ok) return { ok: false, code: 'BUNDLE_INVALID', message: bundle.error };
 
   report('upload', '上传 Worker…');
   const secrets = await generateAmsgSecrets(input.secrets);
+  const updateExtras: Record<string, string> = { CF_API_TOKEN: token, CF_SCRIPT_NAME: scriptName };
+  const selfUpdateBundleUrl = input.selfUpdateBundleUrl?.trim();
+  if (selfUpdateBundleUrl && /^https:\/\//i.test(selfUpdateBundleUrl)) {
+    updateExtras.AMSG_BUNDLE_URL = selfUpdateBundleUrl;
+  }
   const metadata = {
     main_module: MAIN_MODULE,
     compatibility_date: bundle.config.compatibilityDate,
     compatibility_flags: bundle.config.compatibilityFlags,
-    // CF_API_TOKEN / CF_SCRIPT_NAME 是留给「更新后端」用的：worker 以后拿它自己
-    // 覆盖自己，就不用再经过浏览器和中转了。
-    bindings: buildBindings(bundle.config.d1Binding, db.id, secrets, {
-      CF_API_TOKEN: token,
-      CF_SCRIPT_NAME: scriptName,
-    }),
+    // 这几项是留给「更新后端」用的：worker 以后拿它们覆盖自己，不经过浏览器和中转。
+    bindings: buildBindings(bundle.config.d1Binding, db.id, secrets, updateExtras),
     // 实时日志（面板上的 Workers Logs）默认是关的，amsg 排障全靠它。
     // 官方的 multipart-upload-metadata 文档没把 observability 列进合法字段，但实测是认的
     // ——上传 enabled:false 能关掉、true 能开起来、不带就没有，三向都验过。

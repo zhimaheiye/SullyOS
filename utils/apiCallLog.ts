@@ -19,6 +19,10 @@
 
 /** 调用方可补充的语义信息（哪个 App / 角色 / 用途）。能填多少填多少。 */
 export interface ApiCallMeta {
+    /** Foreground manual relay eligibility; background requests never claim an armed relay. */
+    relayPriority?: 'user' | 'background';
+    /** 文本副 API 功能的稳定标识，不含凭据或提示词。 */
+    featureId?: string;
     /** AppID 字符串，如 'chat' / 'lifesim'，可空 */
     appId?: string;
     /** App 显示名，如 '消息' / '记忆宫殿'，列表里直接展示这个 */
@@ -1028,6 +1032,7 @@ export function recordApiCall(input: {
             charId: meta.charId,
             charName: meta.charName,
             purpose: meta.purpose,
+            featureId: meta.featureId,
         };
         // 动态 import 避开 safeApi ↔ db 的潜在加载顺序问题；写库失败静默吞掉。
         import('./db')

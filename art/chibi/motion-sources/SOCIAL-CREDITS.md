@@ -35,7 +35,7 @@ VMD 的原模型名为 Tda Base，但包内不含其角色骨架。为本地试�
 
 用户提交 `sully-motion-selection.json` 并明确说“这些可以”。**39 项均已确认原片**（包含原 01/02/03，新增 36 项），不能因导出时 `approvedSource:false` 而忽略本次口头确认。已逐项匹配本地目录的 ID / 文件路径，保存 [social-approved-selection.json](social-approved-selection.json)（含原导出 SHA256）。目录生成器重建后仍保留全部 39 项；页面“已确认”过滤和再次导出也保留它们。未选项留作备选，不擅自当作删除要求。此次确认仍仅针对源动作，并非适配后的身体、衣物和身高差验收。
 
-情侣新候选及实际状态见 [couple-candidates.json](couple-candidates.json)，并呈现在动作库 `#couple-candidates`。本轮新增 **8 组候选，其中 1 个包已实际下载**：
+情侣新候选及实际状态见 `couple-candidates.json`（原始整理文件未随公开版分发），并呈现在动作库 `#couple-candidates`。本轮新增 **8 组候选，其中 1 个包已实际下载**：
 
 - **AIRYAA / Hug Me**：[作者原演示](https://www.youtube.com/watch?v=v1BfTlZNxg0)公开描述提供 MediaFire 原始链接。4,967,905-byte ZIP 已存 `output/social-motion-intake/couple-research/AIRYAA-100-subs-special.zip`，SHA256 `cb628172c92c9a0dd7d1e755d4b98f94df6b73f06641d79dcf4297695b7d21a3`。原包中的 `1st model.vmd`（28.2s）、`2nd model.vmd`（28.533s）及 `the wooo one.vmd`（25.7s）已提取、用 mmd-parser 完整解析并检查骨关键帧有限数值；后者是额外角色轨，不计为第三对拥抱。附带 readme 要求署名/链接作者视频、禁止再分发，允许为适配模型修改。本地审片保存，不发布原始动作或附带音频。VMD 不含完整角色静止骨架，未强行当 BVH/VRMA 播放；未完成 MMD 角色适配，也未确认剧情能裁为自然拥抱循环。
 - **RBStudio / [250+ Romantic Animations For Couples](https://www.fab.com/listings/e5db9476-93c1-4d2c-b1c6-4cb33ef68776)**：站/坐/躺拥抱与轻吻、双方同步的停留与衔接片段，第 1 包明确列 FBX；Part 2/3 原页仅明确 Unreal 格式。付费未购买，数量含双方和过渡，不是 250 对独立动作。网页 AI 标记不擅自解释成一切 AI 应用禁用；产品引入时核对具体许可。

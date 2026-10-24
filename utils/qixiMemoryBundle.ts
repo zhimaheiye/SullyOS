@@ -6,6 +6,7 @@ import { injectMemoryPalace } from './memoryPalace/pipeline';
 import { safeFetchJson } from './safeApi';
 import { parseQixiJsonObject } from './qixiJson';
 import { parseQixiBridge, type QixiBridgeBundle } from './qixiBridge';
+import { inspectQixiResponse, warnQixiResponseRejected } from './qixiResponse';
 
 export const QIXI_MEMORY_BUNDLE_VERSION = 19 as const;
 export const QIXI_MEMORY_BUNDLE_PREFIX = 'sullyos_qixi_memory_bundle_v19_';
@@ -197,7 +198,7 @@ export function createQixiFallbackBundle(contextSignature = '', charLayerColor =
         reveal: '',
         artifactIds: [],
         charSelectionIds: [],
-    }])) as Record<QixiSceneId, QixiScenePayload>;
+    }])) as unknown as Record<QixiSceneId, QixiScenePayload>;
     return {
         version: QIXI_MEMORY_BUNDLE_VERSION,
         source: 'fallback',
@@ -379,6 +380,67 @@ export function normalizeQixiPhaseChunk(value: unknown, requiredIds: readonly Qi
         ...(bridge !== undefined ? { bridge } : {}),
     };
 }
+
+interface QixiPhaseResponse {
+    content: string;
+    finishReason: string;
+    chunk: any | null;
+}
+
+const hasQixiCollection = (value: unknown): boolean => Array.isArray(value)
+    ? value.length > 0
+    : Boolean(value && typeof value === 'object' && Object.keys(value as Record<string, unknown>).length);
+
+const hasPlayablePhaseScenes = (value: any, requiredIds: readonly QixiSceneId[]): boolean => (
+    Boolean(directRecord(value?.scenes))
+    && requiredIds.every(sceneId => {
+        if (!looksLikeGeneratedScene(value.scenes[sceneId])) return false;
+        const scene = normalizeDirectScene(sceneId, value.scenes[sceneId]);
+        if (!scene.sharedObject || !scene.memoryLine || !scene.charAction || !scene.reveal) return false;
+        if (sceneId === 'wordCloud') return scene.artifactIds.length > 0 || scene.charSelectionIds.length > 0;
+        return scene.options.length > 0 && scene.options.every(option => (
+            Boolean(option.label && option.result)
+            && (sceneId !== 'lostLayer' || Boolean(option.charReply))
+        ));
+    })
+);
+
+const hasPlayableQixiBridge = (value: any): boolean => {
+    const bridge = directRecord(value?.bridge);
+    if (!bridge) return false;
+    const hasPlayableSide = (side: unknown): boolean => {
+        const entries = directList(side);
+        return entries.length > 0 && entries.every(entry => (
+            Boolean(directText(entry?.name) && directText(entry?.memory))
+        ));
+    };
+    const finalMagpie = directRecord(bridge.finalMagpie);
+    return hasPlayableSide(bridge.userMagpies)
+        && hasPlayableSide(bridge.charMagpies)
+        && Boolean(finalMagpie && directText(finalMagpie.name) && directText(finalMagpie.line));
+};
+
+const readQixiPhaseResponse = (
+    data: any,
+    requiredIds: readonly QixiSceneId[],
+    requireBridge = false,
+): QixiPhaseResponse => {
+    const inspection = inspectQixiResponse(data);
+
+    for (const candidate of inspection.candidates) {
+        const chunk = normalizeQixiPhaseChunk(parseQixiJsonObject(candidate.text), requiredIds);
+        if (chunk && hasPlayablePhaseScenes(chunk, requiredIds) && (!requireBridge || hasPlayableQixiBridge(chunk))) {
+            return { content: candidate.text, finishReason: inspection.finishReason, chunk };
+        }
+    }
+
+    warnQixiResponseRejected('phase', data, inspection);
+    return {
+        content: inspection.candidates[0]?.text || '',
+        finishReason: inspection.finishReason,
+        chunk: null,
+    };
+};
 
 /**
  * Qixi uses the same generation philosophy as the earlier special events:
@@ -707,7 +769,12 @@ export async function prepareQixiMemoryBundle(
         const recent = formatRecentMessages(messages);
 
         const endpoint = `${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`;
-        const requestPhase = async (phase: 'first' | 'second' | 'third', userContent: string) => {
+        const requestPhase = async (
+            phase: 'first' | 'second' | 'third',
+            userContent: string,
+            requiredIds: readonly QixiSceneId[],
+            requireBridge = false,
+        ) => {
             const data = await safeFetchJson(
                 endpoint,
                 {
@@ -720,9 +787,8 @@ export async function prepareQixiMemoryBundle(
                         ])),
                         temperature: 0.68,
                         max_tokens: 32000,
-                        // 七夕首轮内容较长。强制使用流式传输，让上游尽早返回响应头/数据片段，
-                        // 避免 Claude 在完整生成结束前触发 Cloudflare 524。
-                        stream: true,
+                        // 与主聊天保持一致：兼容只支持非流式或流式实现不完整的中转。
+                        stream: !!apiConfig.stream,
                     }),
                 },
                 0,
@@ -730,25 +796,18 @@ export async function prepareQixiMemoryBundle(
                 { appId: 'special-moments', charId: char.id, purpose: `qixi-dual-layer-part1${phase === 'first' ? 'a' : phase === 'second' ? 'b' : 'c-bridge'}-v19` },
                 {}, // Incremental SSE reader stops on [DONE] even if the proxy keeps the socket open.
             );
-            const content = data?.choices?.[0]?.message?.content;
-            const finishReason = data?.choices?.[0]?.finish_reason || 'unknown';
-            if (typeof content !== 'string') {
-                throw new Error(`Part 1 ${phase === 'first' ? '前两站' : phase === 'second' ? '中三站' : '后两站与鹊桥'}响应正文不是字符串（finish_reason=${finishReason}, output_chars=0）`);
+            const response = readQixiPhaseResponse(data, requiredIds, requireBridge);
+            if (!response.content) {
+                throw new Error(`Part 1 ${phase === 'first' ? '前两站' : phase === 'second' ? '中三站' : '后两站与鹊桥'}响应正文不是字符串（finish_reason=${response.finishReason}, output_chars=0）`);
             }
-            return { content, finishReason };
+            return response;
         };
-        const hasPlayablePhaseScenes = (value: any, requiredIds: readonly QixiSceneId[]) => (
-            directRecord(value?.scenes)
-            && requiredIds.every(sceneId => looksLikeGeneratedScene(value.scenes[sceneId]))
-        );
         const firstResponse = await requestPhase(
             'first',
             `[最近聊天片段，仅作事实来源]\n${recent || '（没有可用的最近聊天片段）'}\n\n${buildQixiMemoryBundlePhasePrompt(char, user, options.userLayerColor, 'first')}`,
-        );
-        const firstChunk = normalizeQixiPhaseChunk(
-            parseQixiJsonObject(firstResponse.content),
             QIXI_PART1_FIRST_SCENE_IDS,
         );
+        const firstChunk = firstResponse.chunk;
         if (!firstChunk || !hasPlayablePhaseScenes(firstChunk, QIXI_PART1_FIRST_SCENE_IDS)) {
             throw new Error(`Part 1 前两站正文无法读取（finish_reason=${firstResponse.finishReason}, output_chars=${firstResponse.content.length}）`);
         }
@@ -772,11 +831,9 @@ export async function prepareQixiMemoryBundle(
         const secondResponse = await requestPhase(
             'second',
             buildQixiMemoryBundlePhasePrompt(char, user, options.userLayerColor, 'second', continuationSeed),
-        );
-        const secondChunk = normalizeQixiPhaseChunk(
-            parseQixiJsonObject(secondResponse.content),
             QIXI_PART1_SECOND_SCENE_IDS,
         );
+        const secondChunk = secondResponse.chunk;
         if (!secondChunk || !hasPlayablePhaseScenes(secondChunk, QIXI_PART1_SECOND_SCENE_IDS)) {
             throw new Error(`Part 1 中三站正文无法读取（finish_reason=${secondResponse.finishReason}, output_chars=${secondResponse.content.length}）`);
         }
@@ -801,17 +858,13 @@ export async function prepareQixiMemoryBundle(
         const thirdResponse = await requestPhase(
             'third',
             buildQixiMemoryBundlePhasePrompt(char, user, options.userLayerColor, 'third', finalContinuationSeed),
-        );
-        const thirdChunk = normalizeQixiPhaseChunk(
-            parseQixiJsonObject(thirdResponse.content),
             QIXI_PART1_THIRD_SCENE_IDS,
+            true,
         );
-        const hasCollection = (value: unknown) => Array.isArray(value)
-            ? value.length > 0
-            : Boolean(value && typeof value === 'object' && Object.keys(value as Record<string, unknown>).length);
+        const thirdChunk = thirdResponse.chunk;
         if (!thirdChunk || !hasPlayablePhaseScenes(thirdChunk, QIXI_PART1_THIRD_SCENE_IDS)
-            || !hasCollection(thirdChunk.bridge?.userMagpies)
-            || !hasCollection(thirdChunk.bridge?.charMagpies)
+            || !hasQixiCollection(thirdChunk.bridge?.userMagpies)
+            || !hasQixiCollection(thirdChunk.bridge?.charMagpies)
             || !thirdChunk.bridge?.finalMagpie) {
             throw new Error(`Part 1 后两站与鹊桥结构无效（finish_reason=${thirdResponse.finishReason}, output_chars=${thirdResponse.content.length}）`);
         }
