@@ -2,7 +2,7 @@
 
 本仓库是基于上游 [SullyOS](https://github.com/qegj567-cloud/SullyOS) 的个人二改。许可文本仍是根目录 [LICENSE](../../LICENSE)。维护者已明确确认取得分享仓库链接和公开在线实例的授权；这不表示可以使用上游的在线服务。最终功能范围见 [公开版范围](../public-release.md)。
 
-本次明确授权发布到公开 Fork 的 GitHub Pages。默认推送禁用配置必须保留，不推送 `upstream`，不部署现役 Worker，不触及 `D:\SullyOS`。后续发布仍需维护者明确要求。
+2026-10-27 维护者明确要求把公开体验入口迁到新建的独立 Netlify 站点 `https://zhima-sullyos.netlify.app/`，并替换公开 Fork 的 About 链接。默认推送禁用配置必须保留，不推送 `upstream`，不部署现役 Worker，不触及 `D:\SullyOS`。后续发布仍需维护者明确要求。
 
 ## 这份公开版实际保留的行为
 
@@ -23,6 +23,7 @@
 - 发行方公共代理是 `https://zhima-public-proxy.sullyos-sxy10.workers.dev`，写在 `utils/proxyWorker.ts`，部署配置是 `worker/wrangler.public-proxy.toml`。设置里可以改成自己的 https 地址。代码拒绝上游公共代理主机名。
 - 主动消息由使用者自己部署。本仓库不附带私人推送地址，也不附带上游美化库、使用统计或安卓更新地址。
 - `.github/workflows/ci-build.yml` 在推送到 `master` 或 Pull Request 时只运行构建。`deploy-pages.yml` 和 `deploy-cloudflare-worker.yml` 只能手动运行。
+- 公开主入口为独立 Netlify 静态站，手动上传审查后的构建产物，不连接私人站点或继承其环境配置；根目录 `.netlify/state.json` 是旧私人关联，不得用于公开版发布。GitHub Pages 保留为旧地址，本次不关闭。换域名后需由使用者自行导出/导入备份，不自动搬运任何站点的数据。
 - 本地打开用 `run.bat` 或 `open-local-web.bat`，地址是 `http://127.0.0.1:5183/`。`build-and-open-local-web.bat` 预览 `http://127.0.0.1:4183/`。
 
 ## 本轮没有做的验收

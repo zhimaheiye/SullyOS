@@ -6,7 +6,7 @@
 
 本仓库是基于上游 [SullyOS](https://github.com/qegj567-cloud/SullyOS) 的个人二改，是一个装在浏览器里的虚拟手机。许可文本仍是 [LICENSE](LICENSE)，这里不改写，也不扩大许可范围。维护者已另行确认取得分享仓库链接及公开在线二改实例的授权。这不表示可以使用上游的在线服务，也不表示可以单独再分发上游角色的设定和美术。第三方依赖仍遵循各自的许可证。
 
-公开体验：[GitHub Pages](https://zhimaheiye.github.io/SullyOS/)。本轮保留、移除和暂缓的功能见[公开版范围](docs/public-release.md)。生图及画面提示词功能暂时移除；API、角色和存档由使用者自行配置。
+公开体验：[芝麻的 SullyOS](https://zhima-sullyos.netlify.app/)。本轮保留、移除和暂缓的功能见[公开版范围](docs/public-release.md)。生图及画面提示词功能暂时移除；API、角色和存档由使用者自行配置。
 
 不是那种只有一个输入框的聊天页。里面有桌面、App、通知、相册和电话。你可以创建角色，再像使用手机一样和他们互动。
 
