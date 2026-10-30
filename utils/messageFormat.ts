@@ -19,6 +19,7 @@ import { formatStatCount } from './videoParser';
 import { formatWithdrawalForCharacterContext, isWithdrawnMessage } from './messageWithdrawal';
 import { serializeUserDiaryForExchange } from './journal';
 import { secretNoteContext } from './secretNote';
+import {friendFeedShareContext} from './friendFeedShareContext';
 import { formatSARModuleEventsForContext } from './vrWorld/sarModuleRuntime';
 import { formatOperatorAccountActivity, isOperatorAuthoredCharacterMessage } from './operatorMessageProvenance';
 import { formatRepairSegments, type HtmlRepairSegment } from './htmlFormatRepair';
@@ -123,6 +124,9 @@ export function normalizeMessageContent(
 
     const type = msg.type as string;
     if (type === 'secret_note') return secretNoteContext(msg.content);
+    if (type === 'friend_feed_share_card') return msg.metadata?.friendFeedShare
+        ? friendFeedShareContext(msg.metadata.friendFeedShare,msg.charId)+(msg.metadata.friendFeedShare.imagesEnabled&&typeof msg.metadata.visionDescription==='string'?'\n配图描述（仅材料）：'+msg.metadata.visionDescription:'')
+        : msg.content || '[分享的帖子内容不可用]';
 
     // 纯视觉类给占位；语音优先使用配套转写，避免把音频资源地址送进上下文。
     if (type === 'image') return '[图片]';
@@ -446,6 +450,8 @@ export function formatMessageForPrompt(
     userName: string,
 ): string {
     const sender = isOperatorAuthoredCharacterMessage(msg) ? '系统'
+        : msg.metadata?.homeSharedOwnerId
+        ? (msg.metadata.homeContextKind === 'speech' ? msg.metadata.homeActorName || '角色' : '家园记录')
         : msg.role === 'user' ? userName
         : msg.role === 'system' ? '[系统]'
         : charName;
@@ -460,6 +466,8 @@ export function formatMessageWithTime(
     timeFormatter: (ts: number) => string,
 ): string {
     const sender = isOperatorAuthoredCharacterMessage(msg) ? '系统'
+        : msg.metadata?.homeSharedOwnerId
+        ? (msg.metadata.homeContextKind === 'speech' ? msg.metadata.homeActorName || '角色' : '家园记录')
         : msg.role === 'user' ? userName
         : msg.role === 'system' ? '[系统]'
         : charName;

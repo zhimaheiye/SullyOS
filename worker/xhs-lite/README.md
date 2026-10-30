@@ -5,7 +5,7 @@
 
 ## 它在哪、怎么用
 
-实现已**直接嵌入主 Worker** `worker/index.js`。待公开版默认连接发行方自己的公共代理，
+实现已**直接嵌入主 Worker** `worker/index.js`。公开版默认连接发行方自己的公共代理，
 不连接原作者的公共代理。它作为隔离的 `XHSLite` 模块，对外暴露 `/api/<command>` 桥接接口，和
 `scripts/xhs-bridge.mjs` 完全兼容，前端 bridge 模式直接复用。
 

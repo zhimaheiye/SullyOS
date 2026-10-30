@@ -1,6 +1,6 @@
 # Dev Debug 调试子系统
 
-开发分支专用的"工具箱"：一个悬浮按钮 + 面板，放一堆**只在开发分支显示**的调试开关，外加一套可选的「分类捕获」日志——打开**总开关**「记录日志」后会露出并排的类型 checkbox（目前 `api` 普通聊天 / `amsg` 主动消息收发链路 / `lifecycle` 前后台 / `memory-palace` 记忆召回），勾哪类抓哪类。面板走极简：类型并排、无逐条说明（看不懂就别用）。正式分支（main / master）默认整个隐藏，用户看不到也不会误触。
+开发排障工具箱：一个悬浮按钮和面板，以及可选的分类日志。公开版在所有分支默认隐藏，不会因为本地处于 `public-cleanup` 就自动显示。手动解锁后，打开「记录日志」总开关并选择类别才开始捕获。
 
 这份文档讲清楚它怎么运作，以及**怎么往里加新开关 / 加一类捕获日志**——照着步骤抄就行。
 
@@ -19,21 +19,20 @@ isDevDebugAvailable()  // utils/devDebug.ts
 
 | 情况 | 是否显示 |
 |------|---------|
-| 在 `main` / `master` 构建 | ❌ 隐藏（视为正式发布） |
-| 在其他分支构建 | ✅ 显示 |
+| 任意分支默认构建或本地启动 | ❌ 隐藏 |
 | 设了 `VITE_HIDE_BUILD_BADGE=1` | ❌ 强制隐藏（覆盖默认） |
 | 设了 `VITE_SHOW_BUILD_BADGE=1` | ✅ 强制显示（在 master 本地调试用） |
 | 设置页底部连点「构建版本」5 下 | ✅ 显示（**手动解锁**，会话级、刷新即关，正式版临时排障用） |
 
-> 分支名的来源：CI 优先读 `GITHUB_REF_NAME` / `VERCEL_GIT_COMMIT_REF` / `CF_PAGES_BRANCH` / `BRANCH`，本地退化成 `git rev-parse --abbrev-ref HEAD`，非 git 环境是 `'unknown'`（`'unknown'` 不在发布分支集合里，所以会显示）。
+> 分支名的来源：CI 优先读 `GITHUB_REF_NAME` / `VERCEL_GIT_COMMIT_REF` / `CF_PAGES_BRANCH` / `BRANCH`，本地退化成 `git rev-parse --abbrev-ref HEAD`，非 git 环境是 `'unknown'`。它用于版本信息，不再决定调试入口是否显示。
 
 **关键含义**：在 master 上本地想调试，跑 `VITE_SHOW_BUILD_BADGE=1 pnpm dev` 即可，不用改代码。
 
 **正式版排障（手动解锁）**：设置页底部连点 `VersionInfo`（构建版本那栏）5 下 → `unlockDevDebug()` **会话级**解锁（**不落 localStorage**），`isDevDebugAvailable()` 放行、`<DevDebugPanel />` 经 `subscribeDevDebugAvailability` 即时弹出。
 
 **怎么关掉**：
-- **刷新页面**：`manualUnlock` 清零 → prod 回到隐藏；非 prod 因 `__BUILD_BADGE_VISIBLE__` 默认可见，刷新后照常显示（即「非 prod 一直开」）。
-- **面板底部「关闭」按钮**：`closeDevDebug()` 置 `forceClosed`，**任意分支**强制关掉；会话级，**刷新后非 prod 自动恢复**。顺手把浮球位置收回默认、面板收起；**`isCaptureEnabled` 跟 `isDevDebugAvailable` 绑定**——只要面板看不见（关闭 / prod 未解锁 / prod 解锁后刷新 / 非 prod 强制关闭）都返 false，避免业务代码继续往 localStorage 写日志的隐私债。**里面的捕获 / 行为开关存档不动**——刷新恢复后可见性回来，里面勾的还是原样，但只有面板可见时才真正录。
+- **刷新页面**：手动解锁清零，默认回到隐藏；只有显式设置 `VITE_SHOW_BUILD_BADGE=1` 的构建仍会显示。
+- **面板底部「关闭」按钮**：本次会话强制关闭并收起浮球。已有捕获与行为开关存档保留；面板不可用时不捕获日志。
 
 > 可用性 = `!forceClosed && (__BUILD_BADGE_VISIBLE__ || manualUnlock)`，三个量里只有 `__BUILD_BADGE_VISIBLE__` 是构建期常量，另两个是会话级内存标志（刷新归零）。
 

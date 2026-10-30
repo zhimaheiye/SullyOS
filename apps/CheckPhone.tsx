@@ -335,6 +335,7 @@ const CheckPhone: React.FC = () => {
 
     // Custom App Creation State
     const [showCreateModal, setShowCreateModal] = useState(false);
+    const [editingAppId, setEditingAppId] = useState<string | null>(null);
     const [newAppName, setNewAppName] = useState('');
     const [newAppIcon, setNewAppIcon] = useState('✨');
     const [newAppColor, setNewAppColor] = useState('#8b9cff');
@@ -718,7 +719,23 @@ const CheckPhone: React.FC = () => {
 
     const openCreateAppModal = () => {
         if (!targetChar) return;
+        setEditingAppId(null);
+        setNewAppName('');
+        setNewAppPrompt('');
+        setNewAppIcon('✨');
+        setNewAppColor('#8b9cff');
+        setNewAppLayout('generic');
         setSyncTargetIds(characters.filter(c => c.id !== targetChar.id).map(c => c.id));
+        setShowCreateModal(true);
+    };
+
+    const openCustomAppEditor = (app: PhoneCustomApp) => {
+        setEditingAppId(app.id);
+        setNewAppName(app.name);
+        setNewAppPrompt(app.prompt);
+        setNewAppIcon(app.icon);
+        setNewAppColor(app.color);
+        setNewAppLayout(app.layout || 'generic');
         setShowCreateModal(true);
     };
 
@@ -736,6 +753,21 @@ const CheckPhone: React.FC = () => {
         const appName = newAppName.trim();
         const appPrompt = newAppPrompt.trim();
         if (!targetChar || !appName || !appPrompt) return;
+
+        if (editingAppId) {
+            updateCharacter(targetChar.id, prev => ({
+                phoneState: {
+                    ...prev.phoneState,
+                    records: prev.phoneState?.records || [],
+                    customApps: (prev.phoneState?.customApps || []).map(app => app.id === editingAppId
+                        ? { ...app, name: appName, prompt: appPrompt, icon: newAppIcon, color: newAppColor, layout: newAppLayout }
+                        : app),
+                },
+            }));
+            setShowCreateModal(false);
+            addToast(`已保存 ${appName}`, 'success');
+            return;
+        }
 
         const validCharacterIds = new Set(characters.map(c => c.id));
         const targetIds = [
@@ -3527,7 +3559,7 @@ ${olderText}
         return (
             <SubAppShell>
                 <TermHeader title={app.name} sub={layoutMeta?.name || 'custom app'} accent={accent} onBack={() => setActiveAppId('home')}
-                    right={<span className="text-lg">{app.icon}</span>} />
+                    right={<button onClick={() => openCustomAppEditor(app)} className="px-3 py-2 text-xs" aria-label={`编辑${app.name}`}>编辑</button>} />
                 <div className="flex-1 overflow-y-auto px-4 pt-2 no-scrollbar pb-28 overscroll-contain space-y-3">
                     {list.length === 0 && <EmptyState text="暂无数据" />}
                     {list.map((r, idx) => renderCustomItem(r, idx, list.length, accent, layout, app))}
@@ -4153,9 +4185,9 @@ ${olderText}
             })()}
 
             {/* Create App Modal */}
-            <Modal isOpen={showCreateModal} title="安装自定义 App" onClose={() => setShowCreateModal(false)}
+            <Modal isOpen={showCreateModal} title={editingAppId ? '编辑自定义 App' : '安装自定义 App'} onClose={() => setShowCreateModal(false)}
                 footer={<button onClick={handleCreateCustomApp} className="w-full py-3 bg-violet-500 text-white font-bold rounded-2xl">
-                    {installCount > 1 ? `安装到 ${installCount} 台手机` : '安装到桌面'}
+                    {editingAppId ? '保存修改' : installCount > 1 ? `安装到 ${installCount} 台手机` : '安装到桌面'}
                 </button>}>
                 <div className="space-y-4">
                     <div className="flex gap-4">
@@ -4200,7 +4232,7 @@ ${olderText}
                             })}
                         </div>
                     </div>
-                    <div className="pt-4 border-t border-slate-200">
+                    {!editingAppId && <div className="pt-4 border-t border-slate-200">
                         <div className="flex items-start justify-between gap-3 mb-3">
                             <div>
                                 <div className="text-[12px] font-bold text-slate-700">同步安装</div>
@@ -4232,7 +4264,7 @@ ${olderText}
                         ) : (
                             <p className="text-[11px] text-slate-400 py-2">暂无其他角色，App 将只安装到当前手机。</p>
                         )}
-                    </div>
+                    </div>}
                 </div>
             </Modal>
 

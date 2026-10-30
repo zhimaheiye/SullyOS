@@ -1,8 +1,7 @@
 # 满血后台消息：云端状态表 + 服务端工具链设计
 
 > 什么时候读：做「满血后台消息」（角色到点自动发消息，上下文新鲜、可带工具、全程云端闭环）相关工作前。
-> 这份讲 SullyOS 侧的整体设计与分工；上游 amsg-server 要改什么见
-> [`amsg-server-fullbg-hooks-prompt.md`](./amsg-server-fullbg-hooks-prompt.md)。
+> 这份保留早期设计背景；当前维护入口见 [主动消息维护](../docs/amsg-maintenance.md)，不作为施工或发布授权。
 > 更新时间：2026-07-17。
 
 ## 一句话目标
@@ -12,8 +11,7 @@
 回前台取数据。
 
 背景：Instant Push 受平台限制（iOS 杀后台、SSE 寿命等）实际效果有限，转入有限支持；
-后台体验的主力改走本方案（amsg2 单用户 worker + D1 那套底座，见
-[`amsg2-reenable-guide.md`](./amsg2-reenable-guide.md)）。
+后台体验的主力为 amsg2 单用户 Worker 与 D1；旧 Instant Push 已退休，当前实现以 [维护入口](../docs/amsg-maintenance.md) 和源码为准。
 
 ## 核心判定原则
 

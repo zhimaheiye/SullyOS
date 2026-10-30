@@ -32,6 +32,9 @@ export const MIRRORED_KEYS: readonly string[] = [
     'os_theme',                          // 外观主题（丢了 = 回初始主题）
     'os_api_config',                     // 全局 API（丢了 = 一切生成静默失效）
     'os_api_presets',
+    'os_available_models',
+    'world_custom_styles',
+    'check_phone_api',
     'os_realtime_config',
     'os_memory_palace_config',
     'os_remote_vector_config',

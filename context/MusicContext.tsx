@@ -484,7 +484,6 @@ export const MusicProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
   }, []);
-
   // 播放
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playing, setPlaying] = useState(false);

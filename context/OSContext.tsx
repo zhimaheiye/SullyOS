@@ -1,10 +1,17 @@
 import { handleLocalBack } from '../utils/localBackHandlers';
 import {isHomeAssetDisposal} from '../utils/homeAssetCancellation';
 import { processHomeMemoryAfterSave } from '../utils/homeMemoryPostHook';
+import { homeSharedRecipients } from '../utils/homeSharedEvents';
+import { homeRecords } from '../utils/homeRecords';
+import { readFriendFeed } from '../utils/friendFeed';
+import { collectFriendFeedMedia, exportActivityTextAsset, isActivityTextAsset } from '../utils/activityBackup';
+import { prepareFriendFeedMainTask, consumeFriendFeedMainReply } from '../utils/friendFeedMain';
+import { releaseFriendFeedEmotionTask } from '../utils/friendFeedEmotion';
 import { retireCloudCharacter } from '../utils/amsgCloudRetirement';
 import { resolveDialogueApi } from '../utils/characterApi';
 import { loadFeatureApiSettings, saveFeatureApiSettings } from '../utils/featureApi';
 import {isBuiltinAppearance, readBuiltinAppearance} from '../utils/builtinAppearance';
+import { sameSullyIconSnapshot, SULLY_BIBI_UPGRADE_KEY, upgradeBuiltinSullyBibiIcon } from '../utils/builtinAppearanceUpgrade';
 import { browserHolidayCache, deviceTimeZone, getUserHolidayReminder } from '../utils/userHolidays';
 import {exportDecorationMedia} from '../utils/decorationMediaBackup';
 import {migrateLegacyWhiteboxPresets} from '../utils/legacyWhiteboxPresets';
@@ -32,11 +39,13 @@ import { migrateSharkpanAssets } from '../utils/sharkpanAssetMigration';
 import { stripCompanionChatStyleResidue } from '../utils/companionThemeIsolation';
 import { SULLY_DEFAULT_AVATAR_URL, shouldMigrateSullyAvatar } from '../utils/sullyAvatar';
 import { exportStoryTheaterAppearanceSetting, restoreStoryTheaterAppearanceSetting } from '../utils/storyTheaterBackup';
-import { createV2ArrayFieldWriter, writeV2Backup, assembleV2Backup, type BackupManifest, type ZipFileWriter, type ZipFileReader } from '../utils/backupFormat';
-import { externalizeVoiceMessageBlobs, restoreVoiceMessageBlobs, shouldIncludeVoiceRelatedAssetInBackup } from '../utils/voiceMessageBackup';
-import { ensureCompanionVoiceAssetsForBackup, isCompanionVoiceAssetId } from '../utils/companionVoiceAssets';
+import { writeV2Backup, assembleV2Backup, type BackupManifest, type ZipFileWriter, type ZipFileReader } from '../utils/backupFormat';
+import { externalizeVoiceMessageBlob, restoreVoiceMessageBlobs, shouldIncludeVoiceRelatedAssetInBackup } from '../utils/voiceMessageBackup';
+import { ensureCompanionVoiceAssetIdsForBackup, isCompanionVoiceAssetId } from '../utils/companionVoiceAssets';
 import { collectCharacterCompanionVoiceAssetIds } from '../utils/companionPresets';
-import { encodeVectorsForBackup, encodeVectorsForBackupChunked } from '../utils/memoryPalace/db';
+import { encodeVectorsForBackupChunked } from '../utils/memoryPalace/db';
+import { createBackupArchive } from '../utils/backupArchive';
+import { streamBackupArrayStore } from '../utils/backupStoreStreaming';
 import { ProactiveChat } from '../utils/proactiveChat';
 import { VRScheduler, type VRSessionOutcome } from '../utils/vrWorld/scheduler';
 import { runVRSession } from '../utils/vrWorld/runSession';
@@ -60,6 +69,7 @@ import { loadChatInputPreferences, saveChatInputPreferences } from '../utils/cha
 import { loadChatActionOrders } from '../utils/chatActionOrder';
 import { collectAppearance, collectCharSettings, collectDataScale, collectFeatureFlagsAsync, collectSARFeatureFlags } from '../utils/analyticsSnapshot';
 import { normalizeApiConfig, normalizeApiPreset } from '../utils/apiConfigNormalize';
+import { fetchLlm } from '../utils/anthropicApi';
 import { getCheckPhoneApi, setCheckPhoneApi } from '../utils/checkPhoneApi';
 import { markBackupDone } from '../utils/backupReminder';
 import { collectSARLocalBackup, restoreSARLocalBackup } from '../utils/vrWorld/sarBackup';
@@ -1289,7 +1299,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           }
 
           try {
-              let response = await originalFetch(...sendArgs);
+              let response = await fetchLlm(sendArgs[0], sendArgs[1], originalFetch, true);
 
               // /chat/completions 是可能已经开始计费的请求。拿到任何 HTTP 响应后都不在
               // 兼容层静默重发：中转站可能在返回错误前已经把任务交给上游，重发会让用户
@@ -1428,6 +1438,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           }
       };
 
+      Object.assign(patchedFetch, { __sullyAnthropic: true });
       try {
           window.fetch = patchedFetch;
       } catch (e) {
@@ -1581,7 +1592,6 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                 console.error('Failed to load cloud backup config', e);
             }
         }
-
         try {
             const assets = await DB.getAllAssets();
             const assetMap: Record<string, string> = {};
@@ -1637,6 +1647,9 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                 }
                 setCustomIcons(loadedIcons);
                 initPwaIcon(loadedIcons); // 启动时恢复自定义 PWA 图标（见 utils/appIcon.ts）
+                void upgradeBuiltinSullyBibiIcon(loadedIcons).then(icon => {
+                    if (icon) setCustomIcons(current => sameSullyIconSnapshot(current, loadedIcons) ? { ...current, friend_feed: icon } : current);
+                }).catch(() => { /* Optional artwork upgrade: retry next startup after offline/storage failures. */ });
                 // Strip deprecated slots that may have been imported via beautification packs.
                 if (loadedTheme.launcherWidgets) {
                     for (const slot of DEPRECATED_WIDGET_SLOTS) {
@@ -2273,6 +2286,11 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           addToast(`${charName || '角色'}正在整理记忆${count ? `（${count} 条对话）` : ''}…`, 'info');
       };
 
+      const toolConfigConflictHandler = () => {
+          addToast('云端工具配置已有更新，本次修改尚未同步。请到实时感知或 MCP 设置核对后重新保存。', 'error');
+      };
+
+      window.addEventListener('amsg-tool-config-conflict', toolConfigConflictHandler);
       window.addEventListener('active-msg-received', handler);
       window.addEventListener('active-msg-process-failed', inboxFailHandler);
       window.addEventListener('active-msg-backfill-stale', backfillStaleHandler);
@@ -2284,6 +2302,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           if (char) markAmsgStateDirty({char, userProfile: userProfileRef.current, groups: groupsRef.current, realtimeConfig: realtimeConfigRef.current});
       };
       window.addEventListener(HOME_SECRETS_UPDATED, secretSyncHandler);
+      window.addEventListener('friend-feed-history-updated', secretSyncHandler);
       window.addEventListener('emotion-updated', buffSyncHandler);
       window.addEventListener(CHAT_GEN_EVENTS.replyArrived, chatReplyArrivedHandler);
       window.addEventListener(CHAT_GEN_EVENTS.replyEnd, chatReplyEndHandler);
@@ -2293,10 +2312,12 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
       return () => {
           window.removeEventListener('active-msg-received', handler);
           window.removeEventListener('active-msg-process-failed', inboxFailHandler);
+          window.removeEventListener('amsg-tool-config-conflict', toolConfigConflictHandler);
           window.removeEventListener('active-msg-backfill-stale', backfillStaleHandler);
           window.removeEventListener('active-msg-progress', progressHandler);
           window.removeEventListener('active-msg-open', openHandler);
           window.removeEventListener(HOME_SECRETS_UPDATED, secretSyncHandler);
+          window.removeEventListener('friend-feed-history-updated', secretSyncHandler);
           window.removeEventListener('emotion-updated', buffSyncHandler);
           window.removeEventListener(CHAT_GEN_EVENTS.replyArrived, chatReplyArrivedHandler);
           window.removeEventListener(CHAT_GEN_EVENTS.replyEnd, chatReplyEndHandler);
@@ -2376,7 +2397,10 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           const currentRealtimeConfig = realtimeConfigRef.current;
 
           const char = currentCharacters.find(c => c.id === charId);
-          if (!char) {
+          // 调度表里还排着队，但角色已删除或未开启主动消息（含 proactiveConfig 缺失）：
+          // 就地撤掉残留调度，避免后台一直空转或误调模型。
+          if (!char || !char.proactiveConfig?.enabled) {
+              ProactiveChat.stop?.(charId);
               drainQueuedProactive();
               return;
           }
@@ -2417,6 +2441,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           setProactiveComposingChars(prev => prev[charId] ? prev : { ...prev, [charId]: true });
           console.log(`🔔 [Proactive/Global] Trigger fired for ${char.name}`);
 
+          let friendFeedTask: Awaited<ReturnType<typeof prepareFriendFeedMainTask>>;
           let hintMsgId: number | null = null;
           try {
               // 1. Calculate time gap
@@ -2501,6 +2526,13 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               const systemPrompt = payload.systemPrompt;
               const apiMessages = payload.cleanedApiMessages;
               const fullMessages = payload.fullMessages;
+              if (!payload.flags.promptBuildSkipped) {
+                  try {
+                      friendFeedTask = await prepareFriendFeedMainTask(charId);
+                      if (friendFeedTask) fullMessages.splice(Math.max(1, payload.volatileTailIndex), 0,
+                          {role: 'system', content: friendFeedTask.prompt});
+                  } catch (error) { console.warn('[Friend feed] Proactive reply preparation failed', error); }
+              }
 
               // 3c. 情绪评估 fire-and-forget — 与主 API 并行，沿用 useChatAI 的 API 选择逻辑：
               //     角色专属情绪 API > 主 apiConfig（与记忆宫殿副 API 完全独立）
@@ -2543,6 +2575,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
 
               // 5. Process & save response
               let aiContent = data.choices?.[0]?.message?.content || '';
+              aiContent = await consumeFriendFeedMainReply(charId, aiContent, [], friendFeedTask?.id);
               // 思考链抽取 — 与 useChatAI 保持一致:三种 reasoning 字段 + 主 content 里的 <think>/<thinking>/<thought> 块,
               // 拼接后挂到本回合首条 assistant 消息的 metadata.thinkingChain
               let pendingThinkingChain: string | null = null;
@@ -2792,6 +2825,8 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                   }
               }
           } finally {
+              if (friendFeedTask) await releaseFriendFeedEmotionTask(charId, friendFeedTask.id)
+                  .catch(error => console.warn('[Friend feed] Proactive reply release failed', error));
               proactiveRunningRef.current = false;
               setProactiveComposingChars(prev => {
                   if (!prev[charId]) return prev;
@@ -2806,6 +2841,11 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
       ProactiveChat.onTrigger((charId: string) => {
           void runProactive(charId);
       });
+      ProactiveChat.reconcile?.(
+          charactersRef.current
+              .filter(c => !!c.proactiveConfig?.enabled)
+              .map(c => ({ charId: c.id, intervalMinutes: c.proactiveConfig?.intervalMinutes || 60 }))
+      );
 
       // 「彼方」自主登入 —— 独立调度，复用同一批 refs 拿最新状态
       const runVR = async (charId: string, room?: string, manual?: boolean, sarActivity?: VRSARActivity) => {
@@ -3422,6 +3462,19 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
             addToast('家园记忆整理失败', 'error');
           });
           markAmsgStateDirty({ char: target, userProfile, groups, realtimeConfig });
+          const oldHomeEvents=new Map(homeRecords(before?.home3D).map(record=>[record.id,record]));
+          const nextHomeEvents=homeRecords(target.home3D);
+          const nextHomeIds=new Set(nextHomeEvents.map(record=>record.id));
+          const changedHomeEvents=[
+            ...nextHomeEvents.filter(record=>JSON.stringify(record)!==JSON.stringify(oldHomeEvents.get(record.id))),
+            ...[...oldHomeEvents.values()].filter(record=>!nextHomeIds.has(record.id)),
+          ];
+          for(const participantId of homeSharedRecipients(changedHomeEvents)){
+            if(participantId===target.id)continue;
+            void DB.getCharacter(participantId).then(participant=>{
+              if(participant)markAmsgStateDirty({char:participant,userProfile,groups,realtimeConfig});
+            }).catch(error=>console.warn('[Home3D] 共享经历快照刷新失败',error));
+          }
           if (JSON.stringify(before?.dialogueApi) !== JSON.stringify(target.dialogueApi)) {
             // Fresh snapshot also distinguishes consecutive role-only changes during an upload.
             syncAmsgLlmCredentials({ ...apiConfig });
@@ -3749,6 +3802,8 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
   const removeCustomTheme = async (id: string) => { setCustomThemes(prev => prev.filter(t => t.id !== id)); await DB.deleteTheme(id); };
   const setCustomIcon = async (appId: string, iconUrl: string | undefined) => {
       stopBeautyUsage('appearance');
+      // Explicit edits (including removing the icon) opt out of this one-time backfill.
+      if (appId === AppID.FriendFeed) await DB.saveAsset(SULLY_BIBI_UPGRADE_KEY, '1');
       const stored = iconUrl?.startsWith('data:') ? await migrateDataUrlToRef(iconUrl) : iconUrl;
       setCustomIcons(prev => {
           const next = { ...prev };
@@ -4068,8 +4123,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
       try {
           setSysOperation({ status: 'processing', message: '正在初始化打包引擎...', progress: 0 });
           
-          const JSZip = await loadJSZip();
-          const zip = new JSZip();
+          const zip = createBackupArchive();
           const assetsFolder = zip.folder("assets");
           let assetCount = 0;
           let malformedImageCount = 0;
@@ -4234,7 +4288,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           if (mode === 'full') {
               storesToProcess = allStores; // Include everything
           } else if (mode === 'text_only') {
-              storesToProcess = allStores.filter(s => s !== 'assets'); // Exclude raw assets store
+              storesToProcess = allStores; // assets is filtered to activity text records below
           } else if (mode === 'media_only') {
               // media_only now includes themes/assets for complete media backup
               storesToProcess = ['gallery', 'emojis', 'emoji_categories', 'journal_stickers', 'user_profile', 'characters', 'messages', 'themes', 'assets', 'bank_data',
@@ -4253,6 +4307,8 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           const cloneForInPlace = <T,>(v: T): T => (mode === 'text_only' ? v : deepCloneForExport(v));
 
           const backupData: Partial<FullBackupData> = {
+              friendFeed: mode === 'text_only' ? stripBackupImages(await readFriendFeed()) : undefined,
+              friendFeedMedia: mode === 'media_only' ? collectFriendFeedMedia(await readFriendFeed()) : undefined,
               contentFavoritesIndex: mode === 'text_only'
                   ? stripBackupImages(await DB.getAssetRaw('content_favorites_index_v1')) : undefined,
               timestamp: Date.now(),
@@ -4461,7 +4517,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                   const asset = collaborationAssets[index];
                   const safeId = asset.id.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120) || `asset-${index}`;
                   const path = `collaboration/assets/${String(index).padStart(5, '0')}-${safeId}.bin`;
-                  zip.file(path, new Uint8Array(await asset.blob.arrayBuffer()), { compression: 'STORE' });
+                  zip.fileBlob(path, asset.blob, { compression: 'STORE' });
                   backupData.collaborationAssetIndex.push({
                       id: asset.id,
                       path,
@@ -4547,24 +4603,11 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               'life_records', 'med_plans', 'life_record_settings'
           ]);
 
-          // Chunked processObject for large arrays — yields to main thread every 200 items
-          const processArrayChunked = async (arr: any[], fn: (item: any, index: number) => any, chunkSize = 200): Promise<any[]> => {
-              if (arr.length <= chunkSize) return arr.map(fn);
-              const result: any[] = [];
-              for (let i = 0; i < arr.length; i += chunkSize) {
-                  const chunk = arr.slice(i, i + chunkSize).map((item, offset) => fn(item, i + offset));
-                  result.push(...chunk);
-                  if (i + chunkSize < arr.length) {
-                      await new Promise(r => setTimeout(r, 0));
-                  }
-              }
-              return result;
-          };
-
-          // 纯文字备份的低内存路径：store 通过单事务 IDB 游标逐条读取，剥图后立即序列化进 ZIP 分片，
-          // 不再 getAll 整表驻留。gallery/messages 中即使有大量 base64 图片，峰值也只是一条记录。
-          const textOnlyFieldByStore: Record<string, string> = {
+          // Array stores share a cursor path in all export modes. Only singleton
+          // stores below still use getAll; no large table is retained in backupData.
+          const backupArrayFieldByStore: Record<string, string> = {
               characters: 'characters',
+              assets: 'assets',
               character_groups: 'characterGroups',
               messages: 'messages',
               themes: 'customThemes',
@@ -4643,17 +4686,9 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               life_record_settings: 'lifeRecordSettings',
           };
           const prewrittenStores: BackupManifest['stores'] = {};
-          const textOnlyShardLimits = {
-              maxLen: 4 * 1024 * 1024,
-              maxItems: 500,
-              hardMaxLen: 256 * 1024 * 1024,
-          };
-
-          // 向量二进制旁路（#2）：memory_vectors 归一化拼成 bin + 索引（逻辑在 encodeVectorsForBackup，
-          // 那边有 ensureFloat32 统一 Uint8Array / Float32Array / 遗留 number[] 三态），导出收尾交给
-          // writeV2Backup 落进 zip——不进 backupData、不当普通数组分片，避开 number[] 进 JSON 的膨胀。
-          let vectorPayload: ReturnType<typeof encodeVectorsForBackup> | undefined;
-          let healingVectorPayload: ReturnType<typeof encodeVectorsForBackup> | undefined;
+          // Vectors retain the existing binary format, read one record at a time.
+          let vectorPayload: Awaited<ReturnType<typeof encodeVectorsForBackupChunked>> | undefined;
+          let healingVectorPayload: Awaited<ReturnType<typeof encodeVectorsForBackupChunked>> | undefined;
           // Only voice Blobs reachable from the exported Live2D settings are portable.
           // Orphaned/cancelled companion generations must not silently bloat a backup.
           const companionVoiceAssetIdsForBackup = new Set<string>();
@@ -4666,16 +4701,14 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                   progress: (currentStep / totalSteps) * 100
               });
 
-              // 4500+ 条记忆若仍是早期 number[] 存储，getAll 会先在 JS 堆里膨胀成数百 MB。
-              // 两遍游标逐条扫描只常驻最终 Float32 紧凑 bin；格式仍是原来的单 bin + index。
-              if (storeName === 'memory_vectors' && mode === 'text_only') {
+              if (storeName === 'memory_vectors') {
                   vectorPayload = await encodeVectorsForBackupChunked(async (onBatch) => {
                       await DB.streamRawStoreData(storeName, item => onBatch([item]));
                   });
                   await new Promise(resolve => setTimeout(resolve, 0));
                   continue;
               }
-              if (storeName === 'healing_memory_vectors' && mode === 'text_only') {
+              if (storeName === 'healing_memory_vectors') {
                   healingVectorPayload = await encodeVectorsForBackupChunked(async (onBatch) => {
                       await DB.streamRawStoreData(storeName, item => onBatch([item]));
                   });
@@ -4683,263 +4716,110 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                   continue;
               }
 
-              // 纯文字模式的普通数组 store：逐条剥图后立刻写分片。这里 continue 后不会再把
-              // processedData 挂到 backupData，因此已处理的整表不会一直留到最终压缩阶段。
-              const textOnlyField = mode === 'text_only' ? textOnlyFieldByStore[storeName] : undefined;
-              if (textOnlyField) {
-                  const writer = createV2ArrayFieldWriter(
-                      zip as unknown as ZipFileWriter,
-                      textOnlyField,
-                      {
-                          limits: textOnlyShardLimits,
-                          onYield: () => new Promise<void>(resolve => setTimeout(resolve, 0)),
-                      },
-                  );
-                  await DB.streamRawStoreData(storeName, (item) => {
-                      // characters 也走这条低内存旁路；必须在逐条写分片前规范化，
-                      // 否则 text_only 会绕过下面 getAll 分支，把旧部署的绝对样板房 URL 原样带走。
-                      if (storeName === 'characters') normalizeCharacterRoomAssetsInPlace(item);
-                      const processedItem = noImageStores.has(storeName) ? item : stripTextOnlyMedia(item);
-                      writer.appendSync([processedItem]);
-                  });
-                  prewrittenStores[textOnlyField] = await writer.finish();
-                  continue;
-              }
-
-              let rawData = await DB.getRawStoreData(storeName);
-              let processedData: any;
-
-              // Built-in room-template files belong to the app, not to the source deployment.
-              // Older builds stored their fully resolved origin in roomConfig; strip that origin
-              // from the export clone so restoring on another host/base path keeps every item.
-              if (storeName === 'characters' && Array.isArray(rawData)) {
-                  for (const character of rawData) normalizeCharacterRoomAssetsInPlace(character);
-              }
-
-              // 向量旁路：归一化拼 bin + 索引，不进 backupData（writeV2Backup 收尾落 zip）。直接跳过
-              // 下面的图片处理 / switch（向量无图、无 image base64）。
-              if (storeName === 'memory_vectors') {
-                  vectorPayload = encodeVectorsForBackup(Array.isArray(rawData) ? rawData : []);
-                  await new Promise(resolve => setTimeout(resolve, 10));
-                  continue;
-              }
-              if (storeName === 'healing_memory_vectors') {
-                  healingVectorPayload = encodeVectorsForBackup(Array.isArray(rawData) ? rawData : []);
-                  await new Promise(resolve => setTimeout(resolve, 10));
-                  continue;
-              }
-
-              // blobref 令牌（characters 的小屋图 / sprites.chibi、cc_custom_parts 的
-              // src/shadowSrc、messages 的 cameraSnapshotRef、songs 的 coverImage……）
-              // 不在这里做任何处理：v3 令牌原样进 JSON，onSerialized 统一收集、
-              // 二进制随 blobs/* 旁路走，任何 store 的令牌都覆盖，没有名单可漏。
-              if (storeName === 'characters' && mode !== 'text_only' && Array.isArray(rawData)) {
-                  // v1 陪伴语音存在 blob_assets（普通备份不读取该 store）。先迁移到
-                  // assets 的二进制语音通道，稍后 assets store 才能把完整 Blob 写进 ZIP。
-                  await ensureCompanionVoiceAssetsForBackup(rawData as CharacterProfile[]);
-                  collectCharacterCompanionVoiceAssetIds(rawData as CharacterProfile[])
-                      .forEach(assetId => companionVoiceAssetIdsForBackup.add(assetId));
-              }
-              if ((storeName === 'characters' || storeName === 'cc_custom_parts' || storeName === 'messages' || storeName === 'healing_messages') && mode !== 'text_only' && Array.isArray(rawData)) {
-                  for (const c of rawData) await resolveBlobRefsDeep(c);
-              }
-
-              // --- MODE SPECIFIC FILTERING ---
-
-              if (storeName === 'assets' && Array.isArray(rawData)) {
-                  rawData = rawData.filter((asset: { id?: string; data?: { favorite?: boolean } } | null | undefined) => {
-                      if (!asset || typeof asset.id !== 'string') return true;
-                      if (isRedundantManagedAssetId(asset.id)) return false;
-                      if (isCompanionVoiceAssetId(asset.id) && !companionVoiceAssetIdsForBackup.has(asset.id)) return false;
-                      // Shared TTS rows and un-favorited message voice are implementation
-                      // cache. Only explicit favorites and saved Live2D-preset dependencies
-                      // join full/media backups; neither joins text-only backups.
-                      return shouldIncludeVoiceRelatedAssetInBackup(asset, mode !== 'text_only');
-                  });
-                  // Blob is not JSON-serializable (`JSON.stringify(new Blob()) === '{}'`).
-                  // Put allowed audio bytes in their own ZIP entries and leave a JSON-safe
-                  // marker in the assets row. `tts_*` and ordinary un-favorited speech stay
-                  // disposable cache and are not duplicated in backups.
-                  await externalizeVoiceMessageBlobs(rawData, (path, bytes) => {
-                      zip.file(path, bytes, { compression: 'STORE' });
-                  });
-              }
-
-              // Fast path: stores with no image data skip expensive recursive traversal
-              // （memory_vectors 已在上面走二进制旁路 continue 掉，这里只剩其它无图 store）
-              if (noImageStores.has(storeName)) {
-                  processedData = rawData;
-              } else if (mode === 'text_only') {
-                  processedData = Array.isArray(rawData) && rawData.length > 200
-                      ? await processArrayChunked(rawData, stripTextOnlyMedia)
-                      : stripTextOnlyMedia(rawData);
-              } else {
-                  // Media & Theme Mode: Extract Images
-                  
-                  if (storeName === 'messages' && mode === 'media_only') {
-                      // Keep normal media messages plus lightweight call turns that own
-                      // a retained frame / [图片] marker. Import remains patch-mode.
-                      rawData = rawData.filter((m: Message) => (
-                          m.type === 'image'
-                          || m.type === 'emoji'
-                          || !!m.metadata?.cameraSnapshotRef
-                          || m.metadata?.cameraSnapshotExpired === true
-                      ));
-                  }
-
-                  if (storeName === 'characters' && mode === 'media_only') {
-                      // Character Logic: Export ONLY visual assets to mediaAssets array
-                      // Do not export the full character array to avoid overwriting text data on import
-                      const mediaList = rawData.map((c: CharacterProfile, index: number) => {
-                          const extracted = {
-                              charId: c.id,
-                              decoration: exportDecorationMedia(c),
-                              avatar: c.avatar,
-                              companionAvatar: c.companionAvatar,
-                              companionTouchSettings: c.companionTouchSettings,
-                              sprites: c.sprites,
-                              // Date app sprite data: skin sets carry alternate sprite maps,
-                              // and customDateSprites/activeSkinSetId are required to wire them up.
-                              dateSkinSets: c.dateSkinSets,
-                              activeSkinSetId: c.activeSkinSetId,
-                              customDateSprites: c.customDateSprites,
-                              spriteConfig: c.spriteConfig,
-                              roomItems: c.roomConfig?.items?.reduce((acc: any, item: any) => {
-                                  // data:（旧值，下面 processObject 抽成 assets/*）和 blobref
-                                  // 令牌（v3 原样进包，二进制走 blobs/*）都算媒体，都带走。
-                                  if (item.image && (item.image.startsWith('data:') || isBlobRef(item.image))) {
-                                      acc[item.id] = item.image;
-                                  }
-                                  return acc;
-                              }, {}),
-                              backgrounds: {
-                                  chat: c.chatBackground,
-                                  date: c.dateBackground,
-                                  roomWall: c.roomConfig?.wallImage,
-                                  roomFloor: c.roomConfig?.floorImage
+              const arrayField = backupArrayFieldByStore[storeName];
+              if (arrayField) {
+                  const field = storeName === 'characters' && mode === 'media_only' ? 'mediaAssets'
+                      : storeName === 'assets' && mode === 'text_only' ? 'activityTextAssets' : arrayField;
+                  prewrittenStores[field] = await streamBackupArrayStore(zip, storeName, field, {
+                      onSerialized: collectSerialized,
+                      transform: (item, index) => {
+                          if (storeName === 'heart_sync' && (item?.kind === 'settings' || item?.kind === 'session')) return undefined;
+                          if (storeName === 'characters') {
+                              normalizeCharacterRoomAssetsInPlace(item);
+                              if (mode !== 'text_only') {
+                                  collectCharacterCompanionVoiceAssetIds([item])
+                                      .forEach(id => companionVoiceAssetIdsForBackup.add(id));
                               }
-                          };
-                          return processObject(extracted, `characters[${index}](id=${String(c.id).slice(0, 80)})`);
-                      });
-                      backupData.mediaAssets = mediaList;
-                      continue; // Skip standard assignment
+                          }
+                          if (storeName === 'assets') {
+                              const id = item?.id;
+                              if (mode === 'text_only') return exportActivityTextAsset(item);
+                              if (mode === 'media_only' && typeof id === 'string' && isActivityTextAsset(id)) return undefined;
+                              if (typeof id === 'string' && (
+                                  isRedundantManagedAssetId(id)
+                                  || (isCompanionVoiceAssetId(id) && !companionVoiceAssetIdsForBackup.has(id))
+                                  || !shouldIncludeVoiceRelatedAssetInBackup(item, true)
+                              )) return undefined;
+                              externalizeVoiceMessageBlob(item, index, (path, blob) => {
+                                  zip.fileBlob(path, blob, { compression: 'STORE' });
+                              });
+                          }
+                          if (mode === 'media_only' && storeName === 'messages'
+                              && !(item.type === 'image' || item.type === 'emoji'
+                                  || item.metadata?.cameraSnapshotRef || item.metadata?.cameraSnapshotExpired === true)) {
+                              return undefined;
+                          }
+                          if (mode === 'media_only' && storeName === 'characters') {
+                              const c = item as CharacterProfile;
+                              const extracted = {
+                                  charId: c.id,
+                                  decoration: exportDecorationMedia(c),
+                                  avatar: c.avatar,
+                                  companionAvatar: c.companionAvatar,
+                                  companionTouchSettings: c.companionTouchSettings,
+                                  sprites: c.sprites,
+                                  // Date app sprite data: skin sets carry alternate sprite maps,
+                                  // and customDateSprites/activeSkinSetId are required to wire them up.
+                                  dateSkinSets: c.dateSkinSets,
+                                  activeSkinSetId: c.activeSkinSetId,
+                                  customDateSprites: c.customDateSprites,
+                                  spriteConfig: c.spriteConfig,
+                                  roomItems: c.roomConfig?.items?.reduce((acc: any, item: any) => {
+                                      // data:（旧值，下面 processObject 抽成 assets/*）和 blobref
+                                      // 令牌（v3 原样进包，二进制走 blobs/*）都算媒体，都带走。
+                                      if (item.image && (item.image.startsWith('data:') || isBlobRef(item.image))) {
+                                          acc[item.id] = item.image;
+                                      }
+                                      return acc;
+                                  }, {}),
+                                  backgrounds: {
+                                      chat: c.chatBackground,
+                                      date: c.dateBackground,
+                                      roomWall: c.roomConfig?.wallImage,
+                                      roomFloor: c.roomConfig?.floorImage
+                                  }
+                              };
+                              return processObject(extracted, `characters[${index}](id=${String(c.id).slice(0, 80)})`);
+                          }
+                          if (noImageStores.has(storeName)) return item;
+                          if (mode === 'text_only') return stripTextOnlyMedia(item);
+                          return processObject(item, `${storeName}[${index}]`);
+                      },
+                  });
+                  // mediaAssets starts as [] in metadata; don't serialize it twice.
+                  delete (backupData as Record<string, unknown>)[field];
+                  if (storeName === 'characters' && mode !== 'text_only') {
+                      await ensureCompanionVoiceAssetIdsForBackup(companionVoiceAssetIdsForBackup);
                   }
-
-                  processedData = Array.isArray(rawData) && rawData.length > 200
-                      ? await processArrayChunked(rawData, (item, index) => {
-                          const id = item && typeof item === 'object'
-                              ? String(item.id ?? item.uuid ?? item.key ?? '').replace(/[\r\n]/g, ' ').slice(0, 80)
-                              : '';
-                          return processObject(item, `${storeName}[${index}]${id ? `(id=${id})` : ''}`);
-                      })
-                      : processObject(rawData, storeName);
+                  await new Promise(resolve => setTimeout(resolve, 0));
+                  continue;
               }
 
-              // Assign to Backup Data
-              switch(storeName) {
-                  case 'characters': if(mode !== 'media_only') backupData.characters = processedData; break;
-                  // 角色分组定义 —— 键名须与 importFullData 读取的字段（data.characterGroups）对齐
-                  case 'character_groups': backupData.characterGroups = processedData; break;
-                  case 'messages': backupData.messages = processedData; break;
-                  case 'themes': backupData.customThemes = processedData; break;
-                  case 'emojis': backupData.savedEmojis = processedData; break;
-                  case 'emoji_categories': backupData.emojiCategories = processedData; break;
-                  case 'assets': backupData.assets = processedData; break;
-                  case 'gallery': backupData.galleryImages = processedData; break;
+              // Singleton stores keep their original restore semantics.
+              const rawData = await DB.getRawStoreData(storeName);
+              const processedData = mode === 'text_only'
+                  ? stripTextOnlyMedia(rawData) : processObject(rawData, storeName);
+              switch (storeName) {
                   case 'user_profile': if (processedData[0]) backupData.userProfile = processedData[0]; break;
-                  case 'diaries': backupData.diaries = processedData; break;
-                  case 'tasks': backupData.tasks = processedData; break;
-                  case 'anniversaries': backupData.anniversaries = processedData; break;
-                  case 'room_todos': backupData.roomTodos = processedData; break;
-                  case 'room_notes': backupData.roomNotes = processedData; break;
-                  case 'groups': backupData.groups = processedData; break;
-                  case 'journal_stickers': backupData.savedJournalStickers = processedData; break;
-                  case 'social_posts': backupData.socialPosts = processedData; break;
-                  case 'courses': backupData.courses = processedData; break;
-                  case 'character_study_sessions': backupData.characterStudySessions = processedData; break;
-                  case 'games': backupData.games = processedData; break;
-                  case 'board_game_sessions': backupData.boardGameSessions = processedData; break;
-                  case 'murder_mystery_scripts': backupData.murderMysteryScripts = processedData; break;
-                  case 'murder_mystery_sessions': backupData.murderMysterySessions = processedData; break;
-                  case 'murder_mystery_events': backupData.murderMysteryEvents = processedData; break;
-                  case 'healing_sessions': backupData.healingSessions = processedData; break;
-                  case 'healing_messages': backupData.healingMessages = processedData; break;
-                  case 'healing_memory_nodes': backupData.healingMemoryNodes = processedData; break;
-                  case 'one_change_changes': backupData.oneChangeChanges = processedData; break;
-                  case 'one_change_records': backupData.oneChangeRecords = processedData; break;
-                  case 'one_change_standard_versions': backupData.oneChangeStandardVersions = processedData; break;
-                  case 'one_change_state_events': backupData.oneChangeStateEvents = processedData; break;
-                  case 'one_change_settings': backupData.oneChangeSettings = processedData; break;
-                  case 'worldbooks': backupData.worldbooks = processedData; break;
-                  case 'my_schedule': backupData.myScheduleRecords = processedData; break;
-                  case 'story_theaters': backupData.storyTheaters = processedData; break;
-                  case 'story_theater_presets': backupData.storyTheaterPresets = processedData; break;
-                  case 'story_theater_masks': backupData.storyTheaterMasks = processedData; break;
-                  case 'novels': backupData.novels = processedData; break;
-                  case 'songs': backupData.songs = processedData; break;
-                  case 'bank_transactions': backupData.bankTransactions = processedData; break;
                   case 'bank_data': {
                       if (Array.isArray(processedData)) {
-                          const mainState = processedData.find((d: any) => d.id === 'main_state');
-                          const dollhouseRecord = processedData.find((d: any) => d.id === 'dollhouse_state');
+                          const mainState = processedData.find((item: any) => item.id === 'main_state');
+                          const dollhouseRecord = processedData.find((item: any) => item.id === 'dollhouse_state');
                           backupData.bankState = mainState ? { ...mainState, id: undefined } : undefined;
                           backupData.bankDollhouse = dollhouseRecord?.data || undefined;
                       }
                       break;
                   }
-                  case 'xhs_activities': backupData.xhsActivities = processedData; break;
-                  case 'xhs_stock': backupData.xhsStockImages = processedData; break;
-                  case 'quizzes': backupData.quizSessions = processedData; break;
-                  case 'guidebook': backupData.guidebookSessions = processedData; break;
-                  case 'scheduled_messages': backupData.scheduledMessages = processedData; break;
                   case 'life_sim': backupData.lifeSimState = Array.isArray(processedData) ? (processedData[0] || null) : (processedData || null); break;
-                  case 'handbook': backupData.handbooks = processedData; break;
-                  case 'trackers': backupData.trackers = processedData; break;
-                  case 'tracker_entries': backupData.trackerEntries = processedData; break;
-                  case 'life_records': backupData.lifeRecords = processedData; break;
-                  case 'med_plans': backupData.medPlans = processedData; break;
-                  case 'life_record_settings': backupData.lifeRecordSettings = processedData; break;
-                  case 'hotnews_snapshots': backupData.hotNewsSnapshots = processedData; break;
-                  case 'memory_nodes': backupData.memoryNodes = processedData; break;
-                  // memory_vectors 走二进制旁路（上面已 continue），不在此 switch 落 backupData
-                  case 'memory_links': backupData.memoryLinks = processedData; break;
-                  case 'topic_boxes': backupData.topicBoxes = processedData; break;
-                  case 'anticipations': backupData.anticipations = processedData; break;
-                  case 'event_boxes': backupData.eventBoxes = processedData; break;
-                  case 'room_plates': backupData.roomPlates = processedData; break;
-                  case 'digest_reports': backupData.digestReports = processedData; break;
-                  case 'daily_schedule': backupData.dailySchedules = processedData; break;
-                  case 'character_life': backupData.characterLifeStates = processedData; break;
-                  case 'memory_batches': backupData.memoryBatches = processedData; break;
-                  case 'pixel_home_assets': backupData.pixelHomeAssets = processedData; break;
-                  case 'pixel_home_layouts': backupData.pixelHomeLayouts = processedData; break;
-                  // 「彼方」虚拟世界 —— 键名须与 importFullData 读取的字段对齐
-                  case 'vr_novels': backupData.vrNovels = processedData; break;
-                  case 'vr_annotations': backupData.vrAnnotations = processedData; break;
-                  case 'cc_custom_parts': backupData.customCreatorParts = processedData; break;
-                  case 'vr_letters': backupData.vrLetters = processedData; break;
-                  case 'vr_settings': backupData.vrSettings = processedData; break;
-                  case 'vr_scripts': backupData.vrScripts = processedData; break;
-                  case 'vr_plays': backupData.vrStagedPlays = processedData; break;        // 角色演过的话剧
-                  case 'vr_presets': backupData.vrPresets = processedData; break;
-                  case 'heart_sync': backupData.heartSyncRecords = Array.isArray(processedData) ? processedData.filter((record: { kind?: string }) => record?.kind !== 'settings' && record?.kind !== 'session') : processedData; break;
-                  case 'debate_sessions': backupData.debateSessions = processedData; break;
-                  case 'life_replay': backupData.lifeReplayRecords = processedData; break;
-                  case 'community_committee': backupData.communityCommitteeSessions = processedData; break;
-                  case 'task_workshop': backupData.taskWorkshopRecords = processedData; break;
-                  // 单例 store：导入端期望单个对象（取首条），非数组
                   case 'vr_music': backupData.vrMusicRoom = Array.isArray(processedData) ? (processedData[0] || undefined) : (processedData || undefined); break;
                   case 'vr_guestbook': backupData.vrGuestbook = Array.isArray(processedData) ? (processedData[0] || undefined) : (processedData || undefined); break;
-                  // 家园 —— 键名须与 importFullData 读取的字段（data.worlds / data.worldEpisodes）对齐
-                  case 'worlds': backupData.worlds = processedData; break;
-                  case 'world_episodes': backupData.worldEpisodes = processedData; break;
+                  default: throw new Error(`未配置备份字段：${storeName}`);
               }
-
               await new Promise(resolve => setTimeout(resolve, 10));
           }
 
           // 进度条停在 70% 让用户看到接下来的"压缩中 X%"实际推进，而不是卡在 95% 干等。
-          // text_only 用 level 6；媒体/全量仍用 level 9，具体见 generateAsync 配置。
+          // ZIP 逐文件压缩，统一 level 6；媒体原字节 STORE。
           setSysOperation({ status: 'processing', message: '正在生成压缩包...', progress: 70 });
 
           // --- v2 分片序列化（替代老的单根 data.json）---
@@ -4962,6 +4842,9 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                   onSerialized: collectSerialized,
               },
           );
+
+          vectorPayload = undefined; // archive now owns a Blob snapshot of the binary vectors
+          assetDedupMap.clear(); // release old base64 dedup keys before compression
 
           // v3 blob 旁路收尾：被引用令牌的 Blob 直写 blobs/<id>（原文件字节，全程不经
           // base64），附 blobs/index.json。图已丢的令牌跳过——死令牌留在 JSON 里，
@@ -4994,14 +4877,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           // 进度提示：每 ~5% 更新一次（避免高频 React 重渲染），同时让进度
           // 条从 70% 平滑爬到 99%，用户能确切看到"在动"。
           let lastReportedPercent = -10;
-          const content = await zip.generateAsync(
-              {
-                  type: "blob",
-                  streamFiles: true,
-                  compression: "DEFLATE",
-                  // 纯文字备份优先手机稳定性；6 级体积差很小，但比 9 级明显省时省内存。
-                  compressionOptions: { level: mode === 'text_only' ? 6 : 9 },
-              },
+          const content = await zip.generateBlob(
               (metadata) => {
                   const p = metadata.percent;
                   if (p - lastReportedPercent >= 5 || p >= 99) {

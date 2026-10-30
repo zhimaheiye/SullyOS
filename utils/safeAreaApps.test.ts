@@ -15,6 +15,7 @@ const SELF_HANDLED: AppID[] = [
     AppID.Call, AppID.VoiceDesigner, AppID.Guidebook, AppID.LifeSim, AppID.MemoryPalace,
     AppID.Handbook, AppID.QQBridge, AppID.HotNews, AppID.WorldHome, AppID.CharCreatorDev,
     AppID.SpecialMoments, AppID.HeartSync, AppID.Debate, AppID.LifeReplay, AppID.Healing, AppID.CommunityCommittee, AppID.TaskWorkshop,
+    AppID.FriendFeed,
 ];
 
 describe('shellHandlesSafeArea', () => {

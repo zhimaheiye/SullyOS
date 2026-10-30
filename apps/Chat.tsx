@@ -2015,6 +2015,24 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
         }
     };
 
+    const exportingChatRef = useRef(false);
+    const handleExportChat = async () => {
+        if (!char || exportingChatRef.current) return;
+        exportingChatRef.current = true;
+        const target = char;
+        setShowPanel('none');
+        try {
+            const [{ formatChatTextExport }, { shareOrDownloadFile }] = await Promise.all([
+                import('../utils/chatTextExport'), import('../utils/shareExport'),
+            ]);
+            const content = formatChatTextExport(await DB.getMessagesByCharId(target.id, true));
+            if (!content.slice(1).trim()) { addToast('暂无可导出的聊天记录', 'info'); return; }
+            await shareOrDownloadFile({ content, fileName: `${target.name.replace(/[\\/:*?"<>|]/g, '_')}_聊天原文.txt`, mimeType: 'text/plain;charset=utf-8', shareTitle: `${target.name}的聊天原文` });
+            addToast('聊天原文已导出（含每条消息的原始时间）', 'success');
+        } catch { addToast('聊天记录导出失败，请重试', 'error'); }
+        finally { exportingChatRef.current = false; }
+    };
+
     const handlePanelAction = (type: string, payload?: any) => {
         // 只统计「打开某个面板 / 开关某个能力」这几个固定入口，名单写死在这里；
         // 选表情、选分类之类的动作不上报。
@@ -2029,6 +2047,7 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
             trackEvent('打开聊天功能面板项', { action: type });
         }
         switch (type) {
+            case 'export-chat': void handleExportChat(); break;
             case 'collaboration': setShowPanel('none'); setCollaborationOpen(true); break;
             case 'memory-link': setShowPanel('none'); setMemoryRepairOpen(true); break;
             case 'favorites': setShowPanel('none'); setFavoritesOpen(true); break;
@@ -3200,7 +3219,11 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
             void reloadMessages(visibleCount);
         };
         window.addEventListener('home-secrets-updated',refresh);
-        return()=>window.removeEventListener('home-secrets-updated',refresh);
+        window.addEventListener('friend-feed-history-updated',refresh);
+        return()=>{
+            window.removeEventListener('home-secrets-updated',refresh);
+            window.removeEventListener('friend-feed-history-updated',refresh);
+        };
     },[char?.id,visibleCount,reloadMessages]);
 
     // --- Message Management ---
@@ -4347,7 +4370,14 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
                 onDeleteEmoji={handleDeleteEmoji} onDeleteCategory={handleDeleteCategory} onRenameCategory={handleRenameCategory} onDownloadCategory={handleDownloadCategory}
                 allCharacters={characters} onSaveCategoryVisibility={handleSaveCategoryVisibility}
                 translationEnabled={translationEnabled}
-                onToggleTranslation={() => { const next = !translationEnabled; setTranslationEnabled(next); localStorage.setItem(`chat_translate_enabled_${activeCharacterId}`, JSON.stringify(next)); if (next) { trackEvent('开启聊天翻译', { targetLang: isTranslationLangPreset(translateTargetLang) ? translateTargetLang : 'custom' }); } if (!next) { setShowingTargetIds(new Set()); } }}
+                onToggleTranslation={() => {
+                    const next = !translationEnabled;
+                    setTranslationEnabled(next);
+                    localStorage.setItem(`chat_translate_enabled_${activeCharacterId}`, JSON.stringify(next));
+                    markAmsgStateDirty({ char, userProfile, groups, realtimeConfig });
+                    if (next) trackEvent('开启聊天翻译', { targetLang: isTranslationLangPreset(translateTargetLang) ? translateTargetLang : 'custom' });
+                    if (!next) setShowingTargetIds(new Set());
+                }}
                 translateSourceLang={translateSourceLang}
                 translateTargetLang={translateTargetLang}
                 translationExpanded={translationExpanded}
@@ -4358,8 +4388,22 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
                     setShowingTargetIds(new Set());
                     trackEvent('切换翻译展开模式', { enabled: next ? 'on' : 'off' });
                 }}
-                onSetTranslateSourceLang={(lang: string) => { const next = normalizeTranslationLangLabel(lang); if (!next) return; setTranslateSourceLang(next); localStorage.setItem(`chat_translate_source_lang_${activeCharacterId}`, next); setShowingTargetIds(new Set()); }}
-                onSetTranslateLang={(lang: string) => { const next = normalizeTranslationLangLabel(lang); if (!next) return; setTranslateTargetLang(next); localStorage.setItem(`chat_translate_lang_${activeCharacterId}`, next); setShowingTargetIds(new Set()); }}
+                onSetTranslateSourceLang={(lang: string) => {
+                    const next = normalizeTranslationLangLabel(lang);
+                    if (!next) return;
+                    setTranslateSourceLang(next);
+                    localStorage.setItem(`chat_translate_source_lang_${activeCharacterId}`, next);
+                    markAmsgStateDirty({ char, userProfile, groups, realtimeConfig });
+                    setShowingTargetIds(new Set());
+                }}
+                onSetTranslateLang={(lang: string) => {
+                    const next = normalizeTranslationLangLabel(lang);
+                    if (!next) return;
+                    setTranslateTargetLang(next);
+                    localStorage.setItem(`chat_translate_lang_${activeCharacterId}`, next);
+                    markAmsgStateDirty({ char, userProfile, groups, realtimeConfig });
+                    setShowingTargetIds(new Set());
+                }}
                 xhsEnabled={!!char.xhsEnabled}
                 onToggleXhs={() => updateCharacter(char.id, { xhsEnabled: !char.xhsEnabled })}
                 htmlModeEnabled={!!(char as any).htmlModeEnabled}

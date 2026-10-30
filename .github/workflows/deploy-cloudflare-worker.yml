@@ -1,7 +1,7 @@
 name: Deploy static site to Cloudflare
 
 on:
-  # 私有二改仓库不自动发布静态站；需要时仍可在 Actions 页面手动运行。
+  # 公开二改静态站只允许手动发布。
   workflow_dispatch:
 
 permissions:
@@ -9,18 +9,18 @@ permissions:
 
 concurrency:
   group: cloudflare-worker-production
-  cancel-in-progress: true
+  # Do not interrupt a deployed release before its assets have been saved.
+  cancel-in-progress: false
 
 jobs:
   deploy:
+    if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
       CI: 'true'
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      VITE_UMAMI_SCRIPT_URL: ${{ vars.UMAMI_SCRIPT_URL }}
-      VITE_UMAMI_WEBSITE_ID: ${{ vars.UMAMI_WEBSITE_ID }}
+      VITE_UMAMI_SCRIPT_URL: ''
+      VITE_UMAMI_WEBSITE_ID: ''
 
     steps:
       - name: Checkout master
@@ -28,9 +28,6 @@ jobs:
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
-        with:
-          version: 10
-
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -51,5 +48,30 @@ jobs:
       - name: Build site
         run: pnpm run build
 
+      - name: Verify build asset retention
+        run: node --test scripts/prepare-retained-build-assets.test.mjs
+
+      # Separate history from Pages: its relative-base build has different bytes.
+      # Merge only after the current SW manifest has been generated.
+      - name: Restore previous build assets
+        id: retained-assets
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/retained-build-assets
+          key: site-assets-cloudflare-v1-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: site-assets-cloudflare-v1-${{ github.ref_name }}-
+
+      - name: Retain recent hashed build assets
+        run: node scripts/prepare-retained-build-assets.mjs --dist dist --history .cache/retained-build-assets
+
       - name: Deploy static assets
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: npx --yes wrangler@4.122.0 deploy
+
+      - name: Save deployed build assets
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/retained-build-assets
+          key: ${{ steps.retained-assets.outputs.cache-primary-key }}

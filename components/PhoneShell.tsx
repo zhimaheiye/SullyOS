@@ -39,6 +39,8 @@ const JournalApp = lazyApp(() => import('../apps/JournalApp'));
 const ScheduleApp = lazyApp(() => import('../apps/ScheduleApp'));
 const RoomApp = lazyApp(() => import('../apps/RoomApp'));
 const CheckPhone = lazyApp(() => import('../apps/CheckPhone'));
+const FriendFeedApp = lazyApp(() => import('../apps/FriendFeedApp'));
+const FriendFeedNotification = React.lazy(() => import('./os/FriendFeedNotification'));
 const SocialApp = lazyApp(() => import('../apps/SocialApp'));
 const StudyApp = lazyApp(() => import('../apps/StudyApp'));
 const FAQApp = lazyApp(() => import('../apps/FAQApp'));
@@ -95,6 +97,7 @@ const APP_BY_ID: Partial<Record<AppID, PreloadableLazy>> = {
   [AppID.Gallery]: Gallery, [AppID.Date]: DateApp, [AppID.User]: UserApp,
   [AppID.Journal]: JournalApp, [AppID.Schedule]: ScheduleApp, [AppID.Room]: RoomApp,
   [AppID.CheckPhone]: CheckPhone, [AppID.Social]: SocialApp, [AppID.Study]: StudyApp,
+  [AppID.FriendFeed]: FriendFeedApp,
   [AppID.FAQ]: FAQApp, [AppID.Game]: GameApp, [AppID.BoardGame]: BoardGameApp, [AppID.Worldbook]: WorldbookApp,
   [AppID.MurderMystery]: MurderMysteryApp,
   [AppID.Novel]: NovelApp, [AppID.Bank]: BankApp, [AppID.XhsStock]: XhsStockApp,
@@ -119,7 +122,7 @@ setAppPayloadWarmer((id: AppID) => APP_BY_ID[id]?.preload());
 import { Like520Controller, shouldShowLike520Popup } from './Like520Event';
 import { QixiLaunchPopup } from './QixiLaunchPopup';
 import { shouldShowQixiLaunchPopup } from '../utils/qixiLaunchPopup';
-import { UpdateNotificationController, shouldShowUpdateNotification } from './UpdateNotificationEvent';
+import { UpdateNotificationController as StartupNoticeController, shouldShowUpdateNotification as shouldShowStartupNotice } from './UpdateNotificationEvent';
 import { BackupReminderController } from './BackupReminderEvent';
 import { shouldShowBackupReminder, markBackupReminderShown, daysSinceLastBackup } from '../utils/backupReminder';
 import { formatBytes } from '../utils/format';
@@ -582,6 +585,17 @@ const PhoneShell: React.FC = () => {
     }
   });
 
+  useEffect(() => {
+    if (!isDataLoaded) return;
+    try {
+      if (localStorage.getItem(DISCLAIMER_KEY)) {
+        setShowDisclaimer(false);
+      }
+    } catch { /* ignore */ }
+  }, [isDataLoaded]);
+
+  const startupNoticesBlocked = showDisclaimer;
+
   const handleAcceptDisclaimer = () => {
     try {
       localStorage.setItem(DISCLAIMER_KEY, Date.now().toString());
@@ -601,15 +615,15 @@ const PhoneShell: React.FC = () => {
   const showImportRecoveryPrompt = !!importRecoveryMarker;
 
   useEffect(() => {
-    if (showDisclaimer || importRecoveryDismissed || importRecoveryMarker) return;
+    if (startupNoticesBlocked || importRecoveryDismissed || importRecoveryMarker) return;
     const marker = getPendingImportMarker();
     if (marker) setImportRecoveryMarker(marker);
-  }, [showDisclaimer, importRecoveryDismissed, importRecoveryMarker]);
+  }, [startupNoticesBlocked, importRecoveryDismissed, importRecoveryMarker]);
 
   // 使用统计：导入中断提醒弹出来时报一次。只带「失败/中断」和阶段这两个固定枚举，
   // marker 里的报错正文、备份文件名、当前文件名、各种进度数字一概不带。
   useEffect(() => {
-    if (showDisclaimer || !showImportRecoveryPrompt) return;
+    if (startupNoticesBlocked || !showImportRecoveryPrompt) return;
     const phase = importRecoveryMarker?.phase;
     // phase 是 marker 里的字符串，只认这五个已知值，其余一律归 other，避免把未知原文发出去。
     const stage = phase === 'parsing' || phase === 'assets' || phase === 'database' || phase === 'settings' || phase === 'error'
@@ -621,7 +635,7 @@ const PhoneShell: React.FC = () => {
       中断类型: hasError ? '导入失败' : '导入被中断',
       中断阶段: getImportPhaseLabel(phase),
     });
-  }, [showDisclaimer, showImportRecoveryPrompt, importRecoveryMarker]);
+  }, [startupNoticesBlocked, showImportRecoveryPrompt, importRecoveryMarker]);
 
   const handleReimportFromRecovery = () => {
     setImportRecoveryDismissed(true);
@@ -653,26 +667,26 @@ const PhoneShell: React.FC = () => {
     }
   }, [anniversaryBlocked, isDataLoaded, isLocked, bootDone, bootAnimationEnabled]);
 
-  // 本次版本首映：数据就绪且解锁后出现一次，避免按钮打开的 App 被锁屏挡在背后。
-  const [showUpdateNotification, setShowUpdateNotification] = useState(false);
+  // 必要联网说明与配置选择：不再按历史版本标记补弹功能介绍。
+  const [showStartupNotice, setShowStartupNotice] = useState(false);
   /**
    * 这次开机已经问过一轮了。
    *
-   * 更新提醒可能不止一条（见 UpdateNotificationController 的队列），用户点「立刻体验」
+   * 必要说明可能不止一条，用户点「去填写」或「查看代理设置」
    * 跳去别的 App 时，剩下那几条是故意不标已读、留到下次启动的。少了这道闸，弹窗一关
-   * 下面的 effect 就会立刻再问一次「还有没有没看的」，然后把下一条糊在刚打开的页面上。
+   * 下面的 effect 就会立刻再问一次，把下一条盖到刚打开的设置页。
    */
-  const updateNoticeAsked = useRef(false);
+  const startupNoticeAsked = useRef(false);
 
   useEffect(() => {
-    if (updateNoticeAsked.current) return;
-    if (anniversaryHasPriority || showDisclaimer || showImportRecoveryPrompt || showAuthorLetter || showUpdateNotification) return;
+    if (startupNoticeAsked.current) return;
+    if (anniversaryHasPriority || showDisclaimer || showImportRecoveryPrompt || showAuthorLetter || showStartupNotice) return;
     if (!isDataLoaded || isLocked) return;
-    if (shouldShowUpdateNotification()) {
-      updateNoticeAsked.current = true;
-      setShowUpdateNotification(true);
+    if (shouldShowStartupNotice()) {
+      startupNoticeAsked.current = true;
+      setShowStartupNotice(true);
     }
-  }, [anniversaryHasPriority, showDisclaimer, showImportRecoveryPrompt, showAuthorLetter, showUpdateNotification, isDataLoaded, isLocked]);
+  }, [anniversaryHasPriority, showDisclaimer, showImportRecoveryPrompt, showAuthorLetter, showStartupNotice, isDataLoaded, isLocked]);
 
   // 七夕特别活动推送：严格按北京时间 2026-08-19 判断，用户处理后永久不再弹。
   // 排在版本更新之后、日常维护提醒之前；按钮只带到「特别时光」，不替用户选择角色。
@@ -680,35 +694,35 @@ const PhoneShell: React.FC = () => {
   const qixiLaunchAsked = useRef(false);
   useEffect(() => {
     if (qixiLaunchAsked.current) return;
-    if (anniversaryHasPriority || showDisclaimer || showImportRecoveryPrompt || showAuthorLetter || showUpdateNotification) return;
+    if (anniversaryHasPriority || showDisclaimer || showImportRecoveryPrompt || showAuthorLetter || showStartupNotice) return;
     if (!isDataLoaded || isLocked) return;
     if (shouldShowQixiLaunchPopup()) {
       qixiLaunchAsked.current = true;
       setShowQixiLaunchPopup(true);
     }
-  }, [anniversaryHasPriority, showDisclaimer, showImportRecoveryPrompt, showAuthorLetter, showUpdateNotification, isDataLoaded, isLocked]);
+  }, [anniversaryHasPriority, showDisclaimer, showImportRecoveryPrompt, showAuthorLetter, showStartupNotice, isDataLoaded, isLocked]);
 
   // 520 特别活动弹窗（2026-05-20 当天，且没被 dismiss / completed）
   // 一次性：用户点过任何按钮就标记 dismissed，下次刷新不再出现；
   // API 配置改成弹窗内嵌，配完直接进活动，不再需要把弹窗暂存让位给 Settings。
   const [showLike520Popup, setShowLike520Popup] = useState(false);
   useEffect(() => {
-    if (anniversaryHasPriority || showDisclaimer || showImportRecoveryPrompt || showAuthorLetter || showUpdateNotification || showQixiLaunchPopup) return;
+    if (anniversaryHasPriority || showDisclaimer || showImportRecoveryPrompt || showAuthorLetter || showStartupNotice || showQixiLaunchPopup) return;
     if (!isDataLoaded) return;
     if (shouldShowLike520Popup()) setShowLike520Popup(true);
-  }, [anniversaryHasPriority, showDisclaimer, showImportRecoveryPrompt, showAuthorLetter, showUpdateNotification, showQixiLaunchPopup, isDataLoaded]);
+  }, [anniversaryHasPriority, showDisclaimer, showImportRecoveryPrompt, showAuthorLetter, showStartupNotice, showQixiLaunchPopup, isDataLoaded]);
 
   // 「该备份啦」提醒 — local-first 数据只在本机，隔 N 天（默认 7，可在设置里改）没导出就弹一次
   const [showBackupReminder, setShowBackupReminder] = useState(false);
   useEffect(() => {
-    if (anniversaryHasPriority || showDisclaimer || showImportRecoveryPrompt || showAuthorLetter || showUpdateNotification || showQixiLaunchPopup || showLike520Popup) return;
+    if (anniversaryHasPriority || showDisclaimer || showImportRecoveryPrompt || showAuthorLetter || showStartupNotice || showQixiLaunchPopup || showLike520Popup) return;
     if (!isDataLoaded || isLocked) return;
     if (shouldShowBackupReminder()) {
       setShowBackupReminder(true);
       // 只报「从未备份 / 已过期」这一个二选一，不报具体天数、也不报用户设的提醒间隔。
       trackEvent('弹出该备份啦提醒', { state: daysSinceLastBackup() == null ? '从未备份' : '已过期' });
     }
-  }, [anniversaryHasPriority, showDisclaimer, showImportRecoveryPrompt, showAuthorLetter, showUpdateNotification, showQixiLaunchPopup, showLike520Popup, isDataLoaded, isLocked]);
+  }, [anniversaryHasPriority, showDisclaimer, showImportRecoveryPrompt, showAuthorLetter, showStartupNotice, showQixiLaunchPopup, showLike520Popup, isDataLoaded, isLocked]);
 
   const dismissBackupReminder = () => {
     markBackupReminderShown();
@@ -971,6 +985,7 @@ const PhoneShell: React.FC = () => {
       case AppID.Schedule: return <ScheduleApp />;
       case AppID.Room: return <RoomApp />; 
       case AppID.CheckPhone: return <CheckPhone />;
+      case AppID.FriendFeed: return <FriendFeedApp />;
       case AppID.Social: return <SocialApp />;
       case AppID.Study: return <StudyApp />; 
       case AppID.FAQ: return <FAQApp />; 
@@ -1084,6 +1099,7 @@ const PhoneShell: React.FC = () => {
           {/* Overlays: Global Mini Player (when music is playing in background) */}
           <GlobalMiniPlayer />
           <NavigationBall />
+          {isDataLoaded&&!isLocked&&<Suspense fallback={null}><FriendFeedNotification/></Suspense>}
           {!isLocked && <SARModuleMonitor />}
 
           {/* Overlays: 人格模拟生成全局指示条 */}
@@ -1139,18 +1155,18 @@ const PhoneShell: React.FC = () => {
          />
        )}
 
-       {/* 见面 · 剧情首映：解锁后一次性出现 */}
-       {!anniversaryHasPriority && !showDisclaimer && !showImportRecoveryPrompt && !showAuthorLetter && showUpdateNotification && (
-         <UpdateNotificationController onClose={() => setShowUpdateNotification(false)} />
+       {/* 必要联网说明与配置选择；与邀请的 blocked 判断使用同一范围 */}
+       {!anniversaryHasPriority && !showDisclaimer && !showImportRecoveryPrompt && !showAuthorLetter && showStartupNotice && (
+         <StartupNoticeController onClose={() => setShowStartupNotice(false)} />
        )}
 
        {/* 七夕特别活动推送（北京时间 2026-08-19，当天至多出现一次） */}
-       {!anniversaryHasPriority && !showDisclaimer && !showImportRecoveryPrompt && !showAuthorLetter && !showUpdateNotification && showQixiLaunchPopup && (
+       {!anniversaryHasPriority && !showDisclaimer && !showImportRecoveryPrompt && !showAuthorLetter && !showStartupNotice && showQixiLaunchPopup && (
          <QixiLaunchPopup onClose={() => setShowQixiLaunchPopup(false)} />
        )}
 
        {/* 520 特别活动弹窗（2026-05-20 当天，一次性） */}
-       {!anniversaryHasPriority && !showDisclaimer && !showImportRecoveryPrompt && !showAuthorLetter && !showUpdateNotification && !showQixiLaunchPopup && showLike520Popup && (
+       {!anniversaryHasPriority && !showDisclaimer && !showImportRecoveryPrompt && !showAuthorLetter && !showStartupNotice && !showQixiLaunchPopup && showLike520Popup && (
          <Like520Controller
            onClose={() => setShowLike520Popup(false)}
          />
@@ -1158,15 +1174,15 @@ const PhoneShell: React.FC = () => {
 
        <FeedbackInvitation
          ready={isDataLoaded && !isLocked && (bootDone || !bootAnimationEnabled)}
-         blocked={activeApp !== AppID.Launcher || !!suspendedCall || !!errorDialog || sysOperation.status !== 'idle' || anniversaryHasPriority || showDisclaimer || showImportRecoveryPrompt || showAuthorLetter || showUpdateNotification || shouldShowUpdateNotification() || showQixiLaunchPopup || showLike520Popup || showBackupReminder}
+         blocked={activeApp !== AppID.Launcher || !!suspendedCall || !!errorDialog || sysOperation.status !== 'idle' || anniversaryHasPriority || showDisclaimer || showImportRecoveryPrompt || showAuthorLetter || showStartupNotice || shouldShowStartupNotice() || showQixiLaunchPopup || showLike520Popup || showBackupReminder}
        />
 
        <BeautyRepoInvitation
          ready={isDataLoaded && !isLocked && (bootDone || !bootAnimationEnabled)}
-         blocked={activeApp !== AppID.Launcher || !!suspendedCall || !!errorDialog || sysOperation.status !== 'idle' || anniversaryHasPriority || showDisclaimer || showImportRecoveryPrompt || showAuthorLetter || showUpdateNotification || shouldShowUpdateNotification() || showQixiLaunchPopup || showLike520Popup || showBackupReminder}
+         blocked={activeApp !== AppID.Launcher || !!suspendedCall || !!errorDialog || sysOperation.status !== 'idle' || anniversaryHasPriority || showDisclaimer || showImportRecoveryPrompt || showAuthorLetter || showStartupNotice || shouldShowStartupNotice() || showQixiLaunchPopup || showLike520Popup || showBackupReminder}
        />
        {/* 「该备份啦」提醒（local-first 数据只在本机，隔 N 天没导出弹一次） */}
-       {!anniversaryHasPriority && !showDisclaimer && !showImportRecoveryPrompt && !showAuthorLetter && !showUpdateNotification && !showQixiLaunchPopup && !showLike520Popup && showBackupReminder && (
+       {!anniversaryHasPriority && !showDisclaimer && !showImportRecoveryPrompt && !showAuthorLetter && !showStartupNotice && !showQixiLaunchPopup && !showLike520Popup && showBackupReminder && (
          <BackupReminderController
            onDismiss={dismissBackupReminder}
            onGoBackup={goBackupFromReminder}

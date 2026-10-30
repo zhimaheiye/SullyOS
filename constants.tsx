@@ -1,4 +1,5 @@
 import React from 'react';
+import BibiIcon from './components/os/BibiIcon';
 import { AppConfig, AppID } from './types';
 import {
   UserCircle,
@@ -67,6 +68,7 @@ export const Icons: Record<string, React.FC<{ className?: string }>> = {
   Schedule: ({ className }) => <SealCheck className={className} weight="regular" />,
   Room: ({ className }) => <House className={className} weight="regular" />,
   CheckPhone: ({ className }) => <DeviceMobileCamera className={className} weight="regular" />,
+  FriendFeed: ({ className }) => <BibiIcon variant="line" className={className} />,
   Social: ({ className }) => <Fire className={className} weight="regular" />,
   Study: ({ className }) => <Books className={className} weight="regular" />,
   FAQ: ({ className }) => <Question className={className} weight="regular" />,
@@ -115,6 +117,7 @@ export const INSTALLED_APPS: AppConfig[] = [
   // 家园不再做独立桌面图标，改从「小小窝 · 像素家园」里进入（openApp(AppID.WorldHome) 仍可渲染）
   // { id: AppID.WorldHome, name: '家园', icon: 'WorldHome', color: 'emerald' },
   { id: AppID.CheckPhone, name: '查手机', icon: 'CheckPhone', color: 'slate' },
+  { id: AppID.FriendFeed, name: '哔哔', icon: 'FriendFeed', color: 'emerald' },
   // { id: AppID.Browser, name: '浏览器', icon: 'Browser', color: 'blue' }, // Hidden
   { id: AppID.Date, name: '见面', icon: 'Date', color: 'pink' },
   { id: AppID.HeartSync, name: '心心相印', icon: 'HeartSync', color: 'rose' },
@@ -139,7 +142,7 @@ export const INSTALLED_APPS: AppConfig[] = [
   { id: AppID.Schedule, name: '时光契约', icon: 'Schedule', color: 'cyan' },
   { id: AppID.Worldbook, name: '世界书', icon: 'Worldbook', color: 'indigo' },
   { id: AppID.HotNews, name: '热点', icon: 'HotNews', color: 'red' },
-  { id: AppID.FAQ, name: '使用帮助', icon: 'FAQ', color: 'indigo' },
+  { id: AppID.FAQ, name: '更新日志', icon: 'FAQ', color: 'indigo' },
   { id: AppID.Gallery, name: '相册', icon: 'Gallery', color: 'orange' },
   { id: AppID.XhsFreeRoam, name: '自由活动', icon: 'XhsFreeRoam', color: 'rose' },
   { id: AppID.XhsStock, name: '小红书图库', icon: 'XhsStock', color: 'red' },

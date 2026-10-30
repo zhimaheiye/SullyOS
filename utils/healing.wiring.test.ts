@@ -40,7 +40,10 @@ describe('Healing App 接线与 v0.1 边界', () => {
   it('v2 分片备份登记四张表，并给聊愈向量走独立二进制旁路', () => {
     const context = source('context/OSContext.tsx');
     expect(context).toContain("'healing_sessions', 'healing_messages', 'healing_memory_nodes', 'healing_memory_vectors'");
-    expect(context).toContain("case 'healing_messages': backupData.healingMessages = processedData");
+    expect(context).toContain("healing_messages: 'healingMessages'");
+    expect(context).toContain("healing_sessions: 'healingSessions'");
+    expect(context).toContain("healing_memory_nodes: 'healingMemoryNodes'");
+    expect(context).toContain("storeName === 'healing_memory_vectors'");
     expect(context).toContain('healingVectors: healingVectorPayload');
     const format = source('utils/backupFormat.ts');
     expect(format).toContain("stores/healing_memory_vectors.bin");

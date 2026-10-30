@@ -11,6 +11,7 @@
  *   - 麦当劳 / 瑞幸 点单 MCP                     → /mcp/mcd /mcp/luckin
  *   - Cloudflare API 中转（一键部署主动消息用）  → /cf-api
  *   - 网页读取、网易云、小红书 Lite              → /fetch-webpage /netease /api
+ *   - 好友圈微博扫码和只读同步                → /weibo
  *
  * 本版本由发行方提供一份公共代理。仓库默认地址是已部署的
  * https://zhima-public-proxy.sullyos-sxy10.workers.dev。

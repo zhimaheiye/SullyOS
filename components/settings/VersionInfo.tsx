@@ -6,6 +6,7 @@ import { trackEvent } from '../../utils/analytics';
 import AndroidUpdateControl from './AndroidUpdateControl';
 import DatabaseDiagnosticDetails from '../DatabaseDiagnosticDetails';
 import { armManualRelay, disarmManualRelay, getManualRelayState, subscribeManualRelay } from '../../utils/manualModelRelay';
+import StartupDiagnosticDetails from '../StartupDiagnosticDetails';
 
 /**
  * Settings 底部的版本信息脚注。
@@ -125,6 +126,7 @@ const VersionInfo: React.FC = () => {
             </button>
             <div className="mt-3 w-full max-w-md text-xs text-slate-500">
                 <DatabaseDiagnosticDetails />
+                <StartupDiagnosticDetails />
             </div>
         </div>
     );

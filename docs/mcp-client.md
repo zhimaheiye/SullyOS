@@ -1,6 +1,6 @@
 # 通用 MCP 客户端（远程 HTTP + 本机 stdio）
 
-2026-10-20 待公开版本已撤下「我的日程」里的 Veglia 活动读取和睡眠 MCP 入口。通用 MCP 仍只服务用户自己配置的工具，不内置活动采集或健康数据读取。
+2026-10-20 公开版本已撤下「我的日程」里的 Veglia 活动读取和睡眠 MCP 入口。通用 MCP 仍只服务用户自己配置的工具，不内置活动采集或健康数据读取。
 
 > 改 MCP 接入路径、排查「工具连不上 / 角色不调工具」前必读。
 > 这份文档讲的是**通用** MCP 客户端；小红书/麦当劳/瑞幸那三个写死的客户端不归这里管
@@ -187,6 +187,9 @@ stdio 不走这三种网络路径。它只在本机 `run.bat` / `pnpm dev` 启�
   `buildMcpFireTools` 从 tool_config 现场生成——与凭据同源，不经过 fire_pack，
   没有陈旧窗口。amsg-server 带 `agentic-fire-tools` feature 的版本起，fire 循环
   透传 tools 请求参数。
+- **传输方式与执行许可分开**：`mcpUseNativeTools:false` 即使没有可用 MCP 服务器也保留，
+  Worker 不发送原生 `tools`。文字兼容模式仍可执行已获授权的能力；`allowedToolNames`
+  单独控制执行白名单，不依赖原生工具声明是否存在。排程能力另受用户的 2.0 开关约束。
 - **调用识别（与前台同构的两层）**：native tool_calls 优先；没有 native 时用
   前台「兼容模式」同一个解析器（`extractTextFakedMcpCalls`，`alsoMatchPrefix`
   选项认带前缀写法）从正文抠 `tool_name({...})`。统一 `mcp__` 前缀路由

@@ -265,7 +265,7 @@ callLLM(prompt, temperature)
 
 这些断言能保护“扩写不直接写会话 / DB”，但无法发现 `callLLM` 默认参数后来从裸调用变成 `withCharacter=true`。
 
-对应未修项已登记到根目录 `TODO.md`。
+这里保留当时未完成项的背景；后续任务与当前验证边界见 `docs/handoff/CURRENT.md`。
 
 ## 8. 推荐修复边界
 

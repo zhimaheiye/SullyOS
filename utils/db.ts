@@ -6,6 +6,8 @@ import { getLocalDateKey } from './localDate';
 import { planMurderMysteryCommand, type MurderMysteryCommand } from './murderMystery/rules';
 import type { LifeState } from './characterLife/engine';
 import { readLocalCursor } from './localRead';
+import { applyFriendFeedMedia, collectFriendFeedMedia, isActivityTextAsset } from './activityBackup';
+import { compactMemoryLink } from './memoryPalace/linkPrecision';
 import { reportDatabaseFailure } from './databaseHealth';
 import { associateDatabaseOpen, beginDatabaseOpen, recordDatabaseOpen } from './databaseOpenDiagnostics';
 import {migrateLegacyWhiteboxPresets} from './legacyWhiteboxPresets';
@@ -1000,6 +1002,33 @@ export const DB = {
       transaction.oncomplete = () => updated ? resolve(updated) : reject(new Error('HTML repair was not applied'));
       transaction.onerror = () => reject(transaction.error || new Error('HTML repair failed'));
       transaction.onabort = () => reject(transaction.error || new Error('HTML repair aborted'));
+    });
+  },
+
+  /** 补收去重覆盖完整私聊历史（含已归档部分），只收集本次需要核对的消息 ID。 */
+  findPersistedActiveMessageIds: async (charId: string, messageIds: string[]): Promise<Set<string>> => {
+    const remaining = new Set(messageIds.filter(Boolean));
+    const found = new Set<string>();
+    if (remaining.size === 0) return found;
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_MESSAGES, 'readonly');
+      const request = transaction.objectStore(STORE_MESSAGES).index('charId')
+        .openCursor(IDBKeyRange.only(charId), 'prev');
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) return;
+        const message = cursor.value as Message;
+        const messageId = message.metadata?.activeMsg2?.messageId;
+        if (!message.groupId && typeof messageId === 'string' && remaining.delete(messageId)) {
+          found.add(messageId);
+        }
+        if (remaining.size > 0) cursor.continue();
+      };
+      request.onerror = () => reject(request.error);
+      transaction.oncomplete = () => resolve(found);
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error || new Error('补收历史核对未能完成'));
     });
   },
 
@@ -4876,6 +4905,16 @@ export const DB = {
           });
       };
 
+      const mediaOnly = data.collaborationBackupMode === 'media_only';
+      // Older media archives included entire text records from assets. Recover
+      // their pictures only; never roll a user's current history back with them.
+      if (mediaOnly && !data.friendFeedMedia) {
+          const legacy = data.friendFeed ?? data.assets?.find(a => a.id === 'friend_feed_v1')?.data;
+          if (legacy) {
+              const { parseFriendFeed } = await import('./friendFeed');
+              data.friendFeedMedia = collectFriendFeedMedia(parseFriendFeed(typeof legacy === 'string' ? legacy : JSON.stringify(legacy)));
+          }
+      }
       const plannedSections = [
           data.characters !== undefined || data.mediaAssets !== undefined,
           data.characterGroups !== undefined,
@@ -4884,6 +4923,9 @@ export const DB = {
           data.savedEmojis !== undefined,
           data.emojiCategories !== undefined,
           data.assets !== undefined,
+          data.friendFeed !== undefined && !mediaOnly,
+          data.activityTextAssets !== undefined && !mediaOnly,
+          data.friendFeedMedia !== undefined,
           data.savedJournalStickers !== undefined,
           data.galleryImages !== undefined,
           data.diaries !== undefined,
@@ -5027,7 +5069,7 @@ export const DB = {
               }
               await beforeWrite(chunk, label, restoreAssets);
               await withStore(storeName, store => {
-                  chunk.forEach(item => store.put(item));
+                  chunk.forEach(item => store.put(storeName === 'memory_links' ? compactMemoryLink(item) : item));
               });
               for (let j = i; j < end; j++) {
                   (items as any[])[j] = undefined;
@@ -5145,9 +5187,40 @@ export const DB = {
           data.emojiCategories = undefined as any;
       }, data.emojiCategories?.length || 0);
       await runSection('系统资源', data.assets !== undefined, async () => {
-          await clearAndAdd(STORE_ASSETS, data.assets || [], '系统资源', true);
+          if (mediaOnly) {
+              await mergeStore(STORE_ASSETS, (data.assets || []).filter(a => !isActivityTextAsset(a.id)), '系统资源', true);
+          } else await clearAndAdd(STORE_ASSETS, data.assets || [], '系统资源', true);
           data.assets = undefined as any;
       }, data.assets?.length || 0);
+      await runSection('活动文字记录', data.activityTextAssets !== undefined && !mediaOnly, async () => {
+          const records = data.activityTextAssets!;
+          if (!Array.isArray(records) || records.some(a => !a || typeof a.id !== 'string'
+              || !isActivityTextAsset(a.id) || a.id === 'friend_feed_v1' || typeof a.data !== 'string')) {
+              throw new Error('活动文字备份格式不正确');
+          }
+          // A present section replaces its own subset, including an empty one.
+          // Other assets (pictures, themes, and the separately restored feed) survive.
+          await withStore(STORE_ASSETS, store => {
+              const keys = store.getAllKeys();
+              keys.onsuccess = () => {
+                  for (const key of keys.result) if (typeof key === 'string' && key !== 'friend_feed_v1' && isActivityTextAsset(key)) store.delete(key);
+                  for (const item of records) store.put(item);
+              };
+          });
+          data.activityTextAssets = undefined;
+      });
+      await runSection('好友圈', data.friendFeed !== undefined && !mediaOnly, async () => {
+          const {FRIEND_FEED_KEY, parseFriendFeed} = await import('./friendFeed');
+          const state = parseFriendFeed(JSON.stringify(data.friendFeed));
+          await DB.saveAsset(FRIEND_FEED_KEY, JSON.stringify(state));
+      });
+      await runSection('哔哔图片', data.friendFeedMedia !== undefined, async () => {
+          const { FRIEND_FEED_KEY, parseFriendFeed } = await import('./friendFeed');
+          const current = parseFriendFeed(await DB.getAsset(FRIEND_FEED_KEY));
+          const state = applyFriendFeedMedia(current, data.friendFeedMedia!);
+          await DB.saveAsset(FRIEND_FEED_KEY, JSON.stringify(state));
+          data.friendFeedMedia = undefined;
+      });
       await runSection('聊天收藏', data.contentFavoritesIndex != null, async () => {
           await DB.saveAssetRaw('content_favorites_index_v1', data.contentFavoritesIndex);
       });

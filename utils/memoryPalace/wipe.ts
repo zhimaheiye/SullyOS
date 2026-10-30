@@ -100,7 +100,6 @@ async function clearMirroredHighWatermarks(): Promise<void> {
         });
     } catch { /* ignore */ }
 }
-
 /** 清空远程 Supabase 向量表（全表删除，跨所有角色） */
 async function clearRemoteVectors(config: RemoteVectorConfig): Promise<number> {
     if (!config.enabled || !config.initialized) return 0;

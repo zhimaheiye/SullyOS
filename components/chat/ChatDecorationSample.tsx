@@ -1,6 +1,7 @@
+import {renderCollaborationBeautySample} from '../../features/collaboration/CollaborationBeautySample';
 import {avatarFrameLayer,readAvatarFrameTarget} from '../../utils/avatarFrameTarget';
 import JournalThemeArtwork from '../journal/JournalThemeArtwork';
-import {meetingAppearance, MEETING_READING_CSS} from '../../utils/meetingAppearance';
+import {meetingAppearance, MEETING_READING_CSS, meetingCustomCss} from '../../utils/meetingAppearance';
 import {resolveJournalAppearanceCss,JOURNAL_APPEARANCE_SAFETY_CSS} from '../../utils/journalAppearance';
 import {ScheduleCardView} from '../schedule/ScheduleCard';
 import React from 'react';
@@ -33,6 +34,7 @@ const defaultBubble=PRESET_THEMES.default;
 /** Static rendering intentionally never mounts effects or binds actual message actions. */
 export function renderChatDecorationSample(value:unknown,sceneId:string,thumbnailPart?:DecorationThumbnailPart,state:DecorationPreviewState={}) {
  const p=validateDecoration(value).parts,l=p.layout||{};
+ if(p.collaboration)return renderCollaborationBeautySample(p.collaboration,!!thumbnailPart);
  if(p.date||p.story){
   const style=meetingAppearance(p.date||p.story);
   const markup=renderToStaticMarkup(<main className="meeting-reading" data-reading-preset={style.id}>
@@ -42,7 +44,7 @@ export function renderChatDecorationSample(value:unknown,sceneId:string,thumbnai
       {p.story&&<small style={{opacity:.5}}>▸ 场景与补充</small>}
     </div>
   </main>);
-  return {markup,css:baseCss+'\n'+MEETING_READING_CSS};
+  return {markup,css:baseCss+'\n'+MEETING_READING_CSS+'\n'+meetingCustomCss(p.date||p.story)};
  }
  if(thumbnailPart==='journal'||sceneId==='journal-app'){
   const preset=p.journal?.preset||'original';

@@ -1,0 +1,43 @@
+/* 沿用原作 2026-8-10.html 的纸感排版、主视觉与分区卡片结构。 */
+:root { --ink: #233d35; --ink-soft: #627265; --paper: #f6f3ed; --card: #fffdf8; --rule: #dcded1; --accent: #486b46; --accent-soft: #e8eedf; }
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { margin: 0; background: radial-gradient(circle at 90% 0, #e7eee2, transparent 32rem), var(--paper); color: var(--ink); font-family: ui-serif, "Noto Serif SC", "Songti SC", Georgia, serif; line-height: 1.85; -webkit-font-smoothing: antialiased; overflow-wrap: anywhere; }
+.wrap { max-width: 760px; margin: auto; padding: 54px 28px 76px; }
+.eyebrow { display: flex; align-items: center; gap: 14px; margin-bottom: 22px; color: var(--accent); font: 700 10px/1.6 ui-monospace, monospace; letter-spacing: .18em; }
+.eyebrow::after { content: ""; flex: 1; height: 1px; background: var(--rule); }
+h1 { margin: 0; font-size: clamp(32px, 7vw, 48px); line-height: 1.25; letter-spacing: -.035em; }
+.lede { margin: 22px 0 0; color: var(--ink-soft); font-size: 16px; }
+.meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 26px; }
+.meta span { border: 1px solid var(--rule); border-radius: 999px; background: #ffffff90; padding: 5px 11px; color: #6e7b67; font: 600 11px/1.5 ui-monospace, monospace; }
+.signal { position: relative; overflow: hidden; margin: 38px 0; padding: 30px; border-radius: 24px; background: linear-gradient(145deg, #1d3c34, #3d5c46); color: #fffdf3; box-shadow: 0 20px 45px #213d3415; }
+.signal::after { content: ""; position: absolute; right: -50px; top: -90px; width: 230px; height: 230px; border: 32px solid #c1d0a417; border-radius: 50%; pointer-events: none; }
+.signal > * { position: relative; z-index: 1; }
+.signal-kicker { font: 700 10px/1.6 ui-monospace, monospace; letter-spacing: .18em; color: #c3d4a8; }
+.signal h2 { margin: 16px 0 10px; font-size: 25px; line-height: 1.5; }
+.signal p { margin: 0; font-size: 14px; color: #d4ddcb; }
+.overview { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 30px 0; }
+.overview article { padding: 22px; border: 1px solid var(--rule); border-radius: 18px; background: var(--card); }
+.overview h3 { margin: 15px 0 8px; font-size: 18px; }
+.overview p { margin: 0; color: var(--ink-soft); font-size: 13px; }
+.item { margin-top: 45px; scroll-margin-top: 24px; }
+.item-head { display: flex; align-items: baseline; gap: 16px; padding-bottom: 16px; border-bottom: 1px solid var(--rule); }
+.item h2 { margin: 0; font-size: 23px; line-height: 1.5; }
+.item h2 small { display: block; margin-top: 3px; color: #88917e; font-size: 10px; font-weight: 600; letter-spacing: .12em; }
+.item-body { padding-top: 20px; }
+.item-body h3 { margin: 22px 0 8px; font-size: 18px; }
+.item-body article:first-child h3 { margin-top: 0; }
+.item-body p, .item-body li { color: var(--ink-soft); font-size: 14px; }
+.item-body ul, .item-body ol { padding-left: 1.4em; }
+.item-body li { margin: 10px 0; }
+strong { color: var(--ink); }
+.path { display: inline-block; margin: 3px 0; padding: 2px 8px; border: 1px solid var(--rule); border-radius: 7px; background: var(--accent-soft); color: #3e603e; font: 700 12px/1.7 ui-monospace, monospace; }
+.note { margin: 22px 0; padding: 16px 18px; border-left: 3px solid #7b9864; border-radius: 3px 12px 12px 3px; background: var(--accent-soft); color: #52684b; font-size: 13px; }
+.source { margin-top: 40px; padding-top: 20px; border-top: 1px solid var(--rule); color: #76816f; font-size: 12px; }
+.history-toc { margin: 26px 0 36px; color: #839174; font: 12px/2.2 ui-monospace, monospace; }
+.history-date { margin-bottom: 9px; color: #718164; font: 700 11px/1.6 ui-monospace, monospace; letter-spacing: .06em; }
+a { color: #426a4b; text-underline-offset: 3px; }
+a:focus-visible { outline: 3px solid #b88c47; outline-offset: 4px; }
+footer { margin-top: 36px; color: #8b9482; font-size: 11px; line-height: 1.9; }
+@media (max-width: 620px) { .wrap { padding: 36px 20px 58px; } .overview { grid-template-columns: 1fr; } .signal { padding: 25px; } .item h2 { font-size: 21px; } }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }

@@ -4,8 +4,10 @@ import { execSync } from 'node:child_process';
 import { bakeVoiceMiddleware } from './server/bake-voice-middleware';
 import { closeAllMcpStdioServers, mcpStdioMiddleware } from './server/mcp-stdio-middleware';
 import { staticCachePlugin } from './scripts/static-cache-build';
+import { homeResourcePacksPlugin } from './scripts/home-resource-packs.mjs';
 import { startupRecoveryPlugin } from './scripts/startup-recovery-plugin';
 import { APP_VERSION_TAG } from './utils/appVersion';
+import { tikhubMiddleware } from './server/tikhub-middleware';
 
 // MiniMax 国服 / 海外是两套域名，前端每个请求都带 X-MiniMax-Region 头说明走哪边。
 // Vite 的开发代理底层是 http-proxy，不认 router 选项，所以在 configure 里包一层 proxy.web，
@@ -27,11 +29,10 @@ const routeMinimaxByRegion: ProxyOptions['configure'] = (proxy) => {
 // 非 git 环境（容器、tarball 部署）退化成 'unknown'，不影响构建。
 //
 // 显示规则：
-//   - 默认在 main / master 上隐藏（视为正式发布），其他分支显示
+//   - 公开版默认隐藏调试入口和构建浮标，与所在分支无关
 //   - CI detached HEAD 优先读 GITHUB_REF_NAME / VERCEL_GIT_COMMIT_REF / CF_PAGES_BRANCH / BRANCH(Netlify)
 //   - VITE_HIDE_BUILD_BADGE=1 强制隐藏（覆盖默认）
 //   - VITE_SHOW_BUILD_BADGE=1 强制显示（在 master 本地调试用）
-const RELEASE_BRANCHES = new Set(['main', 'master']);
 const UTC8_OFFSET_MS = 8 * 60 * 60 * 1000;
 
 function formatBuildTimeUtc8(date = new Date()): string {
@@ -66,8 +67,7 @@ const gitInfo = { branch: readBranch(), commit: readCommit() };
 const buildTime = formatBuildTimeUtc8();
 // 开头是构建时间（36 进制），网页更新靠它比较两个版本谁新谁旧，别改掉这个前缀。
 const appBuildId = `${Date.now().toString(36)}-${gitInfo.commit}`;
-const isReleaseBranch = RELEASE_BRANCHES.has(gitInfo.branch);
-let showBuildBadge = !isReleaseBranch;
+let showBuildBadge = false;
 if (process.env.VITE_HIDE_BUILD_BADGE === '1') showBuildBadge = false;
 if (process.env.VITE_SHOW_BUILD_BADGE === '1') showBuildBadge = true;
 
@@ -92,6 +92,7 @@ export default defineConfig({
     ],
   },
   plugins: [
+    homeResourcePacksPlugin(),
     startupRecoveryPlugin(appBuildId),
     react(),
     staticCachePlugin({ buildId: appBuildId, appVersion: APP_VERSION_TAG }),
@@ -99,6 +100,7 @@ export default defineConfig({
       name: 'bake-voice-middleware',
       configureServer(server) {
         server.middlewares.use('/api/minimax/bake-voice', bakeVoiceMiddleware);
+        server.middlewares.use('/api/friend-feed/tikhub', tikhubMiddleware);
       },
     },
     {
@@ -171,6 +173,13 @@ export default defineConfig({
         rewrite: () => '/v1/t2a_v2',
         configure: routeMinimaxByRegion,
       },
+      '/api/minimax/stt': {
+        target: 'https://api.minimaxi.com',
+        changeOrigin: true,
+        secure: true,
+        rewrite: () => '/v1/speech_to_text',
+        configure: routeMinimaxByRegion,
+      },
       '/api/minimax/get-voice': {
         target: 'https://api.minimaxi.com',
         changeOrigin: true,
@@ -192,6 +201,13 @@ export default defineConfig({
         secure: true,
         rewrite: () => '/v1/tts',
       },
+      // 鱼声 Fish Audio STT：转发到 https://api.fish.audio/v1/asr
+      '/api/fishaudio/stt': {
+        target: 'https://api.fish.audio',
+        changeOrigin: true,
+        secure: true,
+        rewrite: () => '/v1/asr',
+      },
       // ElevenLabs TTS：开发环境把同源查询参数改写到官方 voice_id 路径。
       '/api/elevenlabs/tts': {
         target: 'https://api.elevenlabs.io',
@@ -205,6 +221,13 @@ export default defineConfig({
           const timing = parsed.searchParams.get('timestamps') === '1' ? '/with-timestamps' : '';
           return `/v1/${endpoint}/stream${timing}?output_format=${encodeURIComponent(outputFormat)}`;
         },
+      },
+      // ElevenLabs STT (Scribe)：转发到 https://api.elevenlabs.io/v1/speech-to-text
+      '/api/elevenlabs/stt': {
+        target: 'https://api.elevenlabs.io',
+        changeOrigin: true,
+        secure: true,
+        rewrite: () => '/v1/speech-to-text',
       },
     }
   },

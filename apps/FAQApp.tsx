@@ -22,6 +22,8 @@ import {
     CHANGELOG_2026_08_30,
 } from '../components/UpdateNotificationEvent';
 import { trackEvent } from '../utils/analytics';
+import { useLocalBackHandler } from '../hooks/useLocalBackHandler';
+import './FAQApp.css';
 
 const FAQ_DATA = [
     {
@@ -116,9 +118,54 @@ interface ChangelogEntry {
     subtitle: string;
     date: string;
     src: string;
-    accent: string;
+    accent?: string;
+    dateKind?: string;
 }
 
+const PERSONAL_CHANGELOG_ENTRIES: ChangelogEntry[] = [
+    {
+        "id": "personal-2026-10-30",
+        "title": "10 月 30 日更新",
+        "subtitle": "启动介绍不再连弹，桌面新增分区更新日志。",
+        "date": "2026-10-30",
+        "dateKind": "待发布",
+        "src": "changelogs/personal-2026-10-30.html"
+    },
+    {
+        "id": "personal-2026-10-27",
+        "title": "10 月 27 日更新",
+        "subtitle": "公开体验入口迁到 Netlify，改善网页更新时的资源缓存。",
+        "date": "2026-10-27",
+        "dateKind": "",
+        "src": "changelogs/personal-2026-10-27.html"
+    },
+    {
+        "id": "personal-2026-10",
+        "title": "10 月 2—23 日更新",
+        "subtitle": "桌面文件夹、心象翻译、卡片与番外创作、剧本杀、手动接力、真实地点日程。",
+        "date": "2026-10-23",
+        "dateKind": "",
+        "src": "changelogs/personal-2026-10.html"
+    },
+    {
+        "id": "personal-2026-09",
+        "title": "9 月更新",
+        "subtitle": "剧情分支、表情识图、共同好友、HTML 修复，以及日记、桌游与查手机的改进。",
+        "date": "2026-09-30",
+        "dateKind": "",
+        "src": "changelogs/personal-2026-09.html"
+    },
+    {
+        "id": "personal-2026-08",
+        "title": "8 月更新",
+        "subtitle": "辩论赛、人生重映、任务工坊、我的日程、时间胶囊、聊愈、骗子酒馆、习惯实验与自习室。",
+        "date": "2026-08-31",
+        "dateKind": "",
+        "src": "changelogs/personal-2026-08.html"
+    }
+];
+
+// 原作历史保持原文、原日期与稳定 ID；个人二改不混入这份目录。
 const CHANGELOG_ENTRIES: ChangelogEntry[] = [
     {
         id: HOME_CHANGELOG,
@@ -246,17 +293,21 @@ type Tab = 'faq' | 'changelog';
 
 const FAQApp: React.FC = () => {
     const { closeApp } = useOS();
-    const [tab, setTab] = useState<Tab>('faq');
+    const [tab, setTab] = useState<Tab>('changelog');
+    const [section, setSection] = useState<'personal' | 'upstream'>('personal');
     const [activeChangelog, setActiveChangelog] = useState<ChangelogEntry | null>(null);
+    useLocalBackHandler(() => { setActiveChangelog(null); return true; }, 20, !!activeChangelog);
 
     useEffect(() => {
         try {
             const target = sessionStorage.getItem(FAQ_TARGET_SECTION_KEY);
             if (target) {
                 sessionStorage.removeItem(FAQ_TARGET_SECTION_KEY);
-                const entry = CHANGELOG_ENTRIES.find(e => e.id === target);
+                const personal = PERSONAL_CHANGELOG_ENTRIES.find(e => e.id === target);
+                const entry = personal || CHANGELOG_ENTRIES.find(e => e.id === target);
                 if (entry) {
                     setTab('changelog');
+                    setSection(personal ? 'personal' : 'upstream');
                     setActiveChangelog(entry);
                 }
             }
@@ -281,12 +332,12 @@ const FAQApp: React.FC = () => {
             <div className="bg-white/70 backdrop-blur-md border-b border-white/40 shrink-0 sticky top-0 z-10" style={{ paddingTop: 'var(--safe-top)' }}>
                 <div className="flex items-center px-4 py-3">
                     <div className="flex items-center gap-2 w-full">
-                        <button onClick={handleBack} className="p-2 -ml-2 rounded-full hover:bg-black/5 active:scale-90 transition-transform">
+                        <button onClick={handleBack} aria-label={activeChangelog ? '返回更新列表' : '返回桌面'} className="p-2 -ml-2 rounded-full hover:bg-black/5 active:scale-90 transition-transform shrink-0">
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6 text-slate-600">
                                 <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" />
                             </svg>
                         </button>
-                        <h1 className="text-xl font-medium text-slate-700 tracking-wide">{headerTitle}</h1>
+                        <h1 className="text-xl font-medium text-slate-700 tracking-wide min-w-0 break-words">{headerTitle}</h1>
                     </div>
                 </div>
             </div>
@@ -321,12 +372,18 @@ const FAQApp: React.FC = () => {
 
             {/* Content area */}
             {activeChangelog ? (
-                <div className="flex-1 bg-[#faf7f2] overflow-hidden">
+                <div className="flex-1 min-h-0 bg-[#faf7f2] overflow-hidden flex flex-col">
+                    <aside className="release-reader-meta">
+                        <p>{section === 'upstream' ? '原作 · qegj567-cloud/SullyOS · 原版记录' : `个人二改 · zhimaheiye · ${activeChangelog.dateKind}`} · {activeChangelog.date}</p>
+                        {section === 'upstream' && <>
+                            <a href={`https://github.com/qegj567-cloud/SullyOS/blob/27f060c1bc0c5381d5fad0e03eae353fc8517599/public/${activeChangelog.src}`} target="_blank" rel="noopener noreferrer">查看原文来源（公开基线） ↗</a>
+                        </>}
+                    </aside>
                     <iframe
                         key={activeChangelog.id}
-                        src={activeChangelog.src}
+                        src={`${import.meta.env.BASE_URL}${activeChangelog.src}`}
                         title={activeChangelog.title}
-                        className="w-full h-full border-0"
+                        className="w-full flex-1 min-h-0 border-0"
                     />
                 </div>
             ) : tab === 'faq' ? (
@@ -375,45 +432,31 @@ const FAQApp: React.FC = () => {
                     </div>
                 </div>
             ) : (
-                <div className="flex-1 overflow-y-auto p-5 pb-20 no-scrollbar">
-                    <div className="bg-gradient-to-r from-indigo-100 to-purple-100 p-5 rounded-3xl mb-6 shadow-sm">
-                        <h2 className="text-lg font-bold text-slate-700 mb-2 flex items-center gap-2">
-                            <img src="https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/72x72/2728.png" className="w-5 h-5 inline" alt="" /> 版本更新记录
-                        </h2>
-                        <p className="text-xs text-slate-600 leading-relaxed opacity-90">
-                            这里存放每一次重要更新的详细说明。点击卡片查看完整内容。
-                        </p>
-                    </div>
-
-                    <div className="space-y-3">
-                        {CHANGELOG_ENTRIES.map((entry) => (
-                            <button
-                                key={entry.id}
-                                onClick={() => setActiveChangelog(entry)}
-                                className={`w-full text-left bg-gradient-to-br ${entry.accent} border rounded-2xl p-4 shadow-sm active:scale-[0.98] transition-transform`}
-                            >
-                                <div className="flex items-start gap-3">
-                                    <div className="w-12 h-12 rounded-2xl bg-white/70 flex items-center justify-center shrink-0 shadow-sm">
-                                        <img src="https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/72x72/1f4d6.png" className="w-6 h-6" alt="" />
-                                    </div>
-                                    <div className="flex-1 min-w-0">
-                                        <div className="flex items-baseline justify-between gap-2">
-                                            <h3 className="text-sm font-bold text-slate-800">{entry.title}</h3>
-                                            <span className="text-[10px] text-slate-500 font-mono shrink-0">{entry.date}</span>
-                                        </div>
-                                        <p className="text-[11px] text-slate-600 mt-1 leading-relaxed">{entry.subtitle}</p>
-                                        <div className="mt-2 text-[11px] font-bold text-indigo-600 flex items-center gap-1">
-                                            查看完整更新说明
-                                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-3 h-3"><path d="M8.25 4.5l7.5 7.5-7.5 7.5" /></svg>
-                                        </div>
-                                    </div>
-                                </div>
-                            </button>
-                        ))}
-                    </div>
-
-                    <div className="mt-8 text-center text-[10px] text-slate-400">
-                        SullyOS·糯米机 Changelog • 更多版本将在这里陆续归档
+                <div className="release-index flex-1 min-h-0 overflow-y-auto">
+                    <div className="release-wrap">
+                        <div className="release-sections" role="group" aria-label="更新来源">
+                            <button type="button" aria-pressed={section === 'personal'} onClick={() => setSection('personal')}>个人二改</button>
+                            <button type="button" aria-pressed={section === 'upstream'} onClick={() => setSection('upstream')}>原版更新</button>
+                        </div>
+                        <header className="release-hero">
+                            <p className="release-kicker">{section === 'personal' ? 'ZHIMA · PERSONAL EDITION' : 'SULLYOS · ORIGINAL JOURNAL'}</p>
+                            <h2>{section === 'personal' ? <>最近，这里有了<br />这些变化。</> : <>沿着 SullyOS<br />的来路。</>}</h2>
+                            <p>{section === 'personal'
+                                ? '我是芝麻。从 8 月开始，我陆续给 SullyOS 加了自己想玩的功能，也改了一些日常操作。这里向大家介绍这些二改。'
+                                : '这里收录 qegj567-cloud/SullyOS 发布的更新说明，保留原文和原日期。'}</p>
+                            <div className="release-byline">{section === 'personal' ? '个人二改 · zhimaheiye' : '原作 · qegj567-cloud / SullyOS'}</div>
+                        </header>
+                        <div className="release-list">
+                            {(section === 'personal' ? PERSONAL_CHANGELOG_ENTRIES : CHANGELOG_ENTRIES).map(entry => (
+                                <button type="button" key={entry.id} onClick={() => setActiveChangelog(entry)} className="release-card">
+                                    <div className="release-card-meta"><span>{entry.dateKind || (section === 'personal' ? '' : '原版更新')}</span><time>{entry.date}</time></div>
+                                    <div className="release-card-heading"><h3>{entry.title}</h3></div>
+                                    <p>{entry.subtitle}</p>
+                                    <div className="release-card-link">读这次更新 <span aria-hidden="true">↗</span></div>
+                                </button>
+                            ))}
+                        </div>
+                        <footer className="release-footer">{section === 'personal' ? '芝麻的 SullyOS · 个人二改' : '原文来源：qegj567-cloud/SullyOS · public/changelogs'}</footer>
                     </div>
                 </div>
             )}

@@ -1,0 +1,26 @@
+.release-index { background: radial-gradient(ellipse at 100% 0, #e7eee7 0, transparent 55%), #f6f3ed; color: #243d37; }
+.release-wrap { max-width: 760px; margin: auto; padding: 22px 22px max(54px, env(safe-area-inset-bottom)); }
+.release-sections { display: flex; gap: 6px; padding: 5px; border: 1px solid #d4ddd4; border-radius: 999px; width: fit-content; background: #ffffff80; }
+.release-sections button { padding: 9px 18px; border-radius: 999px; font-size: 12px; font-weight: 700; color: #586b60; }
+.release-sections button[aria-pressed="true"] { background: #254d41; color: #fffdf6; }
+.release-hero { padding: 32px 0 28px; }
+.release-kicker { font: 700 10px/1.6 ui-monospace, monospace; letter-spacing: .17em; color: #617966; }
+.release-hero h2 { margin: 15px 0; font-family: ui-serif, "Songti SC", serif; font-size: clamp(30px, 8vw, 45px); font-weight: 600; line-height: 1.25; letter-spacing: -.03em; }
+.release-hero > p:last-of-type { max-width: 480px; font-size: 12px; line-height: 1.9; color: #677468; }
+.release-byline { margin-top: 16px; font-size: 10px; color: #5b7163; letter-spacing: .06em; }
+.release-list { display: grid; gap: 14px; }
+.release-card { width: 100%; padding: 21px; background: #fffdf8; border: 1px solid #dedfd3; border-radius: 18px; text-align: left; box-shadow: 0 7px 22px #243d3705; transition: background .15s; }
+.release-card:hover { background: #fff; }
+.release-card-meta { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; font-size: 10px; color: #7a8275; }
+.release-card-meta > span { color: #627859; }
+.release-card-meta time { font-family: ui-monospace, monospace; }
+.release-card-heading { display: flex; align-items: baseline; gap: 13px; margin: 20px 0 10px; }
+.release-card h3 { margin: 0; font-family: ui-serif, "Songti SC", serif; font-size: 18px; line-height: 1.5; font-weight: 600; }
+.release-card > p { margin: 0; color: #738071; font-size: 12px; line-height: 1.9; }
+.release-card-link { display: flex; justify-content: space-between; margin-top: 21px; padding-top: 13px; border-top: 1px solid #e8e8de; font-size: 11px; font-weight: 700; color: #3f6750; }
+.release-card-link span { font-size: 17px; }
+.release-footer { margin-top: 30px; color: #7e897a; font-size: 10px; line-height: 1.9; }
+.release-index button:focus-visible { outline: 3px solid #b88c47; outline-offset: 3px; }
+.release-reader-meta { flex-shrink: 0; padding: 9px 20px; border-bottom: 1px solid #dedfd3; font-size: 10px; line-height: 1.8; color: #68735f; }
+.release-reader-meta a { color: #426a4b; text-decoration: underline; text-underline-offset: 3px; }
+@media (max-width: 360px) { .release-wrap { padding-right: 16px; padding-left: 16px; } .release-card { padding: 17px; } }

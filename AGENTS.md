@@ -30,7 +30,7 @@
 | **当前开发交接** | [`docs/handoff/CURRENT.md`](./docs/handoff/CURRENT.md) | 新对话、新工具或中断后继续开发时先读；随后检查 `git status` 与最近提交 |
 | **提交范围** | [`docs/handoff/CURRENT.md`](./docs/handoff/CURRENT.md) | 公开工作区可以在本地分支提交。除非维护者明确要求，不要推送，也不要部署；不要推送到 `upstream` |
 | **二改上游同步 / 手动部署** | [`docs/upstream-sync-and-manual-deploy.md`](./docs/upstream-sync-and-manual-deploy.md) | 拉取 `qegj567-cloud/SullyOS` 上游、解决二改冲突、判定类型检查基线/既有诊断、保护未跟踪参考资料、重建 Worker bundle、手动发布 Netlify 或排查 production-only 黑屏前必读 |
-| **待办任务与已知问题** | [`TODO.md`](./TODO.md) | 查看或记录项目现存待修问题、交互缺陷与技术债待办 |
+| **当前任务与已知限制** | [`docs/handoff/CURRENT.md`](./docs/handoff/CURRENT.md) | 查看当前工作、验证状态与未完成范围 |
 | **原创功能档案目录** | [`docs/features/README.md`](./docs/features/README.md) | 新增原创软件、继续上次功能开发或记录一次 Debug 前必读；每个原创功能一份长期档案 |
 | **悬浮球与全局返回** | [`docs/navigation.md`](./docs/navigation.md) | 改快捷导航开关、拖动安全区、浏览器／Android 返回、美化子页退出前必读 |
 | **iOS 27 主屏幕顶部白雾 / 状态栏底色** | [`docs/ios-status-bar-edge.md`](./docs/ios-status-bar-edge.md) | 改顶部取色、viewport 或 iOS 门禁前必读；manifest standalone 使用 contain，零安全区不回退 44px，异步高度收缩要重建基线；纯色接合不等于壁纸贯穿 |
@@ -39,6 +39,12 @@
 | **笔友会 · 小说共创与写作人格** | [`docs/features/pen-pal-writing.md`](./docs/features/pen-pal-writing.md) | 改 `NovelWriter` 三模式、空输入吐槽/分析、章节讨论上下文、虚构/现实边界、角色写作人格生成或处理上游同步冲突前必读 |
 | **美化分享码与人工审核** | [`docs/beauty-share.md`](./docs/beauty-share.md) | 改美化投稿、作者身份、分享码领取或 `worker/beauty-share` 前必读；未审文件保持私有，更新通过后才替换已发布指针，仅作者明确授权且已审作品进入公开静态装扮库，未授权旧作不公开 |
 | **角色默认对话 API** | [`docs/character-api.md`](./docs/character-api.md) | 改角色独立 API、API 预设分组或对话模型路由前必读；App 优先，单角色回复才使用角色默认，凭据整套选择 |
+| **Anthropic 原生接口** | [`docs/anthropic-messages.md`](./docs/anthropic-messages.md) | 改 Messages 转换、缓存、流式或用户 Worker 原生模型支持前必读 |
+| **哔哔与微博** | [`docs/friend-feed.md`](./docs/friend-feed.md)、[`docs/friend-feed-weibo.md`](./docs/friend-feed-weibo.md) | 改动态、小号、关系、评论、分享或只读微博同步前必读 |
+| **Android 桌面图标** | [`docs/android-launcher-icon.md`](./docs/android-launcher-icon.md) | 改原生壳水母/经典图标切换前必读 |
+| **万圣节活动** | [`docs/kanata-halloween.md`](./docs/kanata-halloween.md)、[`docs/room3d-halloween-interactions.md`](./docs/room3d-halloween-interactions.md) | 改彼方节日玩法与小屋活动别馆前必读 |
+| **备份格式与主动消息维护** | [`docs/backup-format.md`](./docs/backup-format.md)、[`docs/amsg-maintenance.md`](./docs/amsg-maintenance.md) | 先读现行契约，不把旧施工日志或历史授权当维护指令 |
+| **Anthropic 原生接口 / Prompt Caching** | [`docs/anthropic-messages.md`](./docs/anthropic-messages.md) | 改 Messages 转换、SSE、缓存或 amsg 原生模型调用前必读；原生端点随整套凭据保存，不新增代理，旧 Worker 先更新并验证能力 |
 | **ElevenLabs 角色语音** | [`docs/elevenlabs-tts.md`](./docs/elevenlabs-tts.md) | 改 v4 / Turbo 语音、Audio Tags、模型参数或字幕前必读；v4 保留开放式标签，只发送稳定度与相似度，不自动降级 |
 | **角色统计 / 上下文字数与 Token 估算** | [`docs/character-statistics.md`](./docs/character-statistics.md) | 改神经链接角色统计前必读；可读范围不等于实际请求，概率预览不得抽签，宫殿缓存单列 |
 | **世界书管线、分组与角色绑定** | [`docs/worldbook-management.md`](./docs/worldbook-management.md) | 新增 App／角色生成请求或改世界书前必读；新入口使用 ContextBuilder.buildCharacterRequest，世界书自动随角色装载；绑定按 ID，库与角色缓存同事务更新 |
@@ -71,6 +77,7 @@
 | **查手机 · 自定义 App 跨手机批量安装** | [`docs/features/check-phone-custom-app-install.md`](./docs/features/check-phone-custom-app-install.md) | 改自定义 App 安装弹窗、跨角色一次性复制、默认全选、独立 App ID、同名共存或卸载边界前必读；只复制 App 配置，不建立持续同步关系 |
 | **查手机 · 智能体 / 发送前 AI 扩写** | [`docs/features/check-phone-ai-agent.md`](./docs/features/check-phone-ai-agent.md) | 改智能体三服务、AI 扩写、酒馆 OOC 优先级、输入竞态、`callLLM` 上下文隔离或长会话 recap 前必读；扩写只应回填输入框，不自动发送 |
 | **查手机 · 人际关系系统** | [`docs/relationship-system.md`](./docs/relationship-system.md) | 改「查手机」聊天/通讯录、角色联系人/好感、真假甄别、真角色双向对话、虚构 NPC 约束前必读 |
+| **好友圈 · 独立 App 与家园手机** | [`docs/friend-feed.md`](./docs/friend-feed.md)、[`docs/friend-feed-weibo.md`](./docs/friend-feed-weibo.md) | 改好友圈入口、生活圈、动态评论、微博或备份前必读；双入口共用数据，角色按 ID 分圈；绑定微博按 RP 身份混排，同步不写记忆；通知提供文本操作格式，微博复用设置代理 |
 | **查手机 · 人格模拟与生活记录** | [`docs/persona-sim.md`](./docs/persona-sim.md) | 改「用 TA 的手机活一次」生成、保存、断点续播或完成效果前必读；生成即归档，通知不是唯一剧本，首次到结尾才加情绪效果 |
 | **见面 · 观测协议 OBSERVE** | [`docs/date-observe.md`](./docs/date-observe.md) | 改见面（DateApp）的角色观测面板：提示词注入、掉格式解析容错（两层）、全息 HUD 渲染前必读 |
 | **见面 · 剧情剧场 / 虚构剧情树** | [`docs/features/story-theater.md`](./docs/features/story-theater.md) | 改剧情楼层、父子拓扑、分支切换/删除、当前路径 prompt、事件盒/独立向量归档或剧情导出前必读；真实陪伴必须保持线性 |
