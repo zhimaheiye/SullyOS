@@ -43,7 +43,7 @@ describe('public update journal', () => {
         expect([...host.querySelectorAll('.release-card h3')].map(node => node.textContent)).toEqual([
             '10 月 30 日更新', '10 月 27 日更新', '10 月 2—23 日更新', '9 月更新', '8 月更新',
         ]);
-        expect(host.textContent).toContain('待发布');
+        expect(host.textContent).toContain('已发布');
         expect(host.querySelector('.release-card-heading span')).toBeNull();
         expect(host.textContent).not.toContain('开发记录');
         await click('原版更新');
@@ -111,7 +111,7 @@ describe('public update journal', () => {
         expect(page('2026-08')).toContain('辩论赛');
         expect(page('2026-09')).toContain('表情');
         expect(page('2026-10')).toContain('剧本杀');
-        expect(page('2026-10-30')).toContain('待发布');
+        expect(page('2026-10-30')).toContain('已发布');
         for (const date of ['2026-08', '2026-09', '2026-10', '2026-10-27', '2026-10-30']) {
             const html = page(date);
             expect(html).not.toMatch(/开发记录|推送日期|开发起点|Asia\/Shanghai|item-num|Sullyos-zhima|生图|自行配置的 API/);

@@ -128,7 +128,7 @@ const PERSONAL_CHANGELOG_ENTRIES: ChangelogEntry[] = [
         "title": "10 月 30 日更新",
         "subtitle": "启动介绍不再连弹，桌面新增分区更新日志。",
         "date": "2026-10-30",
-        "dateKind": "待发布",
+        "dateKind": "已发布",
         "src": "changelogs/personal-2026-10-30.html"
     },
     {

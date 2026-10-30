@@ -41,14 +41,16 @@ LICENSE 第 6 条区分代码授权与在线服务资格，二改须替换自己
 
 公开主入口为 [芝麻的 SullyOS](https://zhima-sullyos.netlify.app/)。使用独立静态站，不连接私人站点或继承私人环境。遗留 .netlify/state.json 不得使用。发布快照排除 .git、.netlify、凭据、个人数据、本地数据库与本机环境产物。
 
-默认 Git 禁推保护保留。维护者已明确授权本轮校验后提交并推送公开 Fork master，暂不部署；本次授权不延续为以后自动推送或部署的权限，不操作私人线上服务。发布流程见 [维护指南](upstream-sync-and-manual-deploy.md)。干净的最新快照不等于旧敏感 SHA 已从 GitHub 永久清除，凭据轮换与旧历史可访问性单独处理。
+默认 Git 禁推保护保留。维护者已明确授权本轮提交、推送公开 Fork master，并分别部署公开 Netlify 与 GitHub Pages 两个前端；本次授权不延续为以后自动推送或部署的权限，不操作私人线上服务。发布流程见 [维护指南](upstream-sync-and-manual-deploy.md)。干净的最新快照不等于旧敏感 SHA 已从 GitHub 永久清除，凭据轮换与旧历史可访问性单独处理。
+
+2026-10-30 的 1a511b4e2 已在两站发布成功：Netlify 使用根路径构建，公开站点 ID f049daac-0cc7-4c1d-b2e6-0c9ac68fa9c0，部署 6ae4ae60b75df3bd024606c7；[GitHub Pages](https://zhimaheiye.github.io/SullyOS/) 使用 GITHUB_PAGES=true 单独构建，[Actions 41074993808](https://github.com/zhimaheiye/SullyOS/actions/runs/41074993808) 成功。日志中的“待发布”随后改为“已发布”并同步到两站。没有更新现役 Cloudflare Worker。
 
 ## 本轮代码验证
 
 - 去重后的 78 个相关测试文件完成回归，756 项通过、1 项跳过；旧源码匹配断言已按合入后的实际接线更新并复跑。
-- Vite 生产构建与 Worker 构建通过；没有运行发布工作流。
+- Vite 生产构建与 Worker 构建通过；前端按两站路径分别构建，Pages 手动发布工作流成功。
 - strict 检查最终为 668 项诊断。合入前公开版为 645 项，同依赖环境的当前上游为 705 项；按文件、错误码和完整诊断信息归类，没有两边基线以外的新增项，不宣称全仓类型检查通过。
-- 未执行浏览器 UI、真实 API、微博账号、地图、Android 设备或私人线上服务验收。
+- 已使用 Codex 内置浏览器核对两站构建标识、首开引导、必要说明及分区日志。初次下载资源遇到网络延迟后恢复；未执行真实 API、微博账号、地图、Android 设备或私人线上服务验收。
 
 ## 日志维护
 
