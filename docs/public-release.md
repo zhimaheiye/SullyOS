@@ -47,6 +47,8 @@ LICENSE 第 6 条区分代码授权与在线服务资格，二改须替换自己
 
 2026-10-30 的 1a511b4e2 已在两站发布成功：Netlify 使用根路径构建，公开站点 ID f049daac-0cc7-4c1d-b2e6-0c9ac68fa9c0，部署 6ae4ae60b75df3bd024606c7；[GitHub Pages](https://zhimaheiye.github.io/SullyOS/) 使用 GITHUB_PAGES=true 单独构建，[Actions 41074993808](https://github.com/zhimaheiye/SullyOS/actions/runs/41074993808) 成功。日志中的“待发布”随后改为“已发布”并同步到两站。没有更新现役 Cloudflare Worker。
 
+2026-11-04 的功能快照 0abdfa9ac92e7c68aec5f54325f6f57e9bd5d865 已推送到公开 master 并完成双站发布。Netlify 根路径纯静态部署 6aeb46adaa681f277ed9bcd7 就绪，API 核实公开站点、Functions 为 0、Edge Functions 为 0；GitHub Pages 的 `GITHUB_PAGES=true` 构建 [Actions 41850687954](https://github.com/zhimaheiye/SullyOS/actions/runs/41850687954) 成功。发布状态记录提交继续按相同配置重建两站；全程未更新现役 Cloudflare Worker 或私人线上服务。
+
 ## 本轮代码验证
 
 - 去重后的 78 个相关测试文件完成回归，756 项通过、1 项跳过；旧源码匹配断言已按合入后的实际接线更新并复跑。
@@ -54,7 +56,7 @@ LICENSE 第 6 条区分代码授权与在线服务资格，二改须替换自己
 - strict 检查最终为 668 项诊断。合入前公开版为 645 项，同依赖环境的当前上游为 705 项；按文件、错误码和完整诊断信息归类，没有两边基线以外的新增项，不宣称全仓类型检查通过。
 - 已使用 Codex 内置浏览器核对两站构建标识、首开引导、必要说明及分区日志。初次下载资源遇到网络延迟后恢复；未执行真实 API、微博账号、地图、Android 设备或私人线上服务验收。
 
-2026-11-04 的本地待体验批次尚未提交、推送或部署。相关定向测试覆盖 Meta、聊天请求、图片描述预检、Obsidian 日记、副 API、时间胶囊与哔哔发表时间；最终构建和 strict 对比以本批收尾记录为准，不沿用 10 月 30 日的线上验收结论。
+2026-11-04 批次已提交、推送并完成双站静态发布。功能定向回归最终为 4 个文件、36 项通过；隐私审计 7 项通过，需真实 PostgreSQL 的 5 项维护集成测试因无公开测试主机而跳过，未连接私人数据库。Vite 根路径与 Pages 路径构建通过；strict 仍按上述既有诊断基线解释，不宣称全仓零诊断。双站最终在线核对以本批发布结果为准，不沿用 10 月 30 日的线上验收结论。
 
 ## 日志维护
 
