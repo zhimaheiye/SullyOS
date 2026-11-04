@@ -1,7 +1,7 @@
 import EmojiExportDialog from './EmojiExportDialog';
 import ChatCamera from './ChatCamera';
 import React, { useRef, useState, useEffect, useMemo } from 'react';
-import { ShareNetwork, Trash, Plus, Smiley, PaperPlaneTilt, Lightning, Money, BookOpenText, GearSix, Image, Lock, ArrowsClockwise, ChatCircleDots, CalendarBlank, ForkKnife, Coffee, Code, Brain, PencilSimple, HandTap, Alarm, Sparkle, FadersHorizontal, LinkSimple, Star, Briefcase, Monitor } from '@phosphor-icons/react';
+import { ShareNetwork, Trash, Plus, Smiley, PaperPlaneTilt, Lightning, Money, BookOpenText, GearSix, Image, Lock, ArrowsClockwise, ChatCircleDots, CalendarBlank, ForkKnife, Coffee, Code, Brain, PencilSimple, HandTap, Alarm, Sparkle, FadersHorizontal, LinkSimple, Star, Briefcase, Monitor, Notebook } from '@phosphor-icons/react';
 import { CharacterProfile, ChatTheme, EmojiCategory, Emoji } from '../../types';
 import { PRESET_THEMES } from './ChatConstants';
 import TokenImg from '../os/TokenImg';
@@ -17,6 +17,8 @@ const EMOJI_PAGE_SIZE = 40;
 
 interface ChatInputAreaProps {
     compactHome?: boolean;
+    visionToolsAvailable?: boolean;
+    obsidianDiaryBusy?: boolean;
 
     /** Initial page for static decoration previews; does not run menu actions. */
     previewActionsPage?: number;
@@ -91,7 +93,7 @@ interface ChatInputAreaProps {
 }
 
 const ChatInputArea: React.FC<ChatInputAreaProps> = ({
-    input, setInput, isTyping, selectionMode, compactHome=false,
+    input, setInput, isTyping, selectionMode, compactHome=false, visionToolsAvailable=false, obsidianDiaryBusy=false,
     showPanel, setShowPanel, onSend, onDeleteSelected, onForwardSelected, onFavoriteSelected, favoriteSelectedCount = 0, selectedCount,
     sendButtonGenerates = false, enterToSend = true, onGenerate,
     autoReplyEnabled = false, autoReplySeconds = null, onCancelAutoReply, onInputFocusChange,
@@ -501,6 +503,7 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
 
     // Keep one ordered list so removed or added entries cannot leave holes between pages.
     const actionTiles = [
+        ...(!compactHome ? [<button key="obsidian-diary" disabled={obsidianDiaryBusy} onClick={() => onPanelAction('obsidian-diary')} className={`flex flex-col items-center gap-2 active:scale-95 transition-transform ${obsidianDiaryBusy ? 'opacity-50' : ''} ${acnh ? 'text-[#725d42]' : isDiscordStyle ? 'text-slate-200' : 'text-slate-600'}`}><span className={`w-14 h-14 rounded-2xl flex items-center justify-center shadow-sm border ${acnh ? 'bg-white/70 border-[#e6dab4] text-[#8b6f47]' : isDiscordStyle ? 'bg-slate-800 text-amber-300 border-amber-400/20' : 'bg-amber-50 text-amber-700 border-amber-100'}`}><Notebook className="w-6 h-6" weight="duotone"/></span><span className="text-xs font-bold">一键写日记</span></button>] : []),
         <button key="collaboration" onClick={() => onPanelAction('collaboration')} className={`flex flex-col items-center gap-2 active:scale-95 transition-transform ${acnh ? 'text-[#725d42]' : isDiscordStyle ? 'text-slate-200' : 'text-slate-600'}`}>
             <div className={`w-14 h-14 rounded-2xl flex items-center justify-center shadow-sm border ${acnh ? 'bg-white/70 border-[#e6dab4] text-[#7c6ee6]' : isDiscordStyle ? 'bg-slate-800 text-indigo-300 border-indigo-400/20' : 'bg-indigo-50 text-indigo-500 border-indigo-100'}`}>
                 <Briefcase className="w-6 h-6" weight="fill" />
@@ -621,6 +624,10 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
           <div className={`w-14 h-14 rounded-2xl border grid place-items-center ${isDiscordStyle ? 'bg-slate-800 text-fuchsia-300 border-fuchsia-400/20' : 'bg-fuchsia-50 text-fuchsia-600 border-fuchsia-100'}`}><Code className="w-6 h-6" weight="bold" /></div>
           <span className="text-xs font-bold">卡片创作</span>
         </button>,
+        ...(visionToolsAvailable && !compactHome ? [<button key="vision-preflight" onClick={() => onPanelAction('vision-preflight')} className={`flex flex-col items-center gap-2 active:scale-95 transition-transform ${acnh ? 'text-[#725d42]' : isDiscordStyle ? 'text-slate-200' : 'text-slate-600'}`}>
+          <span className={`w-14 h-14 rounded-2xl flex items-center justify-center shadow-sm border ${acnh ? 'bg-white/70 border-[#e6dab4] text-[#658763]' : isDiscordStyle ? 'bg-slate-800 text-emerald-300 border-emerald-400/20' : 'bg-emerald-50 text-emerald-600 border-emerald-100'}`}><Image className="w-6 h-6" weight="bold" /></span>
+          <span className="text-xs font-bold">补全图片描述</span>
+        </button>] : []),
         <button key="side-story" onClick={() => onPanelAction('side-story')} className={`flex flex-col items-center gap-2 active:scale-95 transition-transform ${acnh ? 'text-[#725d42]' : isDiscordStyle ? 'text-slate-200' : 'text-slate-600'}`}>
           <div className={`w-14 h-14 rounded-2xl border grid place-items-center ${isDiscordStyle ? 'bg-slate-800 text-fuchsia-300 border-fuchsia-400/20' : 'bg-fuchsia-50 text-fuchsia-600 border-fuchsia-100'}`}><span className="text-2xl" aria-hidden="true">✍</span></div>
           <span className="text-xs font-bold">番外创作</span>
@@ -962,6 +969,7 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                                         <button onClick={() => onPanelAction('emoji-import')} className={emojiImportTileClass}>+</button>
                                     )}
                                     {emojiSelectionMode && <button onClick={() => setExportEmojis([...selectedEmojis])} disabled={!selectedEmojis.length} aria-label="下载选中的表情" className={`${emojiImportTileClass} text-xs disabled:opacity-40`}>下载原图</button>}
+                                    {visionToolsAvailable && <button onClick={() => onPanelAction('emoji-vision', emojiSelectionMode ? selectedEmojis : emojis)} disabled={emojiSelectionMode && !selectedEmojis.length} aria-label="表情图片描述" className={`${emojiImportTileClass} text-[10px] disabled:opacity-40`}>图片描述</button>}
                                     {retainedEmojis.map((e) => {
                                         const isSelected = selectedEmojiNames.has(e.name);
                                         const hidden = !visibleEmojiNames.has(e.name);
@@ -970,6 +978,7 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                                             // name 是表情库主键；不同表情可共用 URL / 去重后的 Blob 令牌。
                                             // 用图片地址当记录 key 会冲突，切分组/翻页时残留、复制旧格子。
                                             key={e.name}
+                                            title={visionToolsAvailable ? `${e.name} · ${e.visionError ? '识图失败' : e.vision?.description ? '已有描述' : '未识别'}` : e.name}
                                             hidden={hidden}
                                             aria-hidden={hidden || undefined}
                                             style={hidden ? {display: 'none'} : undefined}

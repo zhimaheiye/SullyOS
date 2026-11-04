@@ -57,6 +57,9 @@
 | **私聊心象自动译文** | [`docs/features/thinking-translation.md`](./docs/features/thinking-translation.md) | 改心象翻译开关、语言判断、副 API 路由、原文/译文切换、消息级缓存或自动触发时机前必读；原始 thinkingChain 不覆盖，历史不自动批量请求 |
 | **主聊天最近会话 / 群成员可见范围** | [`docs/features/group-chat.md`](./docs/features/group-chat.md) | 改最近会话入口、私聊群聊混排、群成员邀请/移除、成员可见窗口、话题盒或群记忆隔离前必读 |
 | **私聊 HTML 卡片快速修复格式** | [`docs/features/html-format-repair.md`](./docs/features/html-format-repair.md) | 改历史 HTML 手动修复、严格解析、有序复合消息、原子改写或上下文文字预览前必读；不涉及群聊和自动生成策略 |
+| **Meta 单角色体验** | [`docs/features/meta-experience.md`](./docs/features/meta-experience.md) | 改 Meta 开屏、会话状态、重回计数或聊天提示前必读；当前明确处于开发中，不接私人主线模式 |
+| **一键写 Obsidian 日记** | [`docs/features/manual-obsidian-diary.md`](./docs/features/manual-obsidian-diary.md) | 改私聊日记生成、目标快照、取消与写入边界前必读；它不依赖主线模式 |
+| **图片描述预检** | [`docs/features/vision-preflight.md`](./docs/features/vision-preflight.md) | 改用户选图、GIF 抽帧、描述写回、备份或迟到结果校验前必读；不包含生图 |
 | **心心相印 · 心理测试 / 问卷填写** | [`docs/features/heart-sync.md`](./docs/features/heart-sync.md) | 改心理单题深聊、问卷导入/补答/结算、聊天卡或记忆写回前必读；伴侣测试已删除，不要恢复 |
 | **辩论赛** | [`docs/features/debate.md`](./docs/features/debate.md) | 改一对一/八人辩论、观点召回、排阵、主持人评分、赛后卡片或记忆写回前必读 |
 | **表情包视觉理解** | [`docs/features/sticker-vision.md`](./docs/features/sticker-vision.md) | 改表情包读图能力（`utils/stickerVision.ts`、`STICKER_VISION_PROMPT` 物化管线、私聊/群聊 prompt 三态、转发快照、`metadata.stickerVision`）前必读；发送时资格冻结（旧消息永不补识别）与记忆隔离（description 不进记忆/总结）是两条铁律 |

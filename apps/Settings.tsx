@@ -4641,6 +4641,8 @@ const Settings: React.FC = () => {
                   )}
               </div>
 
+              <ObsidianDiarySettings characters={characters} onManageMcp={()=>setShowMcpModal(true)}/>
+
               {/* 小红书自动化 */}
               <div className="bg-red-50/50 p-4 rounded-2xl space-y-3">
                   <div className="flex items-center justify-between">
@@ -4955,3 +4957,4 @@ const Settings: React.FC = () => {
 };
 
 export default Settings;
+import {ObsidianDiarySettings} from '../components/settings/ObsidianDiarySettings';

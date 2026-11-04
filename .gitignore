@@ -137,6 +137,15 @@ cinema-data/cache/
 /art/halloween-2026/**/*.webp
 /art/halloween-2026/**/*.svg
 /art/halloween-2026/*.zip
+/art/halloween-2026/**/*prompt*
+/art/halloween-2026/meshy/
+/art/pets/halloween-2026/*prompt*
+
+# Local implementation notes retained for the maintainer, not the public source snapshot.
+/plans/community-feedback-2026-10-29.md
+/plans/friend-feed-real-content.md
+/plans/home3d-social-implementation.md
+/plans/home3d-social-visits.md
 
 # Local development scratch files and unreleased 3D source/intermediate assets.
 /tmp/

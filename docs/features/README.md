@@ -48,6 +48,9 @@
 - [`healing.md`](./healing.md)：林间聊愈室，保留逐字私密手记，并在仅本 App 可读的空间中让所有陪伴角色共享以用户为主体的长期记忆。
 - [`one-change.md`](./one-change.md)：只做一个改变，独立 local-first 习惯实验、标准版本、并行收缩、冻结观察和晚到补记。
 - [`story-theater.md`](./story-theater.md)：见面中的剧情剧场、虚构剧情分支树、当前路径上下文、分支归档与独立向量隔离。
+- [`meta-experience.md`](./meta-experience.md)：公开版 Meta 单角色开发中体验；独立会话状态、聊天提示与当前未完成边界。
+- [`manual-obsidian-diary.md`](./manual-obsidian-diary.md)：从当前角色聊天范围生成并写入指定 Obsidian 日记目标的一次性操作。
+- [`vision-preflight.md`](./vision-preflight.md)：用户明确选择图片、先生成并确认描述，再供本次聊天使用的图片预检流程。
 
 ## 每次开发必须记录什么
 

@@ -11,6 +11,7 @@ import {friendPostImages, isLocalFriendImage} from './friendFeedImages';
 import {announceFriendFeedHistory} from './friendFeedNotes';
 import {friendFeedShareContext,type FriendFeedShareSnapshot} from './friendFeedShareContext';
 import {projectFriendPost,friendKnownIdentity,friendGraphStamp} from './friendFeedGraph';
+import {friendPostTime} from './friendFeedTime';
 
 async function downloadShareImage(url:string,proxy:string):Promise<Blob> {
     if(!isWeiboImageUrl(url))throw Error('不支持的配图来源');
@@ -68,6 +69,8 @@ export async function shareFriendPost(postId:string,charId:string,deliveryId:str
     const characters=await DB.getAllCharacters();
     const projected=projectFriendPost(latest,charId,current);
     const share:FriendFeedShareSnapshot={version:1,postId,authorId:projected.authorId,authorName:current.authorName,text:current.text,
+        createdAt:friendPostTime(current).createdAt ?? undefined,
+        ...(current.authorKind==='external'&&!current.synced?{importedAt:current.createdAt}:{}),
         identity:friendKnownIdentity(latest,charId,current,characters),
         ...(current.source?{source:structuredClone(current.source)}:{}),synced:current.synced,sharedAt:Date.now(),
         ...(current.images ? {images:structuredClone(current.images)} : {}),

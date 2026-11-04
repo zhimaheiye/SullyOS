@@ -103,6 +103,7 @@ export const Icons: Record<string, React.FC<{ className?: string }>> = {
   CommunityCommittee: ({ className }) => <Handshake className={className} weight="regular" />,
   Healing: ({ className }) => <Tree className={className} weight="regular" />,
   OneChange: ({ className }) => <Target className={className} weight="regular" />,
+  MetaClues: ({ className }) => <Planet className={className} weight="duotone" />,
 };
 
 export const INSTALLED_APPS: AppConfig[] = [
@@ -110,6 +111,7 @@ export const INSTALLED_APPS: AppConfig[] = [
   { id: AppID.MemoryPalace, name: '记忆宫殿', icon: 'MemoryPalace', color: 'violet' },
   { id: AppID.Healing, name: '聊愈', icon: 'Healing', color: 'emerald' },
   { id: AppID.OneChange, name: '只做一个改变', icon: 'OneChange', color: 'emerald' },
+  { id: AppID.MetaClues, name: 'Meta（开发中）', icon: 'MetaClues', color: 'violet' },
   { id: AppID.Chat, name: 'Message', icon: 'Chat', color: 'green' },
   { id: AppID.Call, name: '电话', icon: 'Call', color: 'emerald' },
   { id: AppID.GroupChat, name: '群聊', icon: 'GroupChat', color: 'violet' },

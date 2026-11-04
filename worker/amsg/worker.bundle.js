@@ -14656,7 +14656,8 @@ var postCore = async (target, session, body, timeoutMs, expectResponse = true) =
         method: "POST",
         headers,
         body: JSON.stringify(body),
-        signal: controller.signal
+        signal: controller.signal,
+        ...target.privateContent ? { __sullyPrivateTransient: true } : {}
       });
     } catch (e) {
       target.signal?.throwIfAborted();
@@ -14841,11 +14842,15 @@ var targetHost = (url) => {
   }
 };
 var callMcpToolCore = async (target, session, toolName, args = {}, opts = {}) => {
-  target = { ...target, signal: opts.signal ?? target.signal };
+  target = { ...target, signal: opts.signal ?? target.signal, privateContent: opts.privateContent ?? target.privateContent };
   target.signal?.throwIfAborted();
   const timeoutMs = opts.timeoutMs ?? MCP_REQUEST_TIMEOUT_MS;
   const normalizedArgs = normalizeMcpToolArguments(args, opts.inputSchema);
   const finish = (result) => {
+    if (opts.privateContent) {
+      console.info("\u{1F50C} [MCP] \u79C1\u5BC6\u64CD\u4F5C\u5B8C\u6210", { success: result.success });
+      return result;
+    }
     let resultPreview = "";
     if (result.success) {
       try {
@@ -14870,7 +14875,7 @@ var callMcpToolCore = async (target, session, toolName, args = {}, opts = {}) =>
     try {
       ({ response } = await postCore(target, session, body, timeoutMs));
     } catch (e) {
-      if (/HTTP (400|404)/.test(e?.message || "")) {
+      if (!opts.noSessionRetry && /HTTP (400|404)/.test(e?.message || "")) {
         Object.assign(session, createMcpSessionState());
         await ensureInitializedCore(target, session, timeoutMs);
         ({ response } = await postCore(
@@ -14884,7 +14889,7 @@ var callMcpToolCore = async (target, session, toolName, args = {}, opts = {}) =>
       }
     }
     if (!response) return finish({ success: false, error: "\u7A7A\u54CD\u5E94" });
-    if (response.error) return finish({ success: false, error: `MCP \u9519\u8BEF ${formatMcpRpcError(response.error)}` });
+    if (response.error) return finish({ success: false, error: `MCP \u9519\u8BEF ${formatMcpRpcError(response.error)}`, ...opts.privateContent && response.error.data ? { data: response.error.data } : {} });
     const result = response.result;
     if (result?.resultType === "input_required") {
       return finish({
@@ -14893,10 +14898,19 @@ var callMcpToolCore = async (target, session, toolName, args = {}, opts = {}) =>
         data: result
       });
     }
+    if (opts.privateContent && result?.structuredContent && typeof result.structuredContent === "object")
+      return finish({ success: !result.isError, data: result.structuredContent, ...result.isError ? { error: "MCP \u5DE5\u5177\u6267\u884C\u5931\u8D25" } : {} });
     if (result?.content && Array.isArray(result.content)) {
       const textParts = result.content.filter((c) => c?.type === "text").map((c) => c.text || "");
-      const fullText = textParts.join("\n").trim();
-      if (result.isError) return finish({ success: false, error: fullText || "MCP \u5DE5\u5177\u6267\u884C\u5931\u8D25", rawText: fullText });
+      const fullText = opts.privateContent ? textParts.join("\n") : textParts.join("\n").trim();
+      if (result.isError) {
+        let data;
+        try {
+          data = JSON.parse(fullText);
+        } catch {
+        }
+        return finish({ success: false, error: fullText || "MCP \u5DE5\u5177\u6267\u884C\u5931\u8D25", rawText: fullText, ...opts.privateContent && data ? { data } : {} });
+      }
       try {
         return finish({ success: true, data: JSON.parse(fullText), rawText: fullText });
       } catch {
@@ -16964,7 +16978,7 @@ var stripLeakedSourceTags = (t) => t.replace(
 var stripTimestamps = (t) => t.replace(/\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]\s*/g, "").replace(/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\s*/gm, "").replace(/（[上下]午\d{1,2}[：:]\d{2}）/g, "").replace(/\(\d{1,2}:\d{2}\s*[AP]M\)/gi, "");
 var stripChineseDate = (t) => t.replace(/\[\d{4}[-/年]\d{1,2}[-/月]\d{1,2}.*?\]/g, "");
 var stripRoleNamePrefix = (t) => t.replace(/^[\w一-龥]+:\s*/, "");
-var stripBusinessTagsForBubble = (t) => extractFriendFeedReplyTags(extractFriendFeedReplyTags(t).text, "HOME_VISIT_REPLY").text.replace(/\[\[(?:ACTION|RECALL|SEARCH|DIARY|READ_DIARY|FS_DIARY|FS_READ_DIARY|DIARY_START|DIARY_END|FS_DIARY_START|FS_DIARY_END|MUSIC_ACTION)[:\s][\s\S]*?\]\]/g, "").replace(/\[\[\s*[记記][录錄]\s*[:：][\s\S]*?\]\]/g, "").replace(/\[schedule_message[^\]]*\]/g, "");
+var stripBusinessTagsForBubble = (t) => extractFriendFeedReplyTags(extractFriendFeedReplyTags(t).text, "HOME_VISIT_REPLY").text.replace(/\[\[OBS_DIARY_START:[\s\S]*?(?:\[\[OBS_DIARY_END\]\]|$)/g, "").replace(/\[\[(?:ACTION|RECALL|SEARCH|DIARY|READ_DIARY|FS_DIARY|FS_READ_DIARY|DIARY_START|DIARY_END|FS_DIARY_START|FS_DIARY_END|MUSIC_ACTION)[:\s][\s\S]*?\]\]/g, "").replace(/\[\[\s*[记記][录錄]\s*[:：][\s\S]*?\]\]/g, "").replace(/\[schedule_message[^\]]*\]/g, "");
 var stripBusinessTagsForNotification = (t) => stripBusinessTagsForBubble(t).replace(/\[\[(?:READ_NOTE|XHS_[A-Z_]+|LIFE|NEWS_CARD)[:\s][\s\S]*?\]\]/g, "").replace(/\[\[XHS_[A-Z_]+\]\]/g, "");
 var stripAllDoubleBracketTags = (t) => t.replace(/\[\[[\s\S]*?\]\]/g, "");
 var stripQuotes2 = (t) => t.replace(/\[\[(?:QU[OA]TE|引用)[：:][\s\S]*?\]\]/g, "").replace(/\[(?:QU[OA]TE|引用)[：:][^\]]*\]/g, "").replace(/\[回复\s*[""“][^""”]*?[""”](?:\.{0,3})\]\s*[：:]?\s*/g, "").replace(/\[[^\[\]\n「」]{0,24}引用了[^\[\]\n「」]{0,24}「[^」\n]*?」[^\[\]\n]{0,24}\]\s*/g, "");
@@ -17565,6 +17579,10 @@ var SIDE_EFFECT_TAGS = [
     re: /\[\[DIARY:\s*([\s\S]+?)\]\]/g,
     toDirective: (m) => parseDiaryShort(m, "notion_write_diary")
   },
+  {
+    re: /\[\[OBS_DIARY_START:\s*([^\]]*?)\]\]\n?([\s\S]*?)\[\[OBS_DIARY_END\]\]/g,
+    toDirective: (m) => parseDiaryLong(m, "obsidian_write_diary")
+  },
   // 飞书写日记 — 同形态, FS_ 前缀
   {
     re: /\[\[FS_DIARY_START:\s*(.+?)\]\]\n?([\s\S]*?)\[\[FS_DIARY_END\]\]/g,
@@ -17577,7 +17595,7 @@ var SIDE_EFFECT_TAGS = [
 ];
 function parseDiaryLong(m, type) {
   const header = m[1].trim();
-  const content = (m[2] || "").trim();
+  const content = type === "obsidian_write_diary" ? m[2] || "" : (m[2] || "").trim();
   let title = "";
   let mood = "";
   if (header.includes("|")) {

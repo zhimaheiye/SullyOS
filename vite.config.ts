@@ -78,6 +78,10 @@ export default defineConfig({
   // 前无法移动或删除该目录，即使业务代码从未 import 它。
   optimizeDeps: {
     entries: ['index.html'],
+    // Chat is lazy-loaded, so its GIF frame parser is otherwise discovered only
+    // on the first chat open. Pre-bundle it at startup to avoid invalidating the
+    // browser's dependency graph while the Chat chunk is loading.
+    include: ['gifuct-js'],
   },
   resolve: {
     // Live2D subclasses Pixi containers, so both the renderer and the engine

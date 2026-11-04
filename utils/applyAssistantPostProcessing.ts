@@ -61,6 +61,7 @@ import { stripLeakedSourceTags } from './sanitize';
 import { buildStickerVisionMetadata, loadGlobalStickerVisionEnabled, resolveStickerVisionEnabled } from './stickerVision';
 import {consumeFriendFeedMainReply} from './friendFeedMain';
 import {consumeHomeVisitReply} from './homeVisitReply';
+import {enqueueObsidianDiary,saveObsidianDiary,listObsidianDiaries} from './obsidianDiary';
 // ─── 模块内辅助 ──────────────────────────────────────────────────────────────
 
 /**
@@ -350,7 +351,8 @@ export type PostProcessDirective =
     // Notion / 飞书 写日记 — worker classifier 提取 title/content/mood, 我们拼回原 tag 给
     // line 465 (Notion) / 649 (飞书) 既有 handler 跑. title 可空, 客户端兜底.
     | { type: 'notion_write_diary'; title: string; content: string; mood?: string }
-    | { type: 'feishu_write_diary'; title: string; content: string; mood?: string };
+    | { type: 'feishu_write_diary'; title: string; content: string; mood?: string }
+    | { type: 'obsidian_write_diary'; title: string; content: string; mood?: string };
 
 /**
  * 把结构化 directive 反向拼回原 tag 字符串. 拼回的目的是让下游 chatParser.parseAndExecuteActions
@@ -434,6 +436,10 @@ function reconstructDirectiveTags(directives: PostProcessDirective[] | undefined
             case 'feishu_write_diary': {
                 const header = d.mood ? `${d.title}|${d.mood}` : d.title;
                 parts.push(`[[FS_DIARY_START: ${header}]]\n${d.content}\n[[FS_DIARY_END]]`);
+                break;
+            }
+            case 'obsidian_write_diary': {
+                parts.push(`[[OBS_DIARY_START: ${d.title}|${d.mood||''}]]\n${d.content}\n[[OBS_DIARY_END]]`);
                 break;
             }
             default:
@@ -773,12 +779,26 @@ export async function applyAssistantPostProcessing(
     };
 
     // ─── Step 1: 初次粗洗 ───
-    rawAiContent = await replyStep(() => consumeHomeVisitReply(char.id, rawAiContent,
+    const obsidianIntent = extractObsidianDiary(replayedTagPrefix ? `${replayedTagPrefix}${rawAiContent}` : rawAiContent);
+    rawAiContent = await replyStep(() => consumeHomeVisitReply(char.id, obsidianIntent.text,
         (directives || []).flatMap(d=>d.type==='home_visit_reply'?[d.action]:[])));
     rawAiContent = await replyStep(() => consumeFriendFeedMainReply(char.id, rawAiContent,
         (directives || []).flatMap(d => d.type === 'friend_feed_reply' ? [d.action] : [])));
-    let aiContent = replayedTagPrefix ? `${replayedTagPrefix}${rawAiContent}` : rawAiContent;
+    let aiContent = rawAiContent;
     aiContent = normalizeAndProtectAiContent(aiContent);
+    {
+        const candidateId=mcdInheritMeta?.activeMsg2?.messageId||initialData?.id||ctx.replyRun?.uuid;
+        const sourceId=typeof candidateId==='string'||typeof candidateId==='number'?String(candidateId):crypto.randomUUID();
+        for(const [index,entry] of obsidianIntent.entries.entries()){
+            if(!entry.content.trim())continue;
+            const [title,...moods]=entry.header.split('|');
+            const row=await replyStep(()=>enqueueObsidianDiary({charId:char.id,charName:char.name,title:title.trim(),mood:moods.join('|').trim(),content:entry.content,sourceId,index,incomplete:!entry.complete,createdAt:messageTimestamp||spokenAt},ctx.replyRun?.signal));
+            if(row.status==='queued'){
+                hooks.addToast('日记已生成，尚未保存到 Obsidian','info');
+                if(typeof document==='undefined'||document.visibilityState==='visible')void saveObsidianDiary(row.id,ctx.replyRun?.signal).then(async()=>{const saved=(await listObsidianDiaries()).find(r=>r.id===row.id);if(saved?.status==='written')hooks.addToast('日记已保存到 Obsidian','success');}).catch(()=>{});
+            } else if(row.incomplete)hooks.addToast('日记生成被截断，正文已在本机保留','info');
+        }
+    }
     // 先于 lead-in / 二轮渲染消费：否则控制标签会作为普通气泡短暂闪给用户看。
     aiContent = await replyStep(async () => consumeScheduleChanges(aiContent, utteranceAt));
     // 在任何 lead-in/二轮渲染之前先剥掉仿卡片文本，防止它被 chunkText 拆成灰色普通气泡。
@@ -2395,3 +2415,4 @@ export async function applyAssistantPostProcessing(
         }
     }
 }
+import {extractObsidianDiary} from './obsidianDiaryProtocol';

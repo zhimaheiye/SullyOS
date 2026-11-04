@@ -4,13 +4,13 @@ import type {Message} from '../types';
 import type {FriendUserDisclosure} from './friendFeedRecognition';
 
 /** Only the last human text inside the caller's selected context; never read broader DB history. */
-export function friendFeedUserDisclosure(messages:(Pick<Message,'id'|'role'|'type'|'content'>&{metadata?:Message['metadata']})[]):FriendUserDisclosure|undefined {
+export function friendFeedUserDisclosure(messages:(Pick<Message,'id'|'role'|'type'|'content'>&{metadata?:Message['metadata'];timestamp?:number})[]):FriendUserDisclosure|undefined {
     const message=[...messages].reverse().find(m=>m.role==='user');
     const sharedMessage=[...messages].reverse().find(m=>m.role==='user'&&m.type==='friend_feed_share_card');
     const snapshot=sharedMessage?.metadata?.friendFeedShare;
     const shared=snapshot?.version===1&&typeof snapshot.postId==='string'&&typeof snapshot.text==='string'&&Array.isArray(snapshot.comments)
         ?{postId:snapshot.postId,text:snapshot.text,comments:snapshot.comments.filter((c:any)=>c&&typeof c.id==='string'&&typeof c.text==='string').map((c:any)=>({id:c.id,text:c.text}))}:undefined;
-    return message&&(message.type==='text'&&message.content.trim()||shared)?{id:`chat:${message.id}`,text:message.type==='text'?message.content:'',...(shared?{shared}:{})}:undefined;
+    return message&&(message.type==='text'&&message.content.trim()||shared)?{id:`chat:${message.id}`,createdAt:message.timestamp,text:message.type==='text'?message.content:'',...(shared?{shared}:{})}:undefined;
 }
 
 /** Only actual generation calls this; context previews/statistics never take a lease. */

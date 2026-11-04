@@ -1,4 +1,4 @@
-import type { CharacterProfile, TimeCapsuleEntry, TimeCapsuleSettings, TimeCapsuleSource } from '../types';
+import type { CharacterProfile, TimeCapsuleEntry, TimeCapsuleInviteBatch, TimeCapsuleSettings, TimeCapsuleSource } from '../types';
 
 export const DEFAULT_TIME_CAPSULE_SETTINGS: TimeCapsuleSettings = {
   id: 'settings', kind: 'settings', enabled: false, visitorCharIds: [], intervalMinutes: 1440, nextVisitorIndex: 0,
@@ -12,7 +12,6 @@ export function maxTimeCapsuleUnlockAt(now = Date.now()): number {
   date.setFullYear(date.getFullYear() + 1);
   return date.getTime();
 }
-
 export function validateTimeCapsuleUnlockAt(unlockAt: number, now = Date.now()): string | null {
   if (!Number.isFinite(unlockAt)) return '请选择开启时间';
   if (unlockAt <= now) return '开启时间需要晚于现在';
@@ -49,15 +48,18 @@ export function parseCharacterTimeCapsule(
   now = Date.now(),
 ): TimeCapsuleEntry {
   const cleaned = stripFence(raw);
+  if (!cleaned) throw new Error('角色这次没有留下可封存的内容');
   let parsed: any = null;
   try { parsed = JSON.parse(cleaned); } catch {
     const match = cleaned.match(/\{[\s\S]*\}/);
     if (match) try { parsed = JSON.parse(match[0]); } catch { /* use raw fallback */ }
   }
+  if (!parsed && (/^[{[]/.test(cleaned) || /^```/.test(raw.trim()) || /[{[]/.test(cleaned) && /"(?:title|content|message|unlockInDays)"\s*:/.test(cleaned))) throw new Error('胶囊JSON不完整，未封存，请重试');
+  if (parsed && (typeof parsed !== 'object' || Array.isArray(parsed) || typeof (parsed.content ?? parsed.message) !== 'string' || !(parsed.content ?? parsed.message).trim())) throw new Error('胶囊里还没有有效正文');
   const daysValue = Number(parsed?.unlockInDays ?? parsed?.days ?? 30);
   const unlockInDays = Math.min(365, Math.max(1, Number.isFinite(daysValue) ? Math.round(daysValue) : 30));
   const unlockAt = Math.min(now + unlockInDays * 24 * 60 * 60_000, maxTimeCapsuleUnlockAt(now));
-  const content = String(parsed?.content || parsed?.message || cleaned || '等时间到了，再来看看我想说什么。').trim().slice(0, 12_000);
+  const content = String(parsed?.content || parsed?.message || cleaned).trim().slice(0, 12_000);
   const title = String(parsed?.title || `${char.name}留给未来的一封话`).trim().slice(0, 80);
   return {
     id: createTimeCapsuleId(), kind: 'capsule', title, content, source,
@@ -95,4 +97,33 @@ export function formatTimeCapsuleDistance(unlockAt: number, now = Date.now()): s
   const hours = Math.floor(diff / 3_600_000);
   if (hours > 0) return `还有 ${hours} 小时`;
   return `还有 ${Math.max(1, Math.ceil(diff / 60_000))} 分钟`;
+}
+
+/** Only identity/prompt fields used by this invitation, not credentials or unrelated counters. */
+export const timeCapsuleCharacterSignature=(char:Pick<CharacterProfile,'id'|'name'|'avatar'|'systemPrompt'|'description'>)=>JSON.stringify([char.id,char.name,char.avatar,char.systemPrompt,char.description]);
+
+/** Stable non-secret identity revision. Batch rows never persist prompts or context. */
+export function timeCapsuleCharacterSignatureHash(char:Pick<CharacterProfile,'id'|'name'|'avatar'|'systemPrompt'|'description'>):string {
+  const input=timeCapsuleCharacterSignature(char);
+  let hash=2166136261;
+  for(let index=0;index<input.length;index+=1){hash^=input.charCodeAt(index);hash=Math.imul(hash,16777619);}
+  return `v1-${(hash>>>0).toString(16).padStart(8,'0')}`;
+}
+
+export function createTimeCapsuleInviteBatch(chars:CharacterProfile[],now=Date.now()):TimeCapsuleInviteBatch {
+  const suffix=Math.random().toString(36).slice(2,9);
+  return {
+    id:`invite_batch_${now}_${suffix}`,kind:'invite_batch',createdAt:now,updatedAt:now,revision:0,
+    items:chars.map((char,index)=>({
+      id:`invite_${now}_${index}_${char.id}`,charId:char.id,charName:char.name,charAvatar:char.avatar,
+      characterSignature:timeCapsuleCharacterSignatureHash(char),status:'waiting',createdAt:now,updatedAt:now,attempt:0,
+    })),
+  };
+}
+
+export function safeTimeCapsuleInviteError(error:unknown):string {
+  const fallback='这次没有取得可封存的内容';
+  const text=error instanceof Error?error.message:fallback;
+  if(!text||/api.?key|authorization|bearer|prompt|request.?id/i.test(text))return fallback;
+  return text.replace(/https?:\/\/\S+/g,'文字来源').slice(0,180);
 }

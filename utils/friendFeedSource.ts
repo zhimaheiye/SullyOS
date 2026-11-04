@@ -1,4 +1,5 @@
 import {FRIEND_FEED_EXCERPT_LIMIT} from './friendFeedMaterial';
+import {friendSourceTime} from './friendFeedTime';
 export interface FriendFeedImage {url: string; thumbnail: string}
 export function isWeiboImageUrl(value: unknown): value is string {
     if (typeof value !== 'string' || value.length > 2048) return false;
@@ -39,5 +40,6 @@ export function isFriendFeedSource(value: unknown): value is FriendFeedSource {
         new RegExp('^https://weibo\\.com/' + s.accountId + '/[a-zA-Z0-9]{5,25}$').test(s.url);
     return s.url === (s.platform === 'x' ? `https://x.com/i/status/${s.externalId}` : `https://www.xiaohongshu.com/explore/${s.externalId}`);
 }
-export const sourceContext = (source: FriendFeedSource) => ({platform: sourceLabel(source), author: source.author,
+export const sourceContext = (source: FriendFeedSource, timeZone?: string) => ({platform: sourceLabel(source), author: source.author,
+    ...friendSourceTime(source, timeZone),
     text: source.text.slice(0, FRIEND_FEED_EXCERPT_LIMIT), truncated: source.truncated || source.text.length > FRIEND_FEED_EXCERPT_LIMIT, url: source.url});

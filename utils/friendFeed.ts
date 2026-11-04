@@ -2,7 +2,8 @@ import {DB, openDB} from './db';
 import {createLocalId} from './localId.js';
 import {activeFriendAccounts, friendAccountRef, normalizeFriendGraph, setFriendAccountFollow, validFriendGraph, type FriendAccountGraph} from './friendFeedGraph';
 import {normalizeFriendIdentityName} from './friendFeedIdentity';
-import {friendFeedExcerpt} from './friendFeedMaterial';
+import {friendFeedExcerpt, friendCommentTimes} from './friendFeedMaterial';
+import {validFriendTime, friendPostTime} from './friendFeedTime';
 import {FRIEND_POST_IMAGE_LIMIT, isLocalFriendImage, validFriendImageCards,friendPostText,type FriendImageCard} from './friendFeedImages';
 import type {FriendFeedImage} from './friendFeedSource';
 import type {CharacterProfile} from '../types';
@@ -16,6 +17,7 @@ import {enqueueFriendNotices, followedAuthors, syncedPostEnabled, type FriendNot
 
 export const FRIEND_FEED_KEY = 'friend_feed_v1';
 export const FRIEND_FEED_CHANGED = 'friend-feed-changed';
+const FRIEND_COMMENT_TEXT_LIMIT = 500;
 export type FriendReplyTarget = {kind:'local'|'source';id:string};
 export interface FriendCircle {
     id: string;
@@ -32,13 +34,15 @@ export interface FriendComment {
     authorName: string;
     text: string;
     createdAt: number;
+    editedAt?: number;
     authorKind?: 'npc' | 'external';
     accountId?: string;
     accountTags?: string[];
     sourceReply?: FriendSourceReply;
-    localReply?: {id:string;authorId:string;authorName:string;text:string};
+    localReply?: {id:string;authorId:string;authorName:string;text:string;createdAt?:number};
 }
 export interface FriendPost extends FriendComment {
+    discussionRevision?: number;
     imageCards?:FriendImageCard[];
     images?: FriendFeedImage[];
     circleId: string;
@@ -118,10 +122,11 @@ export function parseFriendFeed(raw: string | null): FriendFeedState {
     const time = (n: unknown) => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) < 8.64e15;
     const ids = (a: unknown): a is string[] => Array.isArray(a) && a.every(text);
     const comment = (p: any) => p && text(p.id) && text(p.authorId) && !!p.authorId && text(p.authorName)
-        && text(p.text) && time(p.createdAt) && (p.accountId === undefined || text(p.accountId))
+        && text(p.text) && time(p.createdAt) && (p.editedAt === undefined || time(p.editedAt)) && (p.accountId === undefined || text(p.accountId))
         && (p.accountTags === undefined || ids(p.accountTags))
         && (p.sourceReply === undefined || isFriendSourceReply(p.sourceReply))
-        && (p.localReply === undefined || p.localReply && text(p.localReply.id) && text(p.localReply.authorId) && text(p.localReply.authorName) && text(p.localReply.text));
+        && (p.localReply === undefined || p.localReply && text(p.localReply.id) && text(p.localReply.authorId) && text(p.localReply.authorName) && text(p.localReply.text)
+            && (p.localReply.createdAt === undefined || validFriendTime(p.localReply.createdAt)));
     if (data?.version !== 1 || !Array.isArray(data.circles) || !Array.isArray(data.posts)
         || !data.circles.every((c: any) => c && text(c.id) && text(c.name) && text(c.description)
             && ids(c.memberIds) && time(c.createdAt) && (c.interactionPrompt === undefined || text(c.interactionPrompt))
@@ -130,6 +135,7 @@ export function parseFriendFeed(raw: string | null): FriendFeedState {
             &&(p.imageCards===undefined||validFriendImageCards(p.imageCards))
             && (p.images === undefined || Array.isArray(p.images) && p.images.length <= FRIEND_POST_IMAGE_LIMIT
                 && p.images.every((i: any) => i && (isLocalFriendImage(i.url) || i.url === '') && i.thumbnail === i.url))
+            && (p.discussionRevision === undefined || Number.isSafeInteger(p.discussionRevision) && p.discussionRevision >= 0)
             && Array.isArray(p.comments) && p.comments.every(comment)
             && (p.source === undefined || isFriendFeedSource(p.source))
             && (p.weiboComments === undefined || p.source?.platform === 'weibo' && isWeiboCommentPage(p.weiboComments))
@@ -316,15 +322,16 @@ export async function commentOnFriendPost(postId: string, authorName: string, bo
         const local=replyTarget?.kind==='local'?post.comments.find(c=>c.id===replyTarget.id):undefined;
         const original=replyTarget?.kind==='source'?post.weiboComments?.rows.find(c=>c.id===replyTarget.id):undefined;
         if(replyTarget&&!local&&!original)throw new Error('要回复的评论已不存在，请返回评论区重新选择');
-        const replyTo=local?{localReply:{id:local.id,authorId:local.authorId,authorName:local.authorName,text:friendFeedExcerpt(local.text)}}
-            :original?{sourceReply:{id:original.id,authorName:original.authorName,text:original.text.slice(0,1200)}}:{};
+        const replyTo=local?{localReply:{id:local.id,authorId:local.authorId,authorName:local.authorName,text:friendFeedExcerpt(local.text),...(validFriendTime(local.createdAt)?{createdAt:local.createdAt}:{})}}
+            :original?{sourceReply:{id:original.id,authorName:original.authorName,text:original.text.slice(0,1200),createdAt:original.createdAt}}:{};
         authorName=resolveFriendFeedSettings(state.settings).userNickname||authorName;
         post.comments.push({id, authorId: 'user', accountId:'main', authorName: cleanText(authorName, 100, '名字'),
-            text: cleanText(body, 500, '评论'), createdAt: Date.now(),...replyTo});
+            text: cleanText(body, FRIEND_COMMENT_TEXT_LIMIT, '评论'), createdAt: Date.now(),...replyTo});
+        const materialTime={post:friendPostTime(post),comments:friendCommentTimes(post,[id])};
         const eligible = characters.filter(c => friendPostsForCharacter(state, c.id).some(p => p.id === postId));
         const owner = eligible.find(c => c.id === post.authorId && post.authorKind !== 'npc');
         if (owner) {
-            addFriendFeedNote(tx, owner.id, {kind: 'received', postId, commentId: id, postAuthor: post.authorName,
+            addFriendFeedNote(tx, owner.id, {kind: 'received', materialTime, postId, commentId: id, postAuthor: post.authorName,
                 accountName: post.accountId && post.accountId !== 'main' ? post.authorName : undefined,
                 postExcerpt: friendFeedExcerpt(friendPostText(post)), comment: `${authorName}：${body.trim()}${local||original?`（回复 @${(local||original)!.authorName}）`:''}`, source: post.source});
             changed.push(owner.id);
@@ -333,7 +340,7 @@ export async function commentOnFriendPost(postId: string, authorName: string, bo
         const settings=resolveFriendFeedSettings(state.settings);
         const addressed=local&&eligible.find(c=>c.id===local.authorId);
         if(addressed&&addressed.id!==owner?.id){
-            addFriendFeedNote(tx,addressed.id,{kind:'replied',postId,commentId:id,postAuthor:post.authorName,postExcerpt:friendFeedExcerpt(friendPostText(post)),
+            addFriendFeedNote(tx,addressed.id,{kind:'replied',materialTime,postId,commentId:id,postAuthor:post.authorName,postExcerpt:friendFeedExcerpt(friendPostText(post)),
                 replyTo:local.text,comment:`${authorName}：${body.trim()}`,source:post.source});changed.push(addressed.id);
         }
         const pool=friendCommentPool(eligible,post,settings,state);
@@ -348,6 +355,36 @@ export async function commentOnFriendPost(postId: string, authorName: string, bo
     });
     announceFriendFeedHistory(changed);
     return id;
+}
+/** Local discussion edits preserve existing historical memory cards. */
+export async function editFriendComment(postId: string, commentId: string, body: string, expectedText: string) {
+    const text = cleanText(body, FRIEND_COMMENT_TEXT_LIMIT, '评论');
+    await mutate(state => {
+        const post = state.posts.find(p => p.id === postId);
+        const comment = post?.comments.find(c => c.id === commentId);
+        if (!post || !comment) throw new Error('这条评论已被删除');
+        if (comment.text !== expectedText) throw new Error('评论已在其他窗口修改，请返回后重新编辑');
+        if (comment.text === text) return;
+        comment.text = text;
+        comment.editedAt = Date.now();
+        post.discussionRevision = (post.discussionRevision || 0) + 1;
+        for (const reply of post.comments) if (reply.localReply?.id === commentId) reply.localReply.text = friendFeedExcerpt(text);
+        state.replyJobs = state.replyJobs?.filter(j => j.postId !== postId || j.triggerId !== commentId);
+    });
+}
+export async function deleteFriendComment(postId: string, commentId: string, expectedText: string) {
+    await mutate(state => {
+        const post = state.posts.find(p => p.id === postId);
+        const comment = post?.comments.find(c => c.id === commentId);
+        if (!post || !comment) return;
+        if (comment.text !== expectedText) throw new Error('评论已在其他窗口修改，请返回后重新确认');
+        post.comments = post.comments.filter(c => c.id !== commentId);
+        post.discussionRevision = (post.discussionRevision || 0) + 1;
+        const detached = new Set<string>();
+        for (const reply of post.comments) if (reply.localReply?.id === commentId) { delete reply.localReply; detached.add(reply.id); }
+        state.userInbox = state.userInbox?.filter(n => n.postId !== postId || n.commentId !== commentId && !(n.kind === 'reply' && detached.has(n.commentId)));
+        state.replyJobs = state.replyJobs?.filter(j => j.postId !== postId || j.triggerId !== commentId);
+    });
 }
 export async function deleteFriendPost(postId: string) {
     await mutate(state => {const post=state.posts.find(p=>p.id===postId);

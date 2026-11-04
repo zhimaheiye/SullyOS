@@ -2,6 +2,7 @@ import type {CharacterProfile} from '../types';
 import type {FriendComment, FriendFeedState, FriendPost} from './friendFeed';
 import {createLocalId} from './localId.js';
 import {friendAccounts, resolveFriendFeedSettings} from './friendFeedSettings';
+import {validFriendTime} from './friendFeedTime';
 
 export interface FriendAccountRef {id:string; ownerId:string; accountId:string}
 export interface FriendAccountGraph {
@@ -106,18 +107,19 @@ export function friendAccountName(feed:FriendFeedState,account:FriendAccountRef,
     return configured?.name||feed.posts.flatMap(p=>[p,...p.comments]).find(c=>c.authorId===account.ownerId&&(c.accountId||'main')===account.accountId)?.authorName||'已停用账号';
 }
 /** Actor knowledge is separate from routing. No owner key or local alias ID escapes when unknown. */
-export function projectFriendComment(feed:FriendFeedState,viewerId:string,row:FriendComment):FriendComment {
+export function projectFriendComment(feed:FriendFeedState,viewerId:string,row:FriendComment,post?:FriendPost):FriendComment {
     const ref=friendAccountRef(feed,row), known=ref&&knowsFriendAccount(feed,viewerId,ref);
     return {...row,authorId:known?row.authorId:ref?.id||`unmapped-${row.id}`,accountId:ref?.id,
-        ...(row.localReply?{localReply:projectFriendQuote(feed,viewerId,row.localReply)}:{})};
+        ...(row.localReply?{localReply:projectFriendQuote(feed,viewerId,row.localReply,post ?? feed.posts.find(p=>p.comments.includes(row)))}:{})};
 }
-function projectFriendQuote(feed:FriendFeedState,viewerId:string,quote:NonNullable<FriendComment['localReply']>) {
-    const target=feed.posts.flatMap(p=>p.comments).find(c=>c.id===quote.id);
+function projectFriendQuote(feed:FriendFeedState,viewerId:string,quote:NonNullable<FriendComment['localReply']>,post?:FriendPost) {
+    const target=post?.comments.find(c=>c.id===quote.id);
     const projected=target?projectFriendComment(feed,viewerId,{...target,localReply:undefined}):undefined;
-    return {...quote,authorId:projected?.authorId||'unknown-account'};
+    const createdAt=validFriendTime(quote.createdAt)?quote.createdAt:target?.createdAt;
+    return {...quote,authorId:projected?.authorId||'unknown-account',...(validFriendTime(createdAt)?{createdAt}:{})};
 }
 export function projectFriendPost(feed:FriendFeedState,viewerId:string,post:FriendPost):FriendPost {
-    return {...post,...projectFriendComment(feed,viewerId,post),audienceIds:[],comments:post.comments.map(c=>projectFriendComment(feed,viewerId,c))};
+    return {...post,...projectFriendComment(feed,viewerId,post,post),audienceIds:[],comments:post.comments.map(c=>projectFriendComment(feed,viewerId,c,post))};
 }
 export function friendKnownIdentity(feed:FriendFeedState,viewerId:string,row:Pick<FriendComment,'authorId'|'accountId'>,characters:Pick<CharacterProfile,'id'|'name'>[],userName='用户') {
     const account=friendAccountRef(feed,row);

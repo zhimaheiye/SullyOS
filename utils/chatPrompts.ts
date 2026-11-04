@@ -740,6 +740,7 @@ ${personalSearch ? `7. **🔍 主动搜索能力** (非常重要！):
    - **搜索后**: 系统会返回搜索结果给你，你可以自然地分享（"我刚搜了一下发现..."、"诶我看到说..."）` : ''}${sharedSearch ? `7. **主动搜索**（公共额度有限）:
    用户问到你不知道的近期公开信息时，可以在回复开头单独一行输出一次: \`[[SEARCH: 搜索关键词]]\`。
    不要因为好奇连续搜索。如果结果说公共额度用完了，就告诉用户稍后再试，不要重试。` : ''}
+${diaryPrompt(char.id)}
 ${notionEnabled ? `8. **📔 日记系统（你的私人 Notion 日记本）**:
    你有一个属于自己的私人日记本（Notion），你可以随时写日记。日记不是简单的一两句话——它是你的头脑风暴空间、情绪出口、思维导图、灵感记录本。尽情发挥！
 
@@ -1151,13 +1152,13 @@ ${voiceActingGuide()}`;
         return {
             apiMessages: historySlice.map((m, index) => {
                 if (m.type === 'secret_note') return {role: m.role, content: secretNoteContext(m.content)};
-                if (m.type === 'friend_feed_card') return {role: 'system', content: m.content};
+                if (m.type === 'friend_feed_card') return {role: 'system', content: normalizeMessageContent(m,char.name,userProfile?.name||'用户',charTz)};
                 if (m.type === 'friend_feed_share_card') {
-                    const text=normalizeMessageContent(m,char.name,userProfile?.name||'用户');
+                    const text=normalizeMessageContent(m,char.name,userProfile?.name||'用户',charTz);
                     const share=m.metadata?.friendFeedShare;
                     const images=share?.imagesEnabled&&Array.isArray(share.imageRefs)?share.imageRefs.filter((r:unknown)=>isBlobRef(r)||typeof r==='string'&&r.startsWith('data:image/')).slice(0,18):[];
-                    const description=options?.useVisionDescriptions&&typeof m.metadata?.visionDescription==='string'?m.metadata.visionDescription:'';
-                    if(description)return {role:m.role,content:text};
+                    const description=options?.useVisionDescriptions ? (m.metadata?.visionDescription || Object.entries(m.metadata?.visionAttachments || {}).filter(([key])=>key.startsWith('share:')).map(([key,value])=>`配图${Number(key.split(':')[1])+1}：${value}`).join('\n')) : '';
+                    if(description)return {role:m.role,content:text+'\n'+description};
                     if(options?.useVisionDescriptions || !images.length)return {role:m.role,content:text+(images.length?'\n配图描述暂不可用，请不要猜测。':'')};
                     return {role:m.role,content:[{type:'text',text},...images.map((url:string)=>({type:'image_url',image_url:{url}}))]};
                 }
@@ -1442,7 +1443,7 @@ ${voiceActingGuide()}`;
                     try {
                         const fwd = JSON.parse(m.content);
                         const extraImageParts: any[] = [];
-                        const lines = (fwd.messages || []).map((fm: any) => {
+                        const lines = (fwd.messages || []).map((fm: any, forwardIndex: number) => {
                             const sender = fm.role === 'user' ? (fwd.fromUserName || '用户') : (fwd.fromCharName || '角色');
                             if (fm.type === 'emoji') {
                                 // 转发记录里冻结的语义不能丢：有描述直接带描述（哪怕目标角色关了表情包视觉，
@@ -1450,7 +1451,7 @@ ${voiceActingGuide()}`;
                                 // 只有资格没描述且主模型要直接读图时，附带原图并明确标注是转发表情；
                                 // 无资格旧表情只保留名称，转发不得反过来触发补识别。
                                 const name = fm.stickerName || '未知表情';
-                                const desc = typeof fm.stickerVision?.description === 'string' ? fm.stickerVision.description.trim() : '';
+                                const desc = m.metadata?.visionAttachments?.[`forward:${forwardIndex}`] ?? (typeof fm.stickerVision?.description === 'string' ? fm.stickerVision.description.trim() : '');
                                 if (desc) return `  ${sender}: [表情包: ${name}。画面内容：${desc}]`;
                                 const url = typeof fm.content === 'string' ? fm.content : '';
                                 const canAttach = fm.stickerVision?.eligible === true
@@ -1545,3 +1546,4 @@ ${voiceActingGuide()}`;
         };
     }
 };
+import {diaryPrompt} from './obsidianDiary';

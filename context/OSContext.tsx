@@ -1271,7 +1271,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               // Legacy bare fetch text completions have no safeFetchJson boundary. Claim one
               // explicit foreground action before blob expansion, HTTP, capture or API logging.
               const relayBody = (config as RequestInit | undefined)?.body;
-              if (method === 'POST' && isManualRelayCompletionUrl(urlStr) && typeof relayBody === 'string') {
+              if (method === 'POST' && !isExplicitVisionRequest(urlStr, sendArgs[1] as RequestInit | undefined) && isManualRelayCompletionUrl(urlStr) && typeof relayBody === 'string') {
                   let parsed: unknown;
                   try { parsed = JSON.parse(relayBody); } catch { /* existing request handles malformed JSON */ }
                   const manual = maybeInterceptTextResponse({ body: parsed,
@@ -5739,3 +5739,4 @@ export const useOS = () => {
   }
   return context;
 };
+import { isExplicitVisionRequest } from '../utils/explicitVisionAction';

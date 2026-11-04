@@ -3,11 +3,57 @@ import type { APIConfig, ApiPreset, CharacterProfile } from '../../types';
 import type { MemoryPalaceGlobalConfig } from '../../context/OSContext';
 import { DB } from '../../utils/db';
 import { extractModelIds } from '../../utils/modelList';
-import { FEATURE_APIS, loadFeatureApiSettings, resolveFeatureApi, saveFeatureApiSetting, type FeatureApiId, type TextFeatureApi } from '../../utils/featureApi';
+import { applyFeatureApiSettingToAll, FEATURE_APIS, loadFeatureApiSettings, resolveFeatureApi, saveFeatureApiSetting, type FeatureApiId, type TextFeatureApi } from '../../utils/featureApi';
 import DialogueApiFields from './DialogueApiFields';
 import ModelPicker from './ModelPicker';
 
 const EMPTY: TextFeatureApi = { baseUrl: '', apiKey: '', model: '' };
+
+function BulkFeatureApiPanel({ presets }: { presets: ApiPreset[] }) {
+  const [draft, setDraft] = useState<TextFeatureApi>({ ...EMPTY });
+  const [status, setStatus] = useState('');
+  const [models, setModels] = useState<string[]>([]);
+  const [fetching, setFetching] = useState(false);
+  const [picker, setPicker] = useState(false);
+  const [pickerModel, setPickerModel] = useState('');
+  const choosePreset = (id: string) => {
+    const preset = presets.find(item => item.id === id);
+    if (!preset) return;
+    setDraft({ baseUrl: preset.config.baseUrl, apiKey: preset.config.apiKey, model: preset.config.model,
+      stream: preset.config.stream, temperature: preset.config.temperature });
+    setStatus('');
+  };
+  const apply = () => {
+    if (!draft.baseUrl.trim() || !draft.model.trim()) { setStatus('请先选择预设，或填写完整的 URL 和 Model'); return; }
+    if (!window.confirm(`把这份配置应用到全部 ${FEATURE_APIS.length} 项副 API？各项之后仍可单独修改。`)) return;
+    try { applyFeatureApiSettingToAll(draft); setStatus(`已应用到全部 ${FEATURE_APIS.length} 项`); }
+    catch (error) { setStatus(error instanceof Error ? error.message : '批量保存失败'); }
+  };
+  const patch = (next: Partial<TextFeatureApi>) => { setDraft(old => ({ ...old, ...next })); setStatus(''); };
+  const fetchModels = async () => {
+    const base = draft.baseUrl.trim().replace(/\/+$/, '');
+    if (!base) { setStatus('请先填写 URL'); return; }
+    setFetching(true); setStatus('正在拉取模型…');
+    try {
+      const response = await fetch(`${base}/models`, { headers: { Authorization: `Bearer ${draft.apiKey.trim()}` } });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const list = extractModelIds(await response.json());
+      if (!list.length) throw new Error('模型列表为空或格式不兼容');
+      setModels(list); setPickerModel(draft.model); setPicker(true); setStatus(`获取到 ${list.length} 个模型`);
+    } catch (error) { setStatus(`拉取失败：${error instanceof Error ? error.message : '网络错误'}；可手动填写模型 ID`); }
+    finally { setFetching(false); }
+  };
+  return <details className="rounded-xl border border-indigo-200 bg-indigo-50/40 p-3">
+    <summary className="cursor-pointer list-none text-sm font-bold text-indigo-700">一键统一设置</summary>
+    <div className="mt-3 space-y-3 border-t border-indigo-100 pt-3"><p className="text-xs text-slate-600">一次写入全部公开副 API；应用后仍可逐项调整。</p>
+      {presets.length > 0 && <select className="w-full rounded-lg border border-slate-200 p-2 text-xs" value="" onChange={event => choosePreset(event.target.value)}><option value="">从已有 API 预设载入…</option>{presets.map(preset => <option key={preset.id} value={preset.id}>{preset.name}</option>)}</select>}
+      <DialogueApiFields value={draft} onChange={patch} fetchModels={() => void fetchModels()} isLoadingModels={fetching} openModelPicker={() => { setPickerModel(draft.model); setPicker(true); }} showAdvancedOptions={false} />
+      {picker && <div className="rounded-xl border border-indigo-100 bg-white p-2"><ModelPicker availableModels={models} localModel={pickerModel} setLocalModel={setPickerModel} confirmModelPicker={model => { patch({ model: model.trim() }); setPicker(false); }} /><button type="button" className="mt-1 text-xs text-slate-500" onClick={() => setPicker(false)}>取消选模型</button></div>}
+      <button type="button" className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-bold text-white" onClick={apply}>应用到全部 {FEATURE_APIS.length} 项</button>
+      {status && <p role="status" className="text-xs text-indigo-700">{status}</p>}
+    </div>
+  </details>;
+}
 
 function FeatureCard({ feature, mainApi, memoryApi, presets, characters, latest }: {
   feature: typeof FEATURE_APIS[number]; mainApi: APIConfig; memoryApi: MemoryPalaceGlobalConfig['lightLLM'];
@@ -116,6 +162,7 @@ export default function FeatureApiManager({ mainApi, memoryApi, presets, charact
   return <div className="space-y-3">
     <p className="text-xs text-slate-500">每项单独保存 URL、Key 和模型。角色专属配置仍优先；切回沿用原有来源不会删除独立配置的备份内容。</p>
     <button type="button" onClick={() => void refreshLogs()} className="text-xs text-indigo-600">刷新最近调用状态</button>
+    <BulkFeatureApiPanel presets={presets} />
     {FEATURE_APIS.map(feature => <FeatureCard key={feature.id} feature={feature} mainApi={mainApi} memoryApi={memoryApi} presets={presets} characters={characters} latest={latest[feature.id]} />)}
   </div>;
 }

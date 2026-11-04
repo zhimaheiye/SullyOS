@@ -61,6 +61,23 @@ export function saveFeatureApiSetting(id: FeatureApiId, setting: FeatureApiSetti
   saveFeatureApiSettings({ ...loadFeatureApiSettings(), [id]: setting }, id);
 }
 
+/** One-shot update of the public allowlist. Hidden legacy settings are preserved. */
+export function applyFeatureApiSettingToAll(api: TextFeatureApi): FeatureApiSettings {
+  let latest: FeatureApiSettings;
+  try {
+    const raw = localStorage.getItem(FEATURE_API_STORAGE_KEY);
+    const parsed = raw === null ? {} : JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid feature API settings');
+    latest = normalizeFeatureApiSettings(parsed);
+  } catch {
+    throw new Error('现有副 API 配置无法读取，未进行批量修改');
+  }
+  const next: FeatureApiSettings = { ...latest };
+  for (const feature of FEATURE_APIS) next[feature.id] = { mode: 'independent', api: { ...api } };
+  saveFeatureApiSettings(next);
+  return normalizeFeatureApiSettings(next);
+}
+
 export interface FeatureApiContext {
   mainApi?: Partial<TextFeatureApi> | null;
   memoryApi?: Partial<TextFeatureApi> | null;

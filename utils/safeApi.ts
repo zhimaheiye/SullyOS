@@ -439,9 +439,10 @@ export async function safeFetchJson(
     /** 可选：流式增量回调（请求体带 stream:true 时传入才有意义；响应不是 SSE 时静默不触发）。 */
     streamHooks?: StreamHooks,
     /** Read-only request timing hooks; never include response contents or credentials. */
-    observation?: { requestId?: string; onHeaders?: (status: number) => void; onBody?: (status: number) => void; privateTransient?: boolean },
+    observation?: { requestId?: string; onHeaders?: (status: number) => void; onBody?: (status: number) => void; privateTransient?: boolean; explicitVision?: ExplicitVisionPermit },
 ): Promise<any> {
-    if (isManualRelayCompletionUrl(String(url)) && options.method?.toUpperCase() === 'POST' && typeof options.body === 'string') {
+    options = bindExplicitVisionPermit(url, options, observation?.explicitVision);
+    if (!isExplicitVisionRequest(url, options) && isManualRelayCompletionUrl(String(url)) && options.method?.toUpperCase() === 'POST' && typeof options.body === 'string') {
         let relayBody: unknown;
         try { relayBody = JSON.parse(options.body); } catch { /* leave malformed requests to the existing path */ }
         const manual = maybeInterceptTextCompletion({ body: relayBody, meta, signal: options.signal || undefined, priority: meta?.relayPriority });
@@ -477,7 +478,7 @@ export async function safeFetchJson(
     // 图片在本机存成 `blobref:` 令牌，发出去对面读不懂——在这里统一还原成 data URL。
     // 各处构造请求的地方就不用各记一遍这件事了（详见 utils/apiBlobRefs.ts）。
     // 循环外做一次：重试用的是同一份 body。
-    const resolvedBody = observation?.privateTransient ? metaOptions.body : await resolveBlobRefsInRequestBody(metaOptions.body);
+    const resolvedBody = await resolveBlobRefsInRequestBody(metaOptions.body);
     const sendOptions: RequestInit = resolvedBody === metaOptions.body
         ? metaOptions
         : { ...metaOptions, body: resolvedBody as BodyInit };
@@ -898,3 +899,4 @@ export function extractJson(raw: string, options: { allowTruncated?: boolean; si
     if (!options.silent) console.error('[extractJson] All attempts failed. Raw:', raw.slice(0, 300));
     return null;
 }
+import { bindExplicitVisionPermit, isExplicitVisionRequest, type ExplicitVisionPermit } from './explicitVisionAction';

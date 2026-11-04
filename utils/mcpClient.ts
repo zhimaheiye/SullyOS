@@ -28,6 +28,7 @@ import {
     type McpTransportTarget,
 } from './mcpFireCore';
 import { isWorkerReachableUrl } from './amsgToolPack';
+import {OBSIDIAN_DIARY_KEY,OBSIDIAN_DIARY_CHANGED} from './obsidianDiaryConfig';
 
 export { MCP_REQUEST_TIMEOUT_MS, normalizeMcpToolArguments };
 export type { McpToolResult };
@@ -209,6 +210,7 @@ export function exportMcpLocal(): Record<string, string> | undefined {
         const useNativeTools = localStorage.getItem(MCP_USE_NATIVE_TOOLS_KEY);
         if (servers) out[MCP_SERVERS_KEY] = servers;
         if (useNativeTools) out[MCP_USE_NATIVE_TOOLS_KEY] = useNativeTools;
+        const diary=localStorage.getItem(OBSIDIAN_DIARY_KEY);if(diary)out[OBSIDIAN_DIARY_KEY]=diary;
         return Object.keys(out).length ? out : undefined;
     } catch { return undefined; }
 }
@@ -217,6 +219,7 @@ export function importMcpLocal(data: Record<string, string> | null | undefined):
     try {
         if (typeof data[MCP_SERVERS_KEY] === 'string') localStorage.setItem(MCP_SERVERS_KEY, data[MCP_SERVERS_KEY]);
         if (typeof data[MCP_USE_NATIVE_TOOLS_KEY] === 'string') localStorage.setItem(MCP_USE_NATIVE_TOOLS_KEY, data[MCP_USE_NATIVE_TOOLS_KEY]);
+        if(typeof data[OBSIDIAN_DIARY_KEY]==='string'){localStorage.setItem(OBSIDIAN_DIARY_KEY,data[OBSIDIAN_DIARY_KEY]);window.dispatchEvent(new Event(OBSIDIAN_DIARY_CHANGED));}
     } catch { /* ignore */ }
 }
 
@@ -337,11 +340,26 @@ export const discoverMcpTools = async (
  * 调用一个工具（会自动补握手；session 失效自动重试一次）。
  * 重试前的会话重置是 core 就地做的，改的就是这张表里的那个对象，两边不会走岔。
  */
-export const callMcpTool = async (
+export const callMcpTool = (
     server: McpServerConfig,
     toolName: string,
     args: Record<string, any> = {},
     signal?: AbortSignal,
+): Promise<McpToolResult> => callMcpToolWithOptions(server, toolName, args, signal);
+
+export const callPrivateMcpTool = (
+    server: McpServerConfig,
+    toolName: string,
+    args: Record<string, any> = {},
+    signal?: AbortSignal,
+): Promise<McpToolResult> => callMcpToolWithOptions(server, toolName, args, signal, { privateContent: true, noSessionRetry: true, timeoutMs: 30000 });
+
+const callMcpToolWithOptions = async (
+    server: McpServerConfig,
+    toolName: string,
+    args: Record<string, any> = {},
+    signal?: AbortSignal,
+    privacy?: { privateContent?: boolean; noSessionRetry?: boolean; timeoutMs?: number },
 ): Promise<McpToolResult> => {
     const tool = (server.tools || []).find(item => item.name === toolName);
     const needsApproval = tool?.annotations?.destructiveHint === true;
@@ -364,6 +382,7 @@ export const callMcpTool = async (
         signal,
         inputSchema: (server.tools || []).find(tool => tool.name === toolName)?.inputSchema,
         serverLabel: server.name,
+        ...privacy,
     });
 };
 

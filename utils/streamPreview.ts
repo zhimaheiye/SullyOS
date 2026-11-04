@@ -21,7 +21,7 @@ import type { Message } from '../types';
 /** 跨行块规则：open 命中进入抑制态，直到 close 命中（含闭合行本身）。 */
 const BLOCK_RULES: Array<{ open: RegExp; close: RegExp }> = [
     // Notion / 飞书日记多行块 —— 正文是日记内容，不是聊天气泡
-    { open: /\[\[(?:FS_)?DIARY_START/i, close: /\[\[(?:FS_)?DIARY_END\]\]/i },
+    { open: /\[\[(?:(?:FS|OBS)_)?DIARY_START/i, close: /\[\[(?:(?:FS|OBS)_)?DIARY_END\]\]/i },
     // HTML 卡片块
     { open: /\[html\]/i, close: /\[\/html\]/i },
     // 思考链（content 内嵌形态；reasoning_content 通道根本不进正文）

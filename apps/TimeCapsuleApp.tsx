@@ -1,16 +1,18 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowDown, ArrowUp, CaretLeft, ClockCountdown, EnvelopeSimpleOpen, HourglassMedium,
-  LockKey, PencilSimple, Plus, Trash, UserCirclePlus, UsersThree,
+  Check, LockKey, PencilSimple, Plus, Stop, Trash, UserCirclePlus, UsersThree, WarningCircle,
 } from '@phosphor-icons/react';
 import { TIME_CAPSULE_UPDATED_EVENT } from '../components/timeCapsule/TimeCapsuleRuntime';
 import { useOS } from '../context/OSContext';
-import type { CharacterProfile, TimeCapsuleEntry, TimeCapsuleRecord, TimeCapsuleSettings } from '../types';
+import type { CharacterProfile, TimeCapsuleEntry, TimeCapsuleInviteBatch, TimeCapsuleRecord, TimeCapsuleSettings } from '../types';
 import { DB } from '../utils/db';
 import {
   createUserTimeCapsule, DEFAULT_TIME_CAPSULE_SETTINGS, formatTimeCapsuleDistance,
-  maxTimeCapsuleUnlockAt, toLocalDateTimeInput,
+  maxTimeCapsuleUnlockAt, toLocalDateTimeInput, createTimeCapsuleInviteBatch,
+  safeTimeCapsuleInviteError, timeCapsuleCharacterSignatureHash,
 } from '../utils/timeCapsule';
+import {isManualRelayEnabled, subscribeManualRelay} from '../utils/manualModelRelay';
 import { requestCharacterTimeCapsule } from '../utils/timeCapsuleService';
 
 type Tab = 'archive' | 'write' | 'invite' | 'visitors';
@@ -33,6 +35,12 @@ const sourceLabel = (capsule: TimeCapsuleEntry) => {
   return `你邀请${capsule.charName || '角色'}留下`;
 };
 
+const inviteStatusLabel={waiting:'等待中',running:'正在写',saved:'已封存',failed:'未完成',interrupted:'已中断'} as const;
+const executorId=()=>{
+  const key='sully.timeCapsule.inviteExecutor.v1';
+  try{const old=sessionStorage.getItem(key);if(old)return old;const next=`tab_${Date.now()}_${Math.random().toString(36).slice(2)}`;sessionStorage.setItem(key,next);return next;}catch{return `tab_${Date.now()}_${Math.random().toString(36).slice(2)}`;}
+};
+
 const TimeCapsuleApp: React.FC = () => {
   const {
     closeApp, registerBackHandler, characters, userProfile, groups, apiConfig, realtimeConfig, addToast,
@@ -43,17 +51,35 @@ const TimeCapsuleApp: React.FC = () => {
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [unlockValue, setUnlockValue] = useState(() => toLocalDateTimeInput(Date.now() + 30 * 86_400_000));
-  const [inviteCharId, setInviteCharId] = useState('');
-  const [busyCharId, setBusyCharId] = useState('');
+  const [inviteCharIds, setInviteCharIds] = useState<string[]>([]);
+  const [busyItemId, setBusyItemId] = useState('');
+  const [dismissedBatchId,setDismissedBatchId]=useState('');
+  const [pendingSave,setPendingSave]=useState<{op:{batchId:string;itemId:string;attempt:number;charId:string};capsule:TimeCapsuleEntry;character:CharacterProfile}|null>(null);
+  const executor = useRef(executorId());
+  const invitation = useRef<{controller:AbortController;batchId:string;itemId:string;attempt:number;charId:string}|null>(null);
+  const cancelInvitation=useCallback(()=>{invitation.current?.controller.abort();setBusyItemId('');},[]);
+  useEffect(()=>{
+    const reset=()=>{cancelInvitation();setPendingSave(null);};
+    window.addEventListener('time-capsule-reset',reset);
+    return()=>{window.removeEventListener('time-capsule-reset',reset);invitation.current?.controller.abort();};
+  },[cancelInvitation]);
+  useEffect(()=>{
+    if(invitation.current&&tab!=='invite')cancelInvitation();
+  },[tab,cancelInvitation]);
+
 
   const capsules = useMemo(() => records
     .filter((item): item is TimeCapsuleEntry => item.kind === 'capsule')
     .sort((a, b) => b.createdAt - a.createdAt), [records]);
   const settings = useMemo(() => records.find((item): item is TimeCapsuleSettings => item.kind === 'settings') || DEFAULT_TIME_CAPSULE_SETTINGS, [records]);
+  const inviteBatches=useMemo(()=>records.filter((item):item is TimeCapsuleInviteBatch=>item.kind==='invite_batch').sort((a,b)=>b.updatedAt-a.updatedAt),[records]);
+  const activeInviteBatch=inviteBatches[0];
+  const shownInviteBatch=activeInviteBatch?.id===dismissedBatchId?undefined:activeInviteBatch;
+  const eligibleCharacters=characters;
 
   const load = useCallback(async () => setRecords(await DB.getTimeCapsuleRecords()), []);
   useEffect(() => {
-    void load().catch(() => addToast('时间胶囊读取失败', 'error'));
+    void DB.recoverTimeCapsuleInviteBatches(executor.current).then(load).catch(() => addToast('时间胶囊读取失败', 'error'));
     const onUpdate = () => void load();
     window.addEventListener(TIME_CAPSULE_UPDATED_EVENT, onUpdate);
     return () => window.removeEventListener(TIME_CAPSULE_UPDATED_EVENT, onUpdate);
@@ -62,14 +88,13 @@ const TimeCapsuleApp: React.FC = () => {
     const timer = window.setInterval(() => setNow(Date.now()), 60_000);
     return () => window.clearInterval(timer);
   }, []);
-  useEffect(() => {
-    if (!inviteCharId) setInviteCharId(characters[0]?.id || '');
-  }, [characters, inviteCharId]);
+  useEffect(() => setInviteCharIds(ids=>ids.filter(id=>eligibleCharacters.some(char=>char.id===id))), [eligibleCharacters]);
 
   const goBack = useCallback(() => {
+    cancelInvitation();
     if (tab !== 'archive') { setTab('archive'); return true; }
     closeApp(); return true;
-  }, [closeApp, tab]);
+  }, [closeApp, tab, cancelInvitation]);
   useEffect(() => registerBackHandler(goBack), [goBack, registerBackHandler]);
 
   const saveSettings = async (patch: Partial<TimeCapsuleSettings>) => {
@@ -90,21 +115,69 @@ const TimeCapsuleApp: React.FC = () => {
     }
   };
 
-  const inviteCharacter = async () => {
-    const char = characters.find(item => item.id === inviteCharId);
-    if (!char) { addToast('请先选择一位角色', 'error'); return; }
-    setBusyCharId(char.id);
-    try {
-      const capsule = await requestCharacterTimeCapsule({
-        char, userProfile, groups, apiConfig, realtimeConfig, source: 'invited',
-      });
-      await DB.saveTimeCapsuleRecord(capsule);
-      await load(); setTab('archive'); addToast(`${char.name}留下了一枚胶囊`, 'success');
-    } catch (error) {
-      addToast(error instanceof Error ? error.message : '邀请失败', 'error');
-    } finally {
-      setBusyCharId('');
+  const runInvitationBatch = async (batchId:string,onlyItemId?:string) => {
+    if(invitation.current)return;
+    const relayAtStart=isManualRelayEnabled();
+    if(!relayAtStart&&!(apiConfig.baseUrl?.trim()&&apiConfig.model?.trim())){addToast('请先配置时间胶囊文本来源','error');return;}
+    const frozenUser=structuredClone(userProfile),frozenGroups=structuredClone(groups),frozenApi=structuredClone(apiConfig),frozenRealtime=structuredClone(realtimeConfig);
+    let nextItemId=onlyItemId;
+    while(true){
+      let claimed:Awaited<ReturnType<typeof DB.claimTimeCapsuleInviteItem>>;
+      try{claimed=await DB.claimTimeCapsuleInviteItem(batchId,executor.current,nextItemId);}
+      catch(error){if(error instanceof Error&&error.message==='没有可继续的邀请')break;addToast(safeTimeCapsuleInviteError(error),'error');break;}
+      nextItemId=undefined;
+      const {item}=claimed,controller=new AbortController();
+      const op={controller,batchId,itemId:item.id,attempt:item.attempt,charId:item.charId};
+      invitation.current=op;setBusyItemId(item.id);await load();
+      const unsubscribe=subscribeManualRelay(()=>{if(relayAtStart&&!isManualRelayEnabled())controller.abort();});
+      let continueQueue=!relayAtStart;
+      let candidate:{capsule:TimeCapsuleEntry;character:CharacterProfile}|undefined;
+      try{
+        const latest=await DB.getCharacter(item.charId);
+        if(!latest||timeCapsuleCharacterSignatureHash(latest)!==item.characterSignature){
+          await DB.settleTimeCapsuleInviteItem({...op,executorId:executor.current,status:'failed',error:'角色已删除或身份已变化，请重新选择'});
+        }else{
+          const char=structuredClone(latest);
+          const capsule=await requestCharacterTimeCapsule({char,userProfile:frozenUser,groups:frozenGroups,apiConfig:frozenApi,realtimeConfig:frozenRealtime,source:'invited',signal:controller.signal});
+          candidate={capsule,character:char};
+          controller.signal.throwIfAborted();
+          await DB.finishTimeCapsuleInviteItem({...op,executorId:executor.current,capsule,character:char,signal:controller.signal});
+          addToast(`${char.name}留下了一枚胶囊`,'success');
+        }
+      }catch(error){
+        const aborted=controller.signal.aborted||error instanceof DOMException&&error.name==='AbortError';
+        if(aborted){
+          continueQueue=false;
+          try{await DB.settleTimeCapsuleInviteItem({...op,executorId:executor.current,status:'interrupted',error:'本轮已停止，可继续'});}catch{/* reset/import may have removed it */}
+        }else{
+          const message=safeTimeCapsuleInviteError(error);
+          const identityFailure=/角色已变更|角色不一致/.test(message);
+          const saveFailure=/保存失败|进度已变化|IndexedDB|database/i.test(message)&&!identityFailure;
+          if(saveFailure){continueQueue=false;if(candidate)setPendingSave({op:{batchId:op.batchId,itemId:op.itemId,attempt:op.attempt,charId:op.charId},...candidate});addToast(candidate?'胶囊已生成但尚未保存；请重试保存，不会再次生成':'邀请进度保存失败，队列已暂停；请刷新后继续','error');}
+          else try{await DB.settleTimeCapsuleInviteItem({...op,executorId:executor.current,status:'failed',error:message});}catch(settleError){continueQueue=false;addToast(safeTimeCapsuleInviteError(settleError),'error');}
+        }
+      }finally{
+        unsubscribe();
+        if(invitation.current===op)invitation.current=null;
+        setBusyItemId('');await load();
+      }
+      if(!continueQueue)break;
     }
+  };
+
+  const startInvitationBatch=async()=>{
+    const selected=inviteCharIds.map(id=>eligibleCharacters.find(char=>char.id===id)).filter((char):char is CharacterProfile=>!!char);
+    if(!selected.length){addToast('请至少选择一位角色','error');return;}
+    try{const batch=createTimeCapsuleInviteBatch(selected.map(char=>structuredClone(char)));await DB.saveTimeCapsuleRecord(batch);await load();await runInvitationBatch(batch.id);}
+    catch(error){addToast(safeTimeCapsuleInviteError(error),'error');}
+  };
+
+  const retryPendingInviteSave=async()=>{
+    if(!pendingSave||busyItemId)return;
+    const controller=new AbortController();setBusyItemId(pendingSave.op.itemId);
+    try{await DB.finishTimeCapsuleInviteItem({...pendingSave.op,executorId:executor.current,capsule:pendingSave.capsule,character:pendingSave.character,signal:controller.signal});setPendingSave(null);await load();addToast(`${pendingSave.character.name}的胶囊已保存`,'success');}
+    catch(error){addToast(safeTimeCapsuleInviteError(error),'error');}
+    finally{setBusyItemId('');}
   };
 
   const openCapsule = async (capsule: TimeCapsuleEntry) => {
@@ -135,7 +208,7 @@ const TimeCapsuleApp: React.FC = () => {
   const renderArchive = () => (
     <main className="min-h-0 flex-1 overflow-y-auto px-5 pb-[calc(var(--safe-bottom)+92px)] pt-3">
       <div className="flex items-end justify-between gap-4 border-b border-[#ddcdb3] pb-5">
-        <div><p className="text-[10px] font-black uppercase tracking-[0.28em] text-[#a45b52]">Archive for later</p><h2 className="mt-2 text-3xl font-black tracking-[-0.05em] text-[#272c3a]">写给以后的事</h2></div>
+        <h2 className="text-3xl font-black tracking-[-0.05em] text-[#272c3a]">写给以后的事</h2>
         <div className="flex h-14 w-14 items-center justify-center rounded-full border border-[#d9c8aa] bg-[#f4ead6] text-[#8c5149]"><HourglassMedium size={27} weight="duotone" /></div>
       </div>
       <div className="mt-4 flex items-center justify-between text-xs text-[#7d7569]"><span>{capsules.length} 枚胶囊</span><span>{capsules.filter(item => !item.openedAt && item.unlockAt <= now).length} 枚等待开启</span></div>
@@ -173,13 +246,22 @@ const TimeCapsuleApp: React.FC = () => {
 
   const renderInvite = () => (
     <main className="min-h-0 flex-1 overflow-y-auto px-5 pb-[calc(var(--safe-bottom)+92px)] pt-3">
-      <h2 className="text-2xl font-black tracking-[-0.04em] text-[#272c3a]">请 ta 留一枚</h2><p className="mt-2 text-sm leading-6 text-[#786f63]">角色会带着主聊天里的身份、语境与记忆来写，并自己决定一年以内的开启日。正文生成后也不会提前展示。</p>
-      {characters.length === 0 ? <div className="py-20 text-center text-sm text-[#968b7d]">先去神经链接创建角色，才能邀请 ta。</div> : <div className="mt-7 grid grid-cols-3 gap-3">{characters.map(char => {
-        const selected = inviteCharId === char.id;
-        return <button key={char.id} onClick={() => setInviteCharId(char.id)} className={`flex flex-col items-center gap-2 rounded-[20px] border py-4 ${selected ? 'border-[#a9534d] bg-[#f6e7dc]' : 'border-[#ddd1bf] bg-[#fffdf8]'}`}><Avatar char={char} /><span className="w-full truncate px-2 text-xs font-black text-[#3c3d43]">{char.name}</span></button>;
-      })}</div>}
-      <div className="mt-8 rounded-2xl border border-dashed border-[#cdbb9e] p-4"><p className="text-xs font-black text-[#6d514b]">隐私边界</p><p className="mt-2 text-xs leading-5 text-[#81776b]">邀请只会新增本机胶囊：不发到聊天、不写长期记忆，也不会调用 MCP。到期后仍由你决定何时开启。</p></div>
-      <button disabled={!inviteCharId || !!busyCharId} onClick={() => void inviteCharacter()} className="mt-6 flex h-13 w-full items-center justify-center gap-2 rounded-2xl bg-[#a9534d] py-4 text-sm font-black text-white disabled:opacity-50"><UserCirclePlus size={19} />{busyCharId ? `${characters.find(char => char.id === busyCharId)?.name || 'ta'}正在写…` : '邀请 ta 来写'}</button>
+      <h2 className="text-2xl font-black tracking-[-0.04em] text-[#272c3a]">请角色留一枚</h2><p className="mt-2 text-sm leading-6 text-[#786f63]">每位角色只读取自己的身份、语境与记忆，按选择顺序逐个写入。正文到期前保持密封。</p>
+      {shownInviteBatch ? <section className="mt-7 space-y-3" aria-label="本批邀请进度">
+        {shownInviteBatch.items.map(item=><article key={item.id} className="rounded-[20px] border border-[#ddd1bf] bg-[#fffdf8] p-4">
+          <div className="flex items-center gap-3"><Avatar char={{name:item.charName,avatar:item.charAvatar||''}} size="h-10 w-10"/><div className="min-w-0 flex-1"><b className="block truncate text-sm text-[#343844]">{item.charName}</b><span className={`mt-1 inline-flex items-center gap-1 text-xs ${item.status==='failed'?'text-[#a14e45]':item.status==='saved'?'text-[#4d765c]':'text-[#887b6c]'}`}>{item.status==='saved'?<Check size={13}/>:item.status==='failed'?<WarningCircle size={13}/>:null}{inviteStatusLabel[item.status]}</span></div>
+          {item.status==='failed'&&<button data-manual-relay-action disabled={!!busyItemId} onClick={()=>void runInvitationBatch(shownInviteBatch.id,item.id)} className="rounded-xl border border-[#cda99f] px-3 py-2 text-xs font-black text-[#8c5149] disabled:opacity-40">单独重试</button>}{pendingSave?.op.itemId===item.id&&<button disabled={!!busyItemId} onClick={()=>void retryPendingInviteSave()} className="rounded-xl border border-[#cda99f] px-3 py-2 text-xs font-black text-[#8c5149] disabled:opacity-40">重试保存</button>}</div>
+          {item.error&&item.status!=='saved'&&<p className="mt-3 break-words text-xs leading-5 text-[#8b6f68]">{item.error}</p>}
+        </article>)}
+        <div className="flex gap-2 pt-2">{busyItemId?pendingSave?<button disabled className="h-12 flex-1 rounded-2xl bg-[#ece1d4] text-sm font-black text-[#755f56]">正在保存…</button>:<button onClick={cancelInvitation} className="flex h-12 flex-1 items-center justify-center gap-2 rounded-2xl bg-[#ece1d4] text-sm font-black text-[#755f56]"><Stop size={18}/>停止本轮</button>:pendingSave?<button onClick={()=>void retryPendingInviteSave()} className="h-12 flex-1 rounded-2xl bg-[#a9534d] text-sm font-black text-white">重试保存生成结果</button>:shownInviteBatch.items.some(item=>item.status==='waiting'||item.status==='interrupted')?<button data-manual-relay-action onClick={()=>void runInvitationBatch(shownInviteBatch.id)} className="h-12 flex-1 rounded-2xl bg-[#a9534d] text-sm font-black text-white">{isManualRelayEnabled()?'继续下一位':'继续未完成邀请'}</button>:<button onClick={()=>{setDismissedBatchId(shownInviteBatch.id);setInviteCharIds([]);}} className="h-12 flex-1 rounded-2xl bg-[#273044] text-sm font-black text-white">新建一批邀请</button>}</div>
+      </section>:<>
+        {eligibleCharacters.length === 0 ? <div className="py-20 text-center text-sm text-[#968b7d]">先去神经链接创建角色，才能发起邀请。</div> : <><div className="mt-6 flex items-center justify-between"><span className="text-xs font-bold text-[#776b5e]">已选 {inviteCharIds.length} 位</span><button onClick={()=>setInviteCharIds(inviteCharIds.length===eligibleCharacters.length?[]:eligibleCharacters.map(char=>char.id))} className="text-xs font-black text-[#8c5149]">{inviteCharIds.length===eligibleCharacters.length?'清空':'全选'}</button></div><div className="mt-3 grid grid-cols-3 gap-3">{eligibleCharacters.map(char => {
+          const selected = inviteCharIds.includes(char.id);
+          return <button key={char.id} aria-pressed={selected} onClick={() => setInviteCharIds(ids=>selected?ids.filter(id=>id!==char.id):[...ids,char.id])} className={`relative flex flex-col items-center gap-2 rounded-[20px] border py-4 ${selected ? 'border-[#a9534d] bg-[#f6e7dc]' : 'border-[#ddd1bf] bg-[#fffdf8]'}`}><Avatar char={char} />{selected&&<span className="absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded-full bg-[#a9534d] text-white"><Check size={12} weight="bold"/></span>}<span className="w-full truncate px-2 text-xs font-black text-[#3c3d43]">{char.name}</span></button>;
+        })}</div></>}
+        <div className="mt-8 rounded-2xl border border-dashed border-[#cdbb9e] p-4"><p className="text-xs font-black text-[#6d514b]">只保存在这里</p><p className="mt-2 text-xs leading-5 text-[#81776b]">不发到聊天、不写长期记忆，也不会调用 MCP。失败会跳过，已成功的角色不会重复生成。</p></div>
+        <button data-manual-relay-action disabled={!inviteCharIds.length || !!busyItemId} onClick={() => void startInvitationBatch()} className="mt-6 flex h-13 w-full items-center justify-center gap-2 rounded-2xl bg-[#a9534d] py-4 text-sm font-black text-white disabled:opacity-50"><UserCirclePlus size={19} />邀请 {inviteCharIds.length||0} 位角色</button>
+      </>}
     </main>
   );
 
@@ -198,9 +280,9 @@ const TimeCapsuleApp: React.FC = () => {
   ] as const;
 
   return <div className="relative flex h-full w-full flex-col overflow-hidden bg-[#f8f3e9] text-slate-900">
-    <header className="shrink-0 border-b border-[#dfd3c1] bg-[#fbf7ef]" style={{ paddingTop: 'var(--safe-top)' }}><div className="flex h-16 items-center justify-between px-4"><button onClick={goBack} className="-ml-2 flex h-11 w-11 items-center justify-center rounded-full text-[#333846]" aria-label="返回"><CaretLeft size={27} /></button><div className="text-center"><h1 className="font-black tracking-[-0.02em] text-[#272c3a]">时间胶囊</h1><p className="text-[9px] font-bold tracking-[0.18em] text-[#a45b52]">TIME CAPSULE</p></div><ClockCountdown size={23} className="mr-2 text-[#8c5149]" /></div></header>
+    <header className="shrink-0 border-b border-[#dfd3c1] bg-[#fbf7ef]" style={{ paddingTop: 'var(--safe-top)' }}><div className="flex h-16 items-center justify-between px-4"><button onClick={goBack} className="-ml-2 flex h-11 w-11 items-center justify-center rounded-full text-[#333846]" aria-label="返回"><CaretLeft size={27} /></button><h1 className="font-black tracking-[-0.02em] text-[#272c3a]">时间胶囊</h1><ClockCountdown size={23} className="mr-2 text-[#8c5149]" /></div></header>
     {tab === 'archive' ? renderArchive() : tab === 'write' ? renderWrite() : tab === 'invite' ? renderInvite() : renderVisitors()}
-    <nav className="absolute inset-x-0 bottom-0 grid grid-cols-4 border-t border-[#dfd3c1] bg-[#fffaf1]/95 px-2 pb-[var(--safe-bottom)]"><div className="contents">{nav.map(([id, label, Icon]) => <button key={id} onClick={() => setTab(id)} className={`flex h-16 flex-col items-center justify-center gap-1 text-[10px] font-black ${tab === id ? 'text-[#a14f48]' : 'text-[#9a8e7f]'}`}><Icon size={21} weight={tab === id ? 'fill' : 'regular'} />{label}</button>)}</div></nav>
+    <nav className="absolute inset-x-0 bottom-0 grid grid-cols-4 border-t border-[#dfd3c1] bg-[#fffaf1]/95 px-2 pb-[var(--safe-bottom)]"><div className="contents">{nav.map(([id, label, Icon]) => <button key={id} onClick={() => {if(id!==tab)cancelInvitation();setTab(id);}} className={`flex h-16 flex-col items-center justify-center gap-1 text-[10px] font-black ${tab === id ? 'text-[#a14f48]' : 'text-[#9a8e7f]'}`}><Icon size={21} weight={tab === id ? 'fill' : 'regular'} />{label}</button>)}</div></nav>
   </div>;
 };
 

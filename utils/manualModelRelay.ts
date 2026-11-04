@@ -156,13 +156,14 @@ export function maybeInterceptTextCompletion(input: {
         throw new Error('本轮含原生工具或多模态内容，不支持外部模型接力；请关闭接力模式后手动重试');
     if (!Array.isArray(data.messages) || !data.messages.length) throw new Error('本轮缺少可接力的文字消息；请关闭接力模式后手动重试');
     const messages: ManualRelayRequest['messages'] = [];
-    for (const raw of data.messages) {
-        if (!raw || !['system', 'developer', 'user', 'assistant'].includes(raw.role)
-            || typeof raw.content !== 'string' || raw.tool_calls || raw.function_call
-            || Object.keys(raw).some(key => !['role', 'content', 'name'].includes(key))
-            || (raw.name != null && typeof raw.name !== 'string')
-            || /blobref:|data:(?:image|audio|video)\/|[A-Za-z0-9+/]{200,}={0,2}/i.test(raw.content))
-            throw new Error('本轮含不受支持的消息或多模态内容；请关闭接力模式后手动重试');
+    for (const [index, raw] of data.messages.entries()) {
+        const reject = (reason: string) => { throw new Error(`本轮含不受支持的消息或多模态内容；第${index + 1}条：${reason}。图片请先使用聊天加号“补全图片描述”，其它内容需按说明处理后手动重试`); };
+        if (!raw || !['system', 'developer', 'user', 'assistant'].includes(raw.role)) reject('消息角色不支持');
+        if (typeof raw.content !== 'string') reject('内容仍是图片/多模态数组');
+        if (raw.tool_calls || raw.function_call) reject('原生工具结果无法由文字接力执行');
+        if (Object.keys(raw).some(key => !['role', 'content', 'name'].includes(key)) || raw.name != null && typeof raw.name !== 'string') reject('消息附加字段不支持');
+        if (/\bblobref:[a-z0-9_-]+|data:(?:image|audio|video)\//i.test(raw.content)) reject('文字中残留媒体引用');
+        if (/(?:iVBORw0KGgo|\/9j\/|R0lGOD[dlh]|UklGR)[A-Za-z0-9+/]{60,}={0,2}/.test(raw.content)) reject('文字中残留图片二进制');
         messages.push({ ...raw });
     }
     // Both copy formats share this contract; never rewrite user history or business schemas.

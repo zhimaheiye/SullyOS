@@ -72,6 +72,7 @@ const TaskWorkshopApp = lazyApp(() => import('../apps/TaskWorkshopApp'));
 const TimeCapsuleApp = lazyApp(() => import('../apps/TimeCapsuleApp'));
 const MyScheduleApp = lazyApp(() => import('../apps/MyScheduleApp'));
 const OneChangeApp = lazyApp(() => import('../apps/OneChangeApp'));
+const MetaExperienceApp = lazyApp(() => import('../apps/MetaExperienceApp'));
 
 // 仅供「桌面稳定后的空闲串行预热」。严格 await 前一个再取下一个，且任何用户操作都会停止队列。
 // 高频 App 在前；低端设备/省流量/2G 由 shouldUseIdleAppPreload 整体跳过。
@@ -82,7 +83,7 @@ const APP_IDLE_PRELOAD_ORDER: PreloadableLazy[] = [
   StudyApp, GameApp, BoardGameApp, MurderMysteryApp, NovelApp, BankApp, WorldbookApp, MemoryPalaceApp,
   VRWorldApp, WorldHomeApp, LifeSimApp, SongwritingApp, GuidebookApp, FAQApp, HotNewsApp,
   XhsStockApp, XhsFreeRoamApp, VoiceDesignerApp, ThemeMaker,
-  SpecialMomentsApp, HeartSyncApp, DebateApp, LifeReplayApp, HealingApp, OneChangeApp, TaskWorkshopApp, TimeCapsuleApp, MyScheduleApp,
+  SpecialMomentsApp, HeartSyncApp, DebateApp, LifeReplayApp, HealingApp, OneChangeApp, TaskWorkshopApp, TimeCapsuleApp, MyScheduleApp, MetaExperienceApp,
 ];
 
 const IDLE_PRELOAD_START_MS = 600;
@@ -115,6 +116,7 @@ const APP_BY_ID: Partial<Record<AppID, PreloadableLazy>> = {
   [AppID.TimeCapsule]: TimeCapsuleApp,
   [AppID.MySchedule]: MyScheduleApp,
   [AppID.OneChange]: OneChangeApp,
+  [AppID.MetaClues]: MetaExperienceApp,
 };
 // AppIcon 的 pointerdown 只预取用户正在点的 App；失败时由 preloadableLazy 清缓存，点击可正常重试。
 setAppPayloadWarmer((id: AppID) => APP_BY_ID[id]?.preload());
@@ -1014,6 +1016,7 @@ const PhoneShell: React.FC = () => {
       case AppID.TimeCapsule: return <TimeCapsuleApp />;
       case AppID.MySchedule: return <MyScheduleApp />;
       case AppID.OneChange: return <OneChangeApp />;
+      case AppID.MetaClues: return <MetaExperienceApp />;
       case AppID.VRWorld: return <VRWorldApp />;
       case AppID.WorldHome: return <WorldHomeApp />;
       case AppID.CharCreatorDev: return <CharCreatorDevApp />;

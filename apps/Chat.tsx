@@ -1,4 +1,5 @@
 import {avatarFrameLayer} from '../utils/avatarFrameTarget';
+import VisionPreflightModal from '../components/chat/VisionPreflightModal';
 import ChatRuntimeStyle from '../components/chat/ChatRuntimeStyle';
 import {homePhoneAppearance,HOME_PHONE_BUBBLES} from './room3d/homePhoneAppearance';
 
@@ -74,6 +75,7 @@ import ActiveMsg2SettingsModal from '../components/chat/ActiveMsg2SettingsModal'
 import ThinkingChainSettingsModal from '../components/chat/ThinkingChainSettingsModal';
 import ScheduleChangeNotice from '../components/chat/ScheduleChangeNotice';
 import { useChatAI } from '../hooks/useChatAI';
+import { REROLL_INSTRUCTION_MAX_LENGTH, normalizeRerollInstruction } from '../utils/chatRequestPayload';
 import { useChatAutoReply } from '../hooks/useChatAutoReply';
 import { BOTTOM_FOLLOW_THRESHOLD, useChatScroll } from '../hooks/useChatScroll';
 import { cleanTextForTts, parseVoiceOutput } from '../utils/minimaxTts';
@@ -146,6 +148,10 @@ import {
     validateInstallableArtifact,
 } from '../features/collaboration/makers';
 import { upsertMountedWorldbooks } from '../utils/worldbook';
+import { runManualObsidianDiary } from '../utils/manualObsidianDiary';
+import { diaryStateLabel } from '../utils/obsidianDiary';
+import { isManualRelayWaiting } from '../utils/manualModelRelay';
+import { recordMetaReroll } from '../utils/metaExperience';
 
 const CollaborationWindow = React.lazy(() => import('../features/collaboration/CollaborationWindow'));
 
@@ -207,7 +213,10 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
     const screenCaptureVideoRef = useRef<HTMLVideoElement | null>(null);
     const [showPanel, setShowPanel] = useState<'none' | 'actions' | 'emojis' | 'chars'>('none');
     const [cardCreationCharId, setCardCreationCharId] = useState<string | null>(null);
+    const [visionPreflight, setVisionPreflight] = useState<{ charId: string; emojis?: Emoji[]; targetMessage?: Message; operationId?: string } | null>(null);
     const [sideStoryCharId, setSideStoryCharId] = useState<string | null>(null);
+    const [manualDiaryStatus, setManualDiaryStatus] = useState<string | null>(null);
+    const manualDiaryRunRef = useRef<{ charId: string; controller: AbortController } | null>(null);
     const [collaborationOpen, setCollaborationOpen] = useState(false);
     const [collaborationPreviewAssetId, setCollaborationPreviewAssetId] = useState<string | null>(null);
     const [memoryRepairOpen, setMemoryRepairOpen] = useState(false);
@@ -224,6 +233,7 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
     const messagesRef = useRef(messages);
     messagesRef.current = messages;
     const reloadMessagesRef = useRef<(count: number) => Promise<void>>();
+    const messageReloadRequestRef = useRef(0);
     const visibleCountRef = useRef(30);
     const pendingFavoriteJumpRef = useRef<{ charId: string; messageId: number } | null>(null);
     const historyWindowRangeRef = useRef<ChatHistoryWindowRange | null>(null);
@@ -235,7 +245,16 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
     const activeCharIdRef = useRef(activeCharacterId);
     useLayoutEffect(() => { activeCharIdRef.current = activeCharacterId; }, [activeCharacterId]);
     useEffect(() => { setCardCreationCharId(null); }, [activeCharacterId, chatView]);
-    useEffect(() => { setSideStoryCharId(null); }, [activeCharacterId, chatView]);
+    useEffect(() => { setSideStoryCharId(null); setVisionPreflight(null); }, [activeCharacterId, chatView]);
+    useEffect(() => {
+        const run = manualDiaryRunRef.current;
+        if (run && (run.charId !== activeCharacterId || chatView !== 'conversation' || activeApp !== AppID.Chat || !!homePhone)) {
+            run.controller.abort();
+            manualDiaryRunRef.current = null;
+            setManualDiaryStatus(null);
+        }
+    }, [activeCharacterId, chatView, activeApp, homePhone]);
+    useEffect(() => () => manualDiaryRunRef.current?.controller.abort(), []);
     // 流式预览接棒过的正式消息在当前会话内始终跳过入场动画，避免后续 DB 刷新时动画类又被加回来。
     const streamPreviewHandoverIdsRef = useRef<Set<number>>(new Set());
     const registerStreamPreviewHandover = useCallback((charId: string, messageIds: number[]) => {
@@ -253,7 +272,8 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
     // Reply Logic
     const [replyTarget, setReplyTarget] = useState<Message | null>(null);
 
-    const [modalType, setModalType] = useState<'none' | 'transfer' | 'emoji-import' | 'chat-settings' | 'message-options' | 'edit-message' | 'delete-emoji' | 'delete-category' | 'add-category' | 'history-manager' | 'archive-settings' | 'archive-legacy-warning' | 'prompt-editor' | 'category-options' | 'category-visibility' | 'emoji-options' | 'rename-emoji' | 'rename-category' | 'schedule' | 'chrome-css' | 'chrome-sound' | 'memory-vectorize-confirm' | 'memory-vectorize-result'>('none');
+    const [modalType, setModalType] = useState<'none' | 'transfer' | 'emoji-import' | 'chat-settings' | 'message-options' | 'edit-message' | 'delete-emoji' | 'delete-category' | 'add-category' | 'history-manager' | 'archive-settings' | 'archive-legacy-warning' | 'prompt-editor' | 'category-options' | 'category-visibility' | 'emoji-options' | 'rename-emoji' | 'rename-category' | 'schedule' | 'chrome-css' | 'chrome-sound' | 'memory-vectorize-confirm' | 'memory-vectorize-result' | 'reroll'>('none');
+    const [rerollInstruction, setRerollInstruction] = useState('');
     // 「聊天装扮」悬浮态：不走全屏 modal——圆气泡挂在聊天上，点开小面板边看真聊天边调。
     const [decorationTab, setDecorationTab] = useState<DecorationTab>('layout');
     // 切换角色时收掉装扮气泡：定制是 per-character 的，避免误改到下一个角色
@@ -1210,6 +1230,7 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
     const LOAD_BATCH_SIZE = 30;
 
     const reloadMessages = useCallback(async (requestedVisibleCount: number, prepend = false) => {
+        const requestId = ++messageReloadRequestRef.current;
         if (!activeCharacterId) return;
 
         const charIdAtStart = activeCharacterId;
@@ -1221,6 +1242,7 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
         const fetchLimit = requestedVisibleCount >= 100000 ? requestedVisibleCount : requestedVisibleCount + 16;
         const accept = (message: Message) => isVisibleChatMessage(message, !!charRef.current?.hideSystemLogs);
         const applyResult = (recent: Message[], totalCount: number) => {
+            if (requestId !== messageReloadRequestRef.current || activeCharIdRef.current !== charIdAtStart) return;
             // 用 ref 取当前 char（避免闭包过期）
             const currentChar = charRef.current;
             // 不在视觉层过滤 hideBeforeMessageId —— 用户能往上滚回看，
@@ -1245,16 +1267,14 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
             const { messages: recent, totalCount } = await DB.getRecentMessagesWithCount(activeCharacterId, fetchLimit, accept, keepFromId);
             // Guard against stale async results: if the user switched characters
             // while the DB query was in flight, discard this result.
-            if (activeCharIdRef.current !== charIdAtStart) return;
             applyResult(recent, totalCount);
         } catch (e) {
             // DB read failed — retry once after a short delay
-            if (activeCharIdRef.current !== charIdAtStart) return;
+            if (requestId !== messageReloadRequestRef.current || activeCharIdRef.current !== charIdAtStart) return;
             await new Promise(r => setTimeout(r, 200));
-            if (activeCharIdRef.current !== charIdAtStart) return;
+            if (requestId !== messageReloadRequestRef.current || activeCharIdRef.current !== charIdAtStart) return;
             try {
                 const { messages: recent, totalCount } = await DB.getRecentMessagesWithCount(activeCharacterId, fetchLimit, accept, keepFromId);
-                if (activeCharIdRef.current !== charIdAtStart) return;
                 applyResult(recent, totalCount);
             } catch { /* give up silently */ }
         }
@@ -1967,7 +1987,7 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
         triggerAI(messages);
     };
 
-    const handleReroll = async () => {
+    const handleReroll = async (instruction = '') => {
         if (rerollInProgressRef.current || isTyping || instantChatPending || messages.length === 0) return;
         rerollInProgressRef.current = true;
         try {
@@ -1994,10 +2014,33 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
             setMessages(newHistory);
             addToast('回溯对话中...', 'info');
             trackEvent('重新生成回复');
+            if (char) recordMetaReroll(char.id);
 
             // 重 roll：不注入上一轮残留的情绪 buff 与意识流（innerState），两边独立重新生成。
-            await triggerAI(newHistory, undefined, { skipEmotionInjection: true });
+            await triggerAI(newHistory, undefined, {
+                skipEmotionInjection: true,
+                rerollInstruction: normalizeRerollInstruction(instruction),
+            });
         } finally { rerollInProgressRef.current = false; }
+    };
+
+    const closeRerollModal = () => {
+        setModalType('none');
+        setRerollInstruction('');
+    };
+
+    const openRerollModal = () => {
+        if (!canReroll) return;
+        autoReply.cancel();
+        setShowPanel('none');
+        setRerollInstruction('');
+        setModalType('reroll');
+    };
+
+    const submitReroll = () => {
+        const instruction = rerollInstruction;
+        closeRerollModal();
+        void handleReroll(instruction);
     };
 
     const handleImageSelect = async (file: File) => {
@@ -2033,12 +2076,44 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
         finally { exportingChatRef.current = false; }
     };
 
+    const handleManualObsidianDiary = async () => {
+        if (homePhone || activeApp !== AppID.Chat || chatView !== 'conversation' || !char) return;
+        if (manualDiaryRunRef.current || replyUiTyping || isProactiveComposing || isManualRelayWaiting()) {
+            addToast(manualDiaryRunRef.current ? '这篇日记还在生成或核对，请勿重复点击' : '当前回复尚未结束，请结束后再写日记', 'info');
+            return;
+        }
+        setShowPanel('none');
+        const controller = new AbortController();
+        const run = { charId: char.id, controller };
+        manualDiaryRunRef.current = run;
+        setManualDiaryStatus(`${char.name} 正在写独立日记并核对保存…`);
+        addToast('正在生成独立日记，完成后会核对 Obsidian 写入结果', 'info');
+        try {
+            const record = await runManualObsidianDiary({
+                char, user: userProfile, api: apiConfig, groups, realtimeConfig,
+                sourceId: `manual-obsidian-diary:${crypto.randomUUID()}`,
+                signal: controller.signal,
+                isCurrent: () => activeCharIdRef.current === char.id && manualDiaryRunRef.current === run,
+            });
+            if (manualDiaryRunRef.current !== run) return;
+            if (record.status === 'written') addToast('日记已保存到 Obsidian，并完成读回核对', 'success');
+            else addToast(`${diaryStateLabel[record.status]}：${record.message || '原稿已保留在 SullyOS'}`, record.status === 'failed' ? 'error' : 'info');
+        } catch (error) {
+            if (!controller.signal.aborted) addToast(((error as Error)?.message || '日记生成失败，本轮没有写入 Obsidian').slice(0, 240), 'error');
+        } finally {
+            if (manualDiaryRunRef.current === run) {
+                manualDiaryRunRef.current = null;
+                setManualDiaryStatus(null);
+            }
+        }
+    };
+
     const handlePanelAction = (type: string, payload?: any) => {
         // 只统计「打开某个面板 / 开关某个能力」这几个固定入口，名单写死在这里；
         // 选表情、选分类之类的动作不上报。
         if ([
             'transfer', 'archive', 'settings', 'chrome-css', 'chrome-sound', 'fine-tune',
-            'meetup', 'proactive', 'active-msg-2', 'schedule', 'mcd-request', 'luckin-request',
+            'meetup', 'proactive', 'active-msg-2', 'schedule', 'mcd-request', 'luckin-request', 'obsidian-diary',
             'html-mode-toggle', 'html-mode-settings', 'thinking-settings', 'favorites', 'collaboration',
             // 独立小功能：点一下就是用了一次，跟「打开某个面板」同一性质。
             // send-emoji / select-category 这些是「挑哪一个」，不进名单。
@@ -2047,6 +2122,7 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
             trackEvent('打开聊天功能面板项', { action: type });
         }
         switch (type) {
+            case 'obsidian-diary': void handleManualObsidianDiary(); break;
             case 'export-chat': void handleExportChat(); break;
             case 'collaboration': setShowPanel('none'); setCollaborationOpen(true); break;
             case 'memory-link': setShowPanel('none'); setMemoryRepairOpen(true); break;
@@ -2059,6 +2135,13 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
             case 'chrome-sound': setShowPanel('none'); setDecorationTab('sound'); setModalType('chrome-css'); break;
             case 'fine-tune': setShowPanel('none'); setDecorationTab('layout'); setModalType('chrome-css'); break;
             case 'emoji-import': setModalType('emoji-import'); break;
+            case 'vision-preflight':
+            case 'emoji-vision':
+                if (char && !homePhone) {
+                    setShowPanel('none');
+                    setVisionPreflight({ charId: char.id, ...(type === 'emoji-vision' ? { emojis: (Array.isArray(payload) ? payload : []).filter((item: Emoji) => aiVisibleEmojis.some(visible => visible.name === item.name && visible.url === item.url)) } : {}) });
+                }
+                break;
             case 'send-emoji':
                 if (payload) {
                     const lastUsedAt = Date.now();
@@ -2565,7 +2648,7 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
                     // 粘进来的可能是 data: 图（复制粘贴的图片），也可能是图床外链。
                     // 前者转成令牌只留二进制，后者是别人服务器上的地址，原样存。
                     const stored = url.startsWith('data:') ? await migrateDataUrlToRef(url) : url;
-                    await DB.saveEmoji(name, stored, targetCatId);
+                    await DB.saveEmoji(name, stored, targetCatId, { refreshRemote: true });
                 }
             }
         }
@@ -4328,6 +4411,29 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
                 message="检测到分享链接，要关闭自动转卡片吗？关闭后，本条及之后的链接会按原文发送，方便角色用你配置的 MCP 读取。保留卡片也会带上原链接。两类解析可在加号 → 设置中分别调整。"
                 confirmText="关闭，发送原文" cancelText="保留卡片"
                 onConfirm={() => answerLinkCard(false)} onCancel={() => answerLinkCard(true)} />
+            <Modal isOpen={modalType === 'reroll'} title="重新生成" onClose={closeRerollModal} footer={
+                <div className="w-full space-y-2">
+                    <button type="button" onClick={submitReroll}
+                        className="w-full py-3 rounded-2xl bg-primary text-white font-bold active:scale-[0.98] transition-transform">
+                        {rerollInstruction.trim() ? '按要求重新生成' : '直接重新生成'}
+                    </button>
+                    <button type="button" onClick={closeRerollModal}
+                        className="w-full py-2 text-sm font-medium text-slate-500 active:text-slate-700">
+                        取消
+                    </button>
+                </div>
+            }>
+                <label htmlFor="chat-reroll-instruction" className="block text-sm font-semibold text-slate-700 mb-2">
+                    这一次想怎么调整（可不填）
+                </label>
+                <textarea id="chat-reroll-instruction" autoFocus rows={4} maxLength={REROLL_INSTRUCTION_MAX_LENGTH}
+                    value={rerollInstruction} onChange={event => setRerollInstruction(event.target.value)}
+                    placeholder="比如：更克制一点，换个角度回答，不要推进关系"
+                    className="w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-800 outline-none transition focus:border-primary focus:bg-white focus:ring-2 focus:ring-primary/10" />
+                <div className="mt-1 text-right text-xs tabular-nums text-slate-400">
+                    {rerollInstruction.length}/{REROLL_INSTRUCTION_MAX_LENGTH}
+                </div>
+            </Modal>
             <ChatModals
                 compactHome={!!homePhone}
                 modalType={modalType} setModalType={setModalType}
@@ -4367,6 +4473,11 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
                 onConfirmEditMessage={confirmEditMessage} onDeleteMessage={handleDeleteMessage} onCopyMessage={handleCopyMessage} onQuickRepairHtml={handleQuickRepairHtml}
                 messageFavorited={!!(selectedMessage && contentFavoriteIds.has(contentFavoriteIdForMessage(selectedMessage)))}
                 onToggleMessageFavorite={selectedMessage ? () => handleToggleContentFavorite(selectedMessage) : undefined}
+                onDescribeImage={homePhone ? undefined : message => {
+                    if (!char || message.charId !== char.id || message.groupId || message.type !== 'image' || (message.role !== 'user' && message.role !== 'assistant')) return;
+                    setModalType('none');
+                    setVisionPreflight({ charId: char.id, targetMessage: structuredClone(message), operationId: crypto.randomUUID() });
+                }}
                 onDeleteEmoji={handleDeleteEmoji} onDeleteCategory={handleDeleteCategory} onRenameCategory={handleRenameCategory} onDownloadCategory={handleDownloadCategory}
                 allCharacters={characters} onSaveCategoryVisibility={handleSaveCategoryVisibility}
                 translationEnabled={translationEnabled}
@@ -4942,6 +5053,17 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
                         if (activeCharIdRef.current === id) void reloadMessages(visibleCountRef.current);
                     }}
                 />}
+                {visionPreflight && char?.id === visionPreflight.charId && <VisionPreflightModal
+                    key={`vision:${visionPreflight.operationId || char.id}`}
+                    char={char}
+                    emojis={visionPreflight.emojis}
+                    targetMessage={visionPreflight.targetMessage}
+                    operationId={visionPreflight.operationId}
+                    config={apiConfig.visionApi}
+                    onClose={() => { setVisionPreflight(null); void loadEmojiData(); }}
+                    onSettings={() => { setVisionPreflight(null); openApp(AppID.Settings); }}
+                    onUpdated={async () => { await loadEmojiData(); if (activeCharIdRef.current === char.id) await reloadMessages(visibleCountRef.current); }}
+                />}
                 {sideStoryCharId && char?.id === sideStoryCharId && <SideStoryModal
                     key={sideStoryCharId}
                     char={char} user={userProfile} api={apiConfig}
@@ -4979,12 +5101,14 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
                     unreadMessages={unreadMessages}
                     customThemes={customThemes} onUpdateTheme={(id) => updateCharacter(char.id, { bubbleStyle: id })}
                     onRemoveTheme={removeCustomTheme} activeThemeId={currentThemeId}
+                    obsidianDiaryBusy={!!manualDiaryStatus}
                     onPanelAction={handlePanelAction}
                     onImageSelect={handleImageSelect}
                     isSummarizing={isSummarizing}
                     categories={visibleCategories}
                     activeCategory={activeCategory}
-                    onReroll={handleReroll}
+                    visionToolsAvailable={!homePhone}
+                    onReroll={openRerollModal}
                     canReroll={canReroll}
                     isProactiveActive={isProactiveActive}
                     mcdConfigured={mcdConfiguredFlag}

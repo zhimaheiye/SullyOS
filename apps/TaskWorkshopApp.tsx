@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  ArrowDown, ArrowRight, ArrowUp, Briefcase, CaretDown, CaretLeft, Check, ClipboardText, Clock,
+  ArrowDown, ArrowRight, ArrowUp, Bell, Briefcase, CaretDown, CaretLeft, Check, ClipboardText, Clock,
   NotePencil, PaperPlaneTilt, Plus, Robot, Toolbox, Trash, UserCirclePlus, UsersThree, Wrench, X,
 } from '@phosphor-icons/react';
 import { useOS } from '../context/OSContext';
 import { TASK_WORKSHOP_UPDATED_EVENT } from '../components/taskWorkshop/TaskWorkshopRuntime';
 import type {
-  CharacterProfile, TaskWorkshopEntryKind, TaskWorkshopRecord, TaskWorkshopSettings,
+  CharacterProfile, LifeReminderRecord, TaskWorkshopEntryKind, TaskWorkshopRecord, TaskWorkshopSettings,
   TaskWorkshopTool, TaskWorkshopUnit, TaskWorkshopUnitStatus, TaskWorkshopVisit,
 } from '../types';
 import { DB } from '../utils/db';
@@ -16,8 +16,11 @@ import {
 } from '../utils/taskWorkshop';
 import { persistTaskWorkshopShare, persistTaskWorkshopVisit, requestTaskWorkshopVisit } from '../utils/taskWorkshopService';
 import { AppID } from '../types';
+import { ReminderPanel } from '../components/taskWorkshop/ReminderPanel';
+import { useWorkshopCalendarLaunch } from '../utils/workshopCalendarLaunch';
+import { LIFE_REMINDERS_UPDATED_EVENT } from '../utils/lifeReminderRecords';
 
-type View = 'tasks' | 'tools' | 'visitors' | 'unit' | 'tool';
+type View = 'tasks' | 'tools' | 'reminders' | 'visitors' | 'unit' | 'tool';
 type EditorKind = 'unit' | 'tool' | null;
 
 const STATUS_META: Record<TaskWorkshopUnitStatus, { label: string; color: string }> = {
@@ -62,6 +65,7 @@ const TaskWorkshopApp: React.FC = () => {
   } = useOS();
   const [view, setView] = useState<View>('tasks');
   const [records, setRecords] = useState<TaskWorkshopRecord[]>([]);
+  const [lifeReminders, setLifeReminders] = useState<LifeReminderRecord[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [editor, setEditor] = useState<EditorKind>(null);
   const [draftTitle, setDraftTitle] = useState('');
@@ -75,6 +79,7 @@ const TaskWorkshopApp: React.FC = () => {
   const [editingVisitId, setEditingVisitId] = useState('');
   const [visitDraft, setVisitDraft] = useState('');
   const [archivedExpanded, setArchivedExpanded] = useState(false);
+  const calendarLaunch = useWorkshopCalendarLaunch();
 
   const units = useMemo(() => records.filter((item): item is TaskWorkshopUnit => item.kind === 'unit').sort((a, b) => b.updatedAt - a.updatedAt), [records]);
   const activeUnits = useMemo(() => units.filter(unit => unit.status !== 'archived'), [units]);
@@ -85,20 +90,24 @@ const TaskWorkshopApp: React.FC = () => {
   const selectedTool = tools.find(item => item.id === selectedId) || null;
 
   const load = useCallback(async () => {
-    const next = await DB.getTaskWorkshopRecords();
+    const [next, scheduleRecords] = await Promise.all([DB.getTaskWorkshopRecords(), DB.getMyScheduleRecords()]);
     const storedTools = next.filter((item): item is TaskWorkshopTool => item.kind === 'tool');
     const refreshedTools = refreshTaskWorkshopToolStatuses(storedTools);
     const refreshedById = new Map(refreshedTools.map(tool => [tool.id, tool]));
     await Promise.all(refreshedTools.filter((tool, index) => tool !== storedTools[index]).map(tool => DB.saveTaskWorkshopRecord(tool)));
     setRecords(next.map(item => item.kind === 'tool' ? refreshedById.get(item.id) || item : item));
+    setLifeReminders(scheduleRecords.filter((item): item is LifeReminderRecord => item.kind === 'life_reminder'));
   }, []);
 
   useEffect(() => {
     void load().catch(() => addToast('任务工坊读取失败', 'error'));
     const onUpdate = () => void load();
     window.addEventListener(TASK_WORKSHOP_UPDATED_EVENT, onUpdate);
-    return () => window.removeEventListener(TASK_WORKSHOP_UPDATED_EVENT, onUpdate);
+    window.addEventListener(LIFE_REMINDERS_UPDATED_EVENT, onUpdate);
+    return () => { window.removeEventListener(TASK_WORKSHOP_UPDATED_EVENT, onUpdate); window.removeEventListener(LIFE_REMINDERS_UPDATED_EVENT, onUpdate); };
   }, [addToast, load]);
+
+  useEffect(() => { if (calendarLaunch) setView('reminders'); }, [calendarLaunch]);
 
   useEffect(() => {
     if (!visitorCharId) setVisitorCharId(settings.visitorCharIds[0] || characters[0]?.id || '');
@@ -107,7 +116,7 @@ const TaskWorkshopApp: React.FC = () => {
   const goBack = useCallback(() => {
     if (editor) { setEditor(null); return true; }
     if (view === 'unit' || view === 'tool') { setView(view === 'unit' ? 'tasks' : 'tools'); setSelectedId(''); return true; }
-    if (view === 'visitors') { setView('tasks'); return true; }
+    if (view === 'visitors' || view === 'reminders') { setView('tasks'); return true; }
     closeApp(); return true;
   }, [closeApp, editor, view]);
   useEffect(() => registerBackHandler(goBack), [goBack, registerBackHandler]);
@@ -229,9 +238,9 @@ const TaskWorkshopApp: React.FC = () => {
   };
 
   const renderNav = () => (
-    <nav className="grid grid-cols-3 border-b border-emerald-100 bg-white px-3">
+    <nav className="grid grid-cols-4 border-b border-emerald-100 bg-white px-3">
       {([
-        ['tasks', '任务盒', ClipboardText], ['tools', '工具箱', Toolbox], ['visitors', '来访', UsersThree],
+        ['tasks', '任务盒', ClipboardText], ['tools', '工具箱', Toolbox], ['reminders', '提醒', Bell], ['visitors', '来访', UsersThree],
       ] as const).map(([id, label, Icon]) => <button key={id} onClick={() => { setView(id); setSelectedId(''); }} className={`flex h-14 items-center justify-center gap-2 border-b-2 text-xs font-black ${view === id ? 'border-emerald-700 text-emerald-800' : 'border-transparent text-slate-400'}`}><Icon size={18} weight={view === id ? 'fill' : 'regular'} />{label}</button>)}
     </nav>
   );
@@ -287,6 +296,7 @@ const TaskWorkshopApp: React.FC = () => {
 
   const renderUnit = () => {
     if (!selectedUnit) return null;
+    const linkedReminders = lifeReminders.filter(reminder => selectedUnit.linkedReminderIds?.includes(reminder.id));
     return <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-[calc(var(--safe-bottom)+32px)] pt-5">
       <div className="flex items-start gap-3"><div className="min-w-0 flex-1"><input key={`${selectedUnit.id}-title-${selectedUnit.updatedAt}`} defaultValue={selectedUnit.title} onBlur={event => { if (event.target.value.trim() && event.target.value !== selectedUnit.title) void patchUnit({ title: event.target.value.trim() }); }} className="w-full bg-transparent text-2xl font-black tracking-[-0.03em] text-slate-900 outline-none" /><textarea key={`${selectedUnit.id}-description-${selectedUnit.updatedAt}`} defaultValue={selectedUnit.description} onBlur={event => { if (event.target.value !== selectedUnit.description) void patchUnit({ description: event.target.value }); }} rows={3} placeholder="这件事要解决什么？" className="mt-3 w-full resize-none bg-transparent text-sm leading-6 text-slate-600 outline-none placeholder:text-slate-300" /></div><button onClick={() => void removeRecord(selectedUnit.id, selectedUnit.title, 'tasks')} className="flex h-10 w-10 items-center justify-center rounded-xl text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash size={18} /></button></div>
       <div className="mt-4 flex flex-wrap gap-2"><select value={selectedUnit.status} onChange={event => void patchUnit({ status: event.target.value as TaskWorkshopUnitStatus })} className={`h-9 rounded-full border-0 px-3 text-xs font-black outline-none ${STATUS_META[selectedUnit.status].color}`}>{Object.entries(STATUS_META).map(([id, meta]) => <option key={id} value={id}>{meta.label}</option>)}</select><input key={`${selectedUnit.id}-tags-${selectedUnit.updatedAt}`} defaultValue={selectedUnit.tags.join('，')} onBlur={event => void patchUnit({ tags: normalizeTaskWorkshopTags(event.target.value) })} placeholder="标签，用逗号分隔" className="h-9 min-w-0 flex-1 rounded-full bg-white px-3 text-xs text-slate-600 outline-none ring-1 ring-emerald-100" /></div>
@@ -297,6 +307,8 @@ const TaskWorkshopApp: React.FC = () => {
       <section className="mt-8"><h3 className="text-sm font-black text-slate-900">下一步</h3><div className="mt-3 flex gap-2"><input value={stepDraft} onChange={event => setStepDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') void addStep(); }} placeholder="拆成一个可以勾掉的动作" className="h-11 min-w-0 flex-1 rounded-xl bg-white px-3 text-sm outline-none ring-1 ring-emerald-100" /><button onClick={() => void addStep()} className="flex h-11 w-11 items-center justify-center rounded-xl bg-emerald-700 text-white"><Plus size={18} /></button></div><div className="mt-2 divide-y divide-emerald-100">{selectedUnit.steps.map(step => <div key={step.id} className="flex items-start gap-3 py-3"><button onClick={() => void patchUnit({ steps: selectedUnit.steps.map(item => item.id === step.id ? { ...item, done: !item.done } : item) })} className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border ${step.done ? 'border-emerald-600 bg-emerald-600 text-white' : 'border-slate-300 text-transparent'}`}><Check size={12} /></button><span className={`min-w-0 flex-1 text-xs leading-5 ${step.done ? 'text-slate-400 line-through' : 'text-slate-700'}`}>{step.content}</span><button onClick={() => void patchUnit({ steps: selectedUnit.steps.filter(item => item.id !== step.id) })} className="text-slate-300"><X size={15} /></button></div>)}</div></section>
 
       <section className="mt-8"><div className="flex items-end justify-between"><div><h3 className="text-sm font-black text-slate-900">关联工具</h3><p className="mt-1 text-[11px] text-slate-500">让来访角色知道可用资源，但不会自动调用。</p></div></div>{tools.length === 0 ? <p className="mt-3 text-xs text-slate-400">工具箱还是空的。</p> : <div className="mt-3 flex flex-wrap gap-2">{tools.map(tool => { const linked = selectedUnit.linkedToolIds.includes(tool.id); return <button key={tool.id} onClick={() => void patchUnit({ linkedToolIds: linked ? selectedUnit.linkedToolIds.filter(id => id !== tool.id) : [...selectedUnit.linkedToolIds, tool.id] })} className={`rounded-full px-3 py-2 text-xs font-bold ${linked ? 'bg-amber-100 text-amber-800 ring-1 ring-amber-300' : 'bg-white text-slate-500 ring-1 ring-slate-100'}`}>{tool.name}</button>; })}</div>}</section>
+
+      <section className="mt-8"><div className="flex items-end justify-between gap-3"><div><h3 className="text-sm font-black text-slate-900">关联提醒</h3><p className="mt-1 text-[11px] text-slate-500">提醒内容与排程在提醒控制台统一管理。</p></div><button onClick={() => setView('reminders')} className="rounded-lg bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-800">管理</button></div>{linkedReminders.length ? <div className="mt-3 space-y-2">{linkedReminders.map(reminder => <button key={reminder.id} onClick={() => setView('reminders')} className="flex w-full items-center justify-between gap-3 rounded-xl bg-white px-3 py-3 text-left ring-1 ring-emerald-100"><span className="min-w-0"><b className="block truncate text-xs text-slate-800">{reminder.title}</b><span className="mt-1 block text-[10px] text-slate-500">{reminder.scheduledFor ? formatTime(reminder.scheduledFor) : reminder.status}</span></span><ArrowRight size={16} className="shrink-0 text-slate-300" /></button>)}</div> : <p className="mt-3 text-xs text-slate-400">还没有关联提醒，可在提醒控制台中选择这项任务。</p>}</section>
 
       <section className="mt-9 border-t border-emerald-100 pt-6"><div className="flex items-end justify-between"><div><h3 className="text-sm font-black text-slate-900">角色来访便签</h3><p className="mt-1 text-[11px] text-slate-500">同一角色的新便签会替换旧便签。</p></div><Clock size={20} className="text-emerald-600" /></div><div className="mt-4 flex gap-2"><select value={visitorCharId} onChange={event => setVisitorCharId(event.target.value)} className="h-11 min-w-0 flex-1 rounded-xl bg-white px-3 text-sm outline-none ring-1 ring-emerald-100">{characters.map(char => <option key={char.id} value={char.id}>{char.name}</option>)}</select><button disabled={busy || !visitorCharId} onClick={() => void runVisit()} className="flex h-11 items-center gap-2 rounded-xl bg-emerald-950 px-4 text-xs font-black text-white disabled:opacity-40"><Robot size={17} weight="duotone" />{busy ? '正在查看…' : '现在邀请'}</button></div>
       <div className="mt-4 divide-y divide-emerald-100">{[...selectedUnit.visits].sort((a, b) => b.updatedAt - a.updatedAt).map(visit => { const char = characters.find(item => item.id === visit.charId); return <article key={visit.charId} className="py-5 first:pt-0"><div className="flex items-center gap-3">{char ? <Avatar char={char} /> : <UserCirclePlus size={38} className="text-slate-300" />}<div className="min-w-0 flex-1"><b className="block truncate text-sm text-slate-900">{char?.name || '已删除角色'}</b><span className="text-[10px] text-slate-400">{formatTime(visit.updatedAt)}{visit.editedAt ? ' · 你编辑过' : ''}</span></div><button onClick={() => { setEditingVisitId(visit.charId); setVisitDraft(visit.summary); }} className="text-slate-400"><NotePencil size={17} /></button><button onClick={() => void patchUnit({ visits: selectedUnit.visits.filter(item => item.charId !== visit.charId) })} className="text-slate-300"><Trash size={17} /></button></div>{editingVisitId === visit.charId ? <div className="mt-3"><textarea value={visitDraft} onChange={event => setVisitDraft(event.target.value)} rows={5} className="w-full rounded-xl bg-white px-3 py-2 text-xs leading-5 outline-none ring-1 ring-emerald-200" /><div className="mt-2 flex justify-end gap-2"><button onClick={() => setEditingVisitId('')} className="h-9 rounded-lg px-3 text-xs font-bold text-slate-500">取消</button><button onClick={() => void saveVisitEdit()} className="h-9 rounded-lg bg-emerald-700 px-3 text-xs font-bold text-white">保存</button></div></div> : <><p className="mt-3 whitespace-pre-wrap text-xs leading-6 text-slate-700">{visit.summary}</p>{visit.suggestedSteps.length > 0 && <div className="mt-3 space-y-2">{visit.suggestedSteps.map((step, index) => <div key={`${index}-${step}`} className="flex items-start gap-2 text-xs leading-5 text-slate-600"><span className="font-black text-emerald-700">{index + 1}</span><span className="min-w-0 flex-1">{step}</span><button onClick={() => void addStep(step, 'character', visit.charId)} className="shrink-0 rounded-lg bg-emerald-50 px-2 py-1 text-[9px] font-bold text-emerald-700">采纳</button></div>)}</div>}{visit.nextAction && <div className="mt-3 bg-emerald-50 px-3 py-2 text-[11px] leading-5 text-emerald-950"><b>最小下一步：</b>{visit.nextAction}</div>}<button disabled={!!visit.sharedMessageId} onClick={() => void shareVisit(visit)} className="mt-3 flex h-10 items-center gap-2 rounded-xl bg-slate-900 px-4 text-xs font-black text-white disabled:bg-slate-200 disabled:text-slate-500"><PaperPlaneTilt size={16} />{visit.sharedMessageId ? '已带到聊天' : '带到聊天处理'}</button></>}</article>; })}</div></section>
@@ -311,8 +323,8 @@ const TaskWorkshopApp: React.FC = () => {
   const title = view === 'unit' ? selectedUnit?.title || '任务详情' : view === 'tool' ? selectedTool?.name || '工具详情' : '任务工坊';
   return <div className="relative flex h-full flex-col overflow-hidden bg-[#f8fbf8] text-slate-900">
     <Header title={title} onBack={goBack} right={view === 'tasks' ? <button onClick={() => openCreate('unit')} className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-100 text-emerald-800"><Plus size={20} /></button> : undefined} />
-    {(view === 'tasks' || view === 'tools' || view === 'visitors') && renderNav()}
-    {view === 'tasks' && renderTasks()}{view === 'tools' && renderTools()}{view === 'visitors' && renderVisitors()}{view === 'unit' && renderUnit()}{view === 'tool' && renderTool()}
+    {(view === 'tasks' || view === 'tools' || view === 'reminders' || view === 'visitors') && renderNav()}
+    {view === 'tasks' && renderTasks()}{view === 'tools' && renderTools()}{view === 'reminders' && <ReminderPanel units={units} initialUnitId={selectedId || undefined} calendarLaunch={calendarLaunch} onUnitsChanged={load} onSettings={() => openApp(AppID.MySchedule)} />}{view === 'visitors' && renderVisitors()}{view === 'unit' && renderUnit()}{view === 'tool' && renderTool()}
     {editor && <Sheet title={editor === 'unit' ? '新建任务' : '新建工具'} onClose={() => setEditor(null)}><label className="mt-5 block"><span className="mb-2 block text-xs font-black text-slate-700">名称</span><input autoFocus value={draftTitle} onChange={event => setDraftTitle(event.target.value)} className="h-12 w-full rounded-xl bg-slate-50 px-3 text-sm outline-none focus:ring-2 focus:ring-emerald-400" /></label><label className="mt-4 block"><span className="mb-2 block text-xs font-black text-slate-700">说明</span><textarea value={draftDescription} onChange={event => setDraftDescription(event.target.value)} rows={5} className="w-full rounded-xl bg-slate-50 px-3 py-3 text-sm leading-6 outline-none focus:ring-2 focus:ring-emerald-400" /></label><label className="mt-4 block"><span className="mb-2 block text-xs font-black text-slate-700">标签</span><input value={draftTags} onChange={event => setDraftTags(event.target.value)} placeholder="用逗号分隔" className="h-12 w-full rounded-xl bg-slate-50 px-3 text-sm outline-none focus:ring-2 focus:ring-emerald-400" /></label><button onClick={() => void createRecord()} className="mt-5 h-12 w-full rounded-xl bg-emerald-700 text-sm font-black text-white">保存</button></Sheet>}
   </div>;
 };

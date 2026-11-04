@@ -74,7 +74,7 @@ export async function migrateSharkpanAssets(): Promise<void> {
         for (const e of emojis) {
             if (e && typeof e.url === 'string' && e.url.includes('sharkpan.xyz')) {
                 const nu = rewriteSharkpanUrls(e.url);
-                if (nu !== e.url) await DB.saveEmoji(e.name, nu, e.categoryId);
+                if (nu !== e.url) await DB.saveEmoji(e.name, nu, e.categoryId, { preserveVisualFrom: e.url });
             }
         }
 

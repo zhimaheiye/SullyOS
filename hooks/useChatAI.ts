@@ -36,6 +36,7 @@ import { buildChatRequestPayload } from '../utils/chatRequestPayload';
 import { acquireChatReply, isChatReplyActive, subscribeChatReplies } from '../utils/chatReplyLock';
 import { prepareInboxBeforeChat } from '../utils/activeMsgRuntime';
 import { hasUnansweredUserTurn, withChatContinuation } from '../utils/chatContinuation';
+import { prepareMetaPrompt } from '../utils/metaExperience';
 import { assertChatHasDialogue } from '../utils/chatRequestGuard';
 import { applyAssistantPostProcessing, type XhsCaches } from '../utils/applyAssistantPostProcessing';
 import {
@@ -55,6 +56,8 @@ import { announceInstantChatRoute, getInstantChatPending, resolveInstantChatRead
 import { INSTANT_TOTAL_TIMEOUT_MS } from '../worker/amsg/src/instantChat';
 import { appendInstantTraceEntry } from '../utils/instantTraceLog';
 import { AMSG2_TOOL_NAMES, buildAmsg2Tools, createAmsg2ToolSession, executeAmsg2ToolWithOutcome, isAmsg2GlobalReady, type Amsg2ToolOutcome } from '../utils/amsg2ToolBridge';
+import { LIFE_REMINDER_TOOL_NAME, LIFE_REMINDER_TOOLS, executeLifeReminderTool } from '../utils/lifeReminderRecords';
+import { hasUnverifiedReminderClaim, isLifeReminderIntent, lifeReminderToolNotice } from '../utils/lifeReminderIntent';
 import { AMSG2_EMPTY_REPLY_PROMPT, AMSG2_WRAP_UP_PROMPT, createAmsg2StallTracker, extractToolRoundLeadIn, mergeToolRoundLeadIns } from '../utils/amsg2ToolLoop';
 import { buildLimitsBrief, resolveAmsgLimits } from '../utils/amsgLimits';
 import { shouldSendThinkingParams } from '../utils/thinkingGate';
@@ -671,7 +674,7 @@ export const useChatAI = ({
     const triggerAI = async (
         currentMsgs: Message[],
         overrideApiConfig?: { baseUrl: string; apiKey: string; model: string },
-        opts?: { skipEmotionInjection?: boolean },
+        opts?: { skipEmotionInjection?: boolean; rerollInstruction?: string },
     ) => {
         if (localTypingCharId || characterTyping || !char) return;
         const manualRelay = isManualRelayEnabled();
@@ -713,6 +716,7 @@ export const useChatAI = ({
         // 本轮里角色自己新排出来的任务。排程现状块每轮现算时靠它把这些点名标出来——不标
         // 的话角色分不清清单上哪条是自己刚排的，回头又排一条一模一样的。
         const amsg2CreatedThisTurn = new Set<string>();
+        const lifeReminderResults: string[] = [];
         // 通用工具循环里，模型在调主动消息工具的同一轮顺手写下的回话。收尾时跟最后一轮的
         // 正文拼成一条（见 utils/amsg2ToolLoop），不然「话写在工具轮、最后一轮空着」就是空回。
         const amsg2LeadIns: string[] = [];
@@ -730,7 +734,22 @@ export const useChatAI = ({
             const taskUuidsBefore = new Set(
                 (amsg2Session.getConfig()?.tasks ?? []).map((t) => t.taskUuid),
             );
-            const { text: result, outcome } = await replyStep(() => executeAmsg2ToolWithOutcome(fname, args, amsg2Session));
+            const { text: result, outcome } = fname === LIFE_REMINDER_TOOL_NAME
+                ? await replyStep(async () => {
+                    try {
+                        const text = await executeLifeReminderTool(args, {
+                            characters: await DB.getAllCharacters(), userProfile, groups, realtimeConfig, apiConfig,
+                            updateCharacter: (id, updates) => updateCharacter(id, updates),
+                        });
+                        lifeReminderResults.push(text);
+                        return { text, outcome: { tool: fname, status: /^已|^目前没有/.test(text) ? 'done' : 'rejected' } as Amsg2ToolOutcome };
+                    } catch (error) {
+                        const text = `生活提醒操作失败：${error instanceof Error ? error.message : String(error)}`;
+                        lifeReminderResults.push(text);
+                        return { text, outcome: { tool: fname, status: 'error' } as Amsg2ToolOutcome };
+                    }
+                })
+                : await replyStep(() => executeAmsg2ToolWithOutcome(fname, args, amsg2Session));
             // 本地这条路的每次排程都留一条 trace（调试面板 → amsg2 观察窗能看、能导出）：
             // 打回全在浏览器里判，请求到不了 worker，不记这一笔的话事后什么都查不到。
             // 只记工具名和结局枚举，不带参数和聊天内容。
@@ -762,6 +781,7 @@ export const useChatAI = ({
             const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${effectiveApi.apiKey || 'sk-none'}` };
             const requestMain = (body: Record<string, any>, streamHooks?: Parameters<typeof completeMainChat>[0]['streamHooks']) => {
                 return completeMainChat({ body, url: `${baseUrl}/chat/completions`, headers, scope: 'private',
+                    privateTransient: !!diaryPrompt(char.id),
                     signal: replyRun.signal, streamHooks,
                     meta: { appName: '消息', charId: char.id, charName: char.name, purpose: '聊天回复' } });
             };
@@ -835,6 +855,8 @@ export const useChatAI = ({
             // luckinChatActive / mcdActive / luckinActive 就是由这三个值算出来的
             // （skipPromptBuild 那个 dev 开关下 flags 会整片置 false，那时只有这边的 ref 是准的）。
             const luckinChatOn = !!luckinChatRef?.current?.active;
+            const latestUserText = [...contextMsgs].reverse().find(message => message.role === 'user' && message.type === 'text')?.content || '';
+            const lifeReminderNeedsLocal = typeof latestUserText === 'string' && isLifeReminderIntent(latestUserText);
             // 本机 / 内网的 MCP 服务器（docs/mcp-client.md 教用户填的 http://localhost:18061
             // 就是这一类）：上云那一轮前端不注入 MCP 说明块，而 worker 从 CF 那头连不上这类
             // 地址、上云清单里压根没有它——两边都不说，角色这一轮彻底不知道自己有工具。
@@ -861,7 +883,7 @@ export const useChatAI = ({
                 : instantChatReadiness.workerBundleCurrent === false ? 'sar-module-worker-outdated'
                     : instantChatReadiness.workerBundleCurrent === undefined ? 'sar-module-worker-unverified'
                         : null;
-            const instantChatVeto: string | null = sarWorkerVeto
+            const instantChatVeto: string | null = lifeReminderNeedsLocal ? 'life-reminder-local-tool' : sarWorkerVeto
                 ?? (luckinChatOn ? 'luckin-chat'
                 : mcdMiniOpen ? 'mcd'
                     : luckinMiniOpen ? 'luckin'
@@ -879,7 +901,9 @@ export const useChatAI = ({
             if (instantChatOn && !instantChatRoute) {
                 const skipReason = instantChatVeto;
                 console.warn(
-                    skipReason === 'sar-module-worker-outdated'
+                    skipReason === 'life-reminder-local-tool'
+                        ? '[AmsgInstantChat] 这一轮需要在本机核对并修改生活提醒，留在本地执行'
+                        : skipReason === 'sar-module-worker-outdated'
                         ? '[AmsgInstantChat] 这一轮没上云（SAR 模块生效中，那台 Worker 还是旧 bundle、拆不了模块的回复信封），本地生成。去设置页点「更新 Worker」'
                         : skipReason === 'sar-module-worker-unverified'
                         ? '[AmsgInstantChat] 这一轮没上云（SAR 模块生效中，没问到那台 Worker 的版本、确认不了它认得模块的回复信封），本地生成。连上云端探到版本后会自己回到云端'
@@ -971,6 +995,8 @@ export const useChatAI = ({
                 luckinMiniSnap: luckinMiniOpen ? luckinMiniSnap : undefined,
                 luckinChat: luckinChatOn ? luckinChatRef?.current : undefined,
                 timelyByWorker: instantChatRoute,
+                temporalRegenerate: skipEmotionInjection,
+                rerollInstruction: opts?.rerollInstruction,
                 recallEntryPoint: 'chat_app',
                 disableTools: manualRelay,
                 onPreparationStage:event=>{if(event.status==='end')perfStages['payload.'+event.stage]=event.ms;},
@@ -987,6 +1013,8 @@ export const useChatAI = ({
                 });
             const promptBuildSkipped = payload.flags.promptBuildSkipped;
             if (!promptBuildSkipped) {
+                const metaPrompt = prepareMetaPrompt(char, contextMsgs);
+                if (metaPrompt) fullMessages.splice(Math.min(1, fullMessages.length), 0, { role: 'system', content: metaPrompt });
                 try {
                     friendFeedMainTask = await prepareFriendFeedMainTask(char.id,friendFeedUserDisclosure(contextMsgs));
                     if (friendFeedMainTask) fullMessages.splice(Math.max(1, payload.volatileTailIndex), 0,
@@ -1164,10 +1192,11 @@ export const useChatAI = ({
             // 拼进 tools，但参数取舍必须现在就定）。角色级开关关掉的不注入——否则被用户显式
             // 关掉的功能会被角色一次工具调用重新打开。
             const amsg2ToolsInjected = !manualRelay && isAmsg2EnabledForChar(char) && await replyStep(async () => isAmsg2GlobalReady());
+            const lifeToolsInjected = !manualRelay && lifeReminderNeedsLocal;
             if (baseReqBody.max_tokens > 1024 && shouldSendThinkingParams({
                 thinkingActive: !!payload.flags.thinkingActive,
                 legacyToolModeActive: !!toolModeActive,
-                amsg2ToolsInjected,
+                amsg2ToolsInjected: amsg2ToolsInjected || lifeToolsInjected,
                 model: baseReqBody.model || '',
             })) {
                 const m: string = baseReqBody.model || '';
@@ -1232,6 +1261,14 @@ export const useChatAI = ({
             // 是否注入在上面 thinking 门那里就算好了（amsg2ToolsInjected）。
             let amsg2ExpiredIds: string[] = [];
             let amsg2Notices: Amsg2ExpiredNoticeRecord[] = [];
+            if (lifeToolsInjected) {
+                if (!getMcpUseNativeTools() && !baseReqBody.tools?.length) {
+                    baseReqBody.messages = buildMcpRejectedToolsFallbackBody({ ...baseReqBody, tools: LIFE_REMINDER_TOOLS }).messages;
+                } else {
+                    baseReqBody.tools = [...(baseReqBody.tools || []), ...LIFE_REMINDER_TOOLS];
+                    if (!baseReqBody.tool_choice) baseReqBody.tool_choice = 'auto';
+                }
+            }
             if (amsg2ToolsInjected) {
                 baseReqBody.tools = [...(baseReqBody.tools || []), ...buildAmsg2Tools(resolveAmsgLimits(char.activeMsg2Config))];
                 if (!baseReqBody.tool_choice) baseReqBody.tool_choice = 'auto';
@@ -1391,7 +1428,7 @@ export const useChatAI = ({
             // 每次 onDelta 基于累计全文全量重算（safeFetchJson 重试会重开流，天然重置）；
             // 正文尾句和思考内容只在累计文本确实变化时触发重渲染。
             // SAR 的正文包在结构化容器里，流式阶段不能把 TRUE/SURFACE 控制标签闪给用户。
-            const streamUiEligible = !!userStream && !toolModeActive
+            const streamUiEligible = !!userStream && !toolModeActive && !lifeReminderNeedsLocal
                 && !bilingualActive && !sarModulePlan.requiresEnvelope;
             const streamPreviewEligible = streamUiEligible;
             const streamThinkingEligible = streamUiEligible && payload.flags.thinkingActive;
@@ -1482,7 +1519,7 @@ export const useChatAI = ({
                 // 仅通用 MCP、且没有和其他工具模式混用时降级。部分 OpenAI 兼容中转
                 // 会对携带 tools 的请求直接回 4xx，而不是忽略参数；去掉 tools 后让
                 // 现有正文假调用容错接手。真实鉴权失败会在这次重试中再次抛出原样错误。
-                const textCompatible = payload.flags.mcpChatActive
+                const textCompatible = (payload.flags.mcpChatActive || lifeToolsInjected)
                     && !payload.flags.luckinChatActive && !payload.flags.mcdActive && !payload.flags.luckinActive;
                 if (!textCompatible || !baseReqBody.tools?.length || !shouldRetryMcpWithoutTools(requestError)) throw requestError;
                 console.warn('🔌 [MCP] 当前中转拒绝 tools 请求，降级为正文工具调用兼容模式');
@@ -1750,7 +1787,7 @@ export const useChatAI = ({
             //       createOrder 被拦截 —— 下单付款必须用户在结账卡上点。
             //     · 通用 MCP: 工具名命中 mcpToolResolve 映射就分发给对应服务器 (utils/mcpClient),
             //       结果只回填循环不落卡片。两类工具可同时在场, 按名字各走各的。
-            if ((payload.flags.luckinChatActive || mcpToolResolve || amsg2ToolsInjected) && data.choices?.[0]?.message?.tool_calls?.length) {
+            if ((payload.flags.luckinChatActive || mcpToolResolve || amsg2ToolsInjected || lifeToolsInjected) && data.choices?.[0]?.message?.tool_calls?.length) {
                 // 普通点单/排程维持 6 轮；接了通用 MCP 时允许游戏/论坛类任务自然推进到
                 // 12 轮。模型正常给正文会立刻 break，并不是固定多发 12 次请求。
                 const MAX_LOOPS = mcpToolResolve ? MCP_CHAT_MAX_TOOL_LOOPS : 6;
@@ -1825,7 +1862,7 @@ export const useChatAI = ({
                             continue;
                         }
                         // 主动消息 2.0 工具
-                        if (AMSG2_TOOL_NAMES.has(fname)) {
+                        if (AMSG2_TOOL_NAMES.has(fname) || fname === LIFE_REMINDER_TOOL_NAME) {
                             amsg2Outcomes.push(await replyStep(async () => runAmsg2ToolCall(tc, fname, args, loopMessages, it)));
                             continue;
                         }
@@ -1971,11 +2008,15 @@ export const useChatAI = ({
             //     系统代为执行, 把结果喂回去让角色重新组织语言, 用户就看不到乱码了。
             //     连续调用指纹防止模型复读同一调用导致副作用工具重复执行；中间若有别的
             //     动作，则允许用同参重新查询已经变化的状态。
-            if (mcpToolResolve) {
+            if (mcpToolResolve || lifeToolsInjected) {
                 const MAX_TEXT_LOOPS = MCP_CHAT_MAX_TOOL_LOOPS;
                 let lastExecutedSig: string | null = null;
                 let textLoopMessages: any[] | null = null;
-                const textToolResolve = new Map<string, any>(mcpToolResolve);
+                const textToolResolve = new Map<string, any>(mcpToolResolve || []);
+                if (lifeToolsInjected) textToolResolve.set(LIFE_REMINDER_TOOL_NAME, {
+                    server: {}, toolName: LIFE_REMINDER_TOOL_NAME,
+                    tool: { name: LIFE_REMINDER_TOOL_NAME, inputSchema: LIFE_REMINDER_TOOLS[0].function.parameters },
+                });
                 for (let it = 0; it < MAX_TEXT_LOOPS; it++) {
                     const contentNow: string = data.choices?.[0]?.message?.content || '';
                     // 兼容协议约定每轮只发一行。一次只执行一个，既让 12 轮真正按步骤自适应，
@@ -2005,8 +2046,17 @@ export const useChatAI = ({
                     for (const call of faked) {
                         lastExecutedSig = toolCallFingerprint(call.exposedName, call.args);
                         let r: any;
-                        try { r = await replyStep(async () => callMcpTool(call.server, call.toolName, call.args, replyRun.signal)); }
+                        try {
+                            r = call.exposedName === LIFE_REMINDER_TOOL_NAME
+                                ? { success: true, data: await replyStep(async () => executeLifeReminderTool(call.args, {
+                                    characters: await DB.getAllCharacters(), userProfile, groups, realtimeConfig, apiConfig,
+                                    updateCharacter: (id, updates) => updateCharacter(id, updates),
+                                })) }
+                                : await replyStep(async () => callMcpTool(call.server, call.toolName, call.args, replyRun.signal));
+                        }
                         catch (e: any) { replyRun.check(); r = { success: false, error: e?.message || String(e) }; }
+
+                        if (call.exposedName === LIFE_REMINDER_TOOL_NAME) lifeReminderResults.push(r.success ? String(r.data) : `生活提醒操作失败：${r.error}`);
 
                         results.push(r.success
                             ? `工具 ${call.exposedName} 执行成功, 结果: ${formatMcpToolResult(r.data)}`
@@ -2036,7 +2086,7 @@ export const useChatAI = ({
 
             replyRun.check();
             // DEBUG: Log full API response details for troubleshooting truncation issues
-            console.log('🔍 [API Response Debug]', JSON.stringify({
+            if (!String(data?.choices?.[0]?.message?.content||'').includes('[[OBS_DIARY')) console.log('🔍 [API Response Debug]', JSON.stringify({
                 finish_reason: data.choices?.[0]?.finish_reason,
                 usage: data.usage,
                 content_length: data.choices?.[0]?.message?.content?.length,
@@ -2084,6 +2134,16 @@ export const useChatAI = ({
             let rawAiContent = amsg2LeadIns.length
                 ? mergeToolRoundLeadIns(amsg2LeadIns, data.choices?.[0]?.message?.content || '')
                 : data.choices?.[0]?.message?.content || '';
+            const reminderNotice = lifeReminderToolNotice(lifeReminderNeedsLocal, lifeReminderResults);
+            if (reminderNotice) {
+                await replyStep(async () => replyRun.saveMessage({ charId: char.id, role: 'system', type: 'text', content: `[${reminderNotice}]` }));
+                if (hasUnverifiedReminderClaim(rawAiContent)) rawAiContent = '';
+            }
+            if (reminderNotice && !rawAiContent.trim()) {
+                setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
+                announceChatGen(CHAT_GEN_EVENTS.replyArrived, { charId: char.id, charName: char.name });
+                return;
+            }
             const sarReply = parseSARModuleReply(rawAiContent, sarModulePlan);
             const latestUserMessage = findSARTurnUserMessage(currentMsgs);
             const sarModuleEvents = createSARModuleEventMeta(sarModulePlan);
@@ -2358,3 +2418,4 @@ export const useChatAI = ({
         evolvedNarrative,
     };
 };
+import {diaryPrompt} from '../utils/obsidianDiary';

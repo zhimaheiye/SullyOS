@@ -1,3 +1,5 @@
+import { isManualRelayEnabled } from './manualModelRelay';
+import { reuseCachedVisionMessages } from './visionAssetCache';
 import { getMemoryPalaceHighWaterMarkForContext, selectCharacterContextMessages } from './chatContextRange';
 import { expandHomeContextHistory } from './homeContextSegments';
 import { protectPendingChatTurn } from './storyTheaterTimeline';
@@ -53,6 +55,10 @@ export interface UserListeningContext {
 }
 
 export interface BuildChatPayloadInput {
+    /** Reroll has no newly submitted user input even when old user bubbles remain in history. */
+    temporalRegenerate?: boolean;
+    /** One-shot steering for this ordinary private-chat reroll; never persisted. */
+    rerollInstruction?: string;
     signal?: AbortSignal;
     /** Local phase timings only; no request content or telemetry. */
     onPreparationStage?: (event:ChatPreparationEvent)=>void;
@@ -130,6 +136,24 @@ export interface BuildChatPayloadInput {
      * 出现两个钟、两份热搜、两套工具名。
      */
     timelyByWorker?: boolean;
+}
+
+export const REROLL_INSTRUCTION_MAX_LENGTH = 300;
+
+export function normalizeRerollInstruction(value?: string): string {
+    return (value || '')
+        .replace(/\r\n?/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim()
+        .slice(0, REROLL_INSTRUCTION_MAX_LENGTH)
+        .trim();
+}
+
+function buildRerollInstructionBlock(input: BuildChatPayloadInput): string {
+    if (!input.temporalRegenerate || input.recallEntryPoint !== 'chat_app' || input.appPrompt || input.homePhoneContext) return '';
+    const instruction = normalizeRerollInstruction(input.rerollInstruction);
+    if (!instruction) return '';
+    return `【仅本次重新生成要求】\n${instruction}\n这段要求只约束本次替换回复，不是聊天中新发生的事实；不要在回复中复述或提及这段要求。`;
 }
 
 export type ChatPreparationStage='vision'|'memory'|'prompt'|'collaboration'|'tasks';
@@ -266,16 +290,22 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
     );
     // 正文、召回、世界书扫描和识图共用可见范围；UI 近窗可能仍缓存着范围外旧消息。
     const contextHighWaterMark = input.contextHighWaterMark ?? getMemoryPalaceHighWaterMarkForContext(char.id);
-    const selectedHistory = selectCharacterContextMessages(historyMsgs, char, contextHighWaterMark);
+    const selectedHistory = await reuseCachedVisionMessages(selectCharacterContextMessages(historyMsgs, char, contextHighWaterMark));
     const visibleIds = new Set(selectedHistory.map(message => message.id));
     const rawRecentMsgsHint = input.recentMsgsHint && !isChatConversationEntry(input.recallEntryPoint)
         ? input.recentMsgsHint.filter(message => visibleIds.has(message.id))
         : selectedHistory;
-    const useVisionDescriptions = input.visionApiConfig?.enabled === true;
+    const textRelay = isManualRelayEnabled() && input.disableTools === true;
+    const useVisionDescriptions = textRelay || input.visionApiConfig?.enabled === true;
+    if (textRelay) {
+        const { collectVisionItems, isPreflightRefUsable } = await import('./visionPreflight');
+        const missing = collectVisionItems(selectedHistory).filter(item => item.eligible && !item.description && !item.manualBlank && isPreflightRefUsable(item.ref));
+        if (missing.length) throw Error(`文本接力还有${missing.length}项图片/表情缺少描述，请先打开聊天加号“补全图片描述”；本轮没有发起识图或回复请求`);
+    }
     let historyMsgsForPrompt = selectedHistory;
     let recentMsgsHint = rawRecentMsgsHint;
 
-    if (useVisionDescriptions) {
+    if (useVisionDescriptions && !textRelay) {
         // historyMsgs 通常来自 DB、recentMsgsHint 通常来自 React state；按 id 合并后只识别一次，
         // 再把写回 metadata 的新快照映射回两套窗口，避免同一轮的 system/history 各跑一次识图。
         const uniqueMessages = new Map<number, Message>();
@@ -311,10 +341,13 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
         );
         const cleanedApiMessages = cleanApiMessages(input.stripImages ? flattenImageContentParts(apiMessages) : apiMessages);
         console.warn('[DevDebug] Prompt Build skipped: sending chat history without system prompt injection.');
+        const rerollInstructionBlock = buildRerollInstructionBlock(input);
         return {
             systemPrompt: '',
             cleanedApiMessages,
-            fullMessages: [...cleanedApiMessages],
+            fullMessages: rerollInstructionBlock
+                ? [...cleanedApiMessages, { role: 'system', content: rerollInstructionBlock }]
+                : [...cleanedApiMessages],
             volatileTailIndex: -1,
             flags: {
                 bilingualActive: false,
@@ -559,6 +592,8 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
         if(visits)fullMessages.push({role:'system',content:visits});
         input.signal?.throwIfAborted();
     }
+    const rerollInstructionBlock = buildRerollInstructionBlock(input);
+    if (rerollInstructionBlock) fullMessages.push({ role: 'system', content: rerollInstructionBlock });
     // Dev 开关：多条 system 合并成开头一条，A/B 对照中转适配层对多 system 的计量行为。
     let finalMessages = fullMessages;
     if (isSystemMessageMergeEnabled()) {

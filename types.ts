@@ -50,6 +50,7 @@ export enum AppID {
   MySchedule = 'my_schedule', // 我的日程 — 用户现实时间轴与多角色聊天同步
   Healing = 'healing', // 聊愈 — 独立会话与跨角色共享的用户中心记忆
   OneChange = 'one_change', // 只做一个改变 — local-first 单改变习惯实验
+  MetaClues = 'meta_clues', // Meta 单角色开发中体验
 }
 
 export interface SystemLog {
@@ -4064,7 +4065,36 @@ export interface TimeCapsuleSettings {
     lastVisitAt?: number;
 }
 
-export type TimeCapsuleRecord = TimeCapsuleEntry | TimeCapsuleSettings;
+export type TimeCapsuleInviteStatus = 'waiting' | 'running' | 'saved' | 'failed' | 'interrupted';
+
+export interface TimeCapsuleInviteItem {
+    id: string;
+    charId: string;
+    charName: string;
+    charAvatar?: string;
+    characterSignature: string;
+    status: TimeCapsuleInviteStatus;
+    capsuleId?: string;
+    error?: string;
+    createdAt: number;
+    updatedAt: number;
+    startedAt?: number;
+    finishedAt?: number;
+    attempt: number;
+    executorId?: string;
+    leaseUntil?: number;
+}
+
+export interface TimeCapsuleInviteBatch {
+    id: string;
+    kind: 'invite_batch';
+    createdAt: number;
+    updatedAt: number;
+    revision: number;
+    items: TimeCapsuleInviteItem[];
+}
+
+export type TimeCapsuleRecord = TimeCapsuleEntry | TimeCapsuleSettings | TimeCapsuleInviteBatch;
 
 export type MyScheduleTag = 'study' | 'entertainment' | 'rest' | 'sleep';
 
@@ -4108,7 +4138,7 @@ export interface MyScheduleSettings {
     id: 'settings';
     kind: 'settings';
     selectedCharIds: string[];
-    /** 以下 Veglia / 睡眠 / 生活提醒字段仅用于读取旧备份；公开版没有采集与写入路径。 */
+    /** Veglia / 睡眠字段仅用于读取旧备份；生活提醒字段由公开版的手动提醒使用。 */
     vegliaServerId?: string;
     vegliaLastStatus?: 'connected' | 'auth' | 'offline';
     vegliaLastSuccessAt?: number;
@@ -4148,7 +4178,7 @@ export interface MyScheduleDayAnchor {
     createdAt: number;
 }
 
-/** 现实生活提醒与监督模板共用 my_schedule store；仅旧备份兼容，公开版没有写入路径。 */
+/** 用户手动创建的现实生活提醒；条件监督字段只为读取旧备份保留。 */
 export interface LifeReminderRecord {
     id: string;
     kind: 'life_reminder';
@@ -4174,7 +4204,7 @@ export interface LifeReminderRecord {
     /** 最近一次成功向云端核对该 UUID 的时间；不能视为设备收件证明。 */
     lastRemoteCheckedAt?: number;
     pendingAction?: 'cancel' | 'reschedule' | 'complete' | 'pause';
-    operationLog?: { at: number; action: string; result: string }[];
+    operationLog?: { at: number; action: string; result: string; outcome?: 'success' | 'error' | 'uncertain' }[];
     pausedBySettings?: boolean;
     /** 条件文本仅供展示；只有 condition schema 中已支持的规则可在前台执行。 */
     ruleText?: string;
@@ -5035,6 +5065,8 @@ export interface Emoji {
     url: string;
     categoryId?: string;
     lastUsedAt?: number;
+    vision?: import('./utils/visionAssetCache').VisionAssetDescription;
+    visionError?: string;
 }
 
 export interface FullBackupData {

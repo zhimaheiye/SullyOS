@@ -124,6 +124,14 @@ interface ChangelogEntry {
 
 const PERSONAL_CHANGELOG_ENTRIES: ChangelogEntry[] = [
     {
+        "id": "personal-2026-11-04",
+        "title": "11 月 4 日更新",
+        "subtitle": "Meta 开发中体验、重回引导、图片描述、日记与时间胶囊等改进。",
+        "date": "2026-11-04",
+        "dateKind": "",
+        "src": "changelogs/personal-2026-11-04.html"
+    },
+    {
         "id": "personal-2026-10-30",
         "title": "10 月 30 日更新",
         "subtitle": "启动介绍不再连弹，桌面新增分区更新日志。",

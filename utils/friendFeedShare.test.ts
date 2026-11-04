@@ -11,7 +11,7 @@ import {safeFetchJson} from './safeApi';
 import {isBlobRef} from './blobRef';
 import {restoreBlobRef} from './blobRef';
 import type {CharacterProfile,UserProfile,Message} from '../types';
-vi.mock('./blobRef',async original=>({...await original<typeof import('./blobRef')>(),putImageBlob:vi.fn(async()=> 'blobref:b_sharetest')}));
+vi.mock('./blobRef',async original=>({...await original<typeof import('./blobRef')>(),putImageBlob:vi.fn(async()=> 'blobref:b_sharetest'),resolveRefToDataUrl:vi.fn(async()=> 'data:image/jpeg;base64,AQID')}));
 vi.mock('./safeApi',async original=>({...await original<typeof import('./safeApi')>(),safeFetchJson:vi.fn()}));
 const char={id:'share-recipient',name:'小白',memories:[],contextRangePolicyVersion:1,contextRangeMode:'manual',contextLimit:50} as unknown as CharacterProfile;
 const user={name:'小雨'} as UserProfile;

@@ -18,6 +18,7 @@ import { toMountedWorldbook } from './worldbook';
 import { persistCharacterWithHomeMessages } from './homeMessageBridge';
 import {deleteSecretNotesForIds, announceSecretNotesChanged} from './secretNote';
 import { ensureStoryTimelineRepair, invalidateStoryTimelineRepair } from './storyTheaterTimeline';
+import { timeCapsuleCharacterSignature, timeCapsuleCharacterSignatureHash } from './timeCapsule';
 
 import { orderWorldEpisodes } from './worldHome/episodeOrder';
 
@@ -35,7 +36,7 @@ import {
     WorldProfile, WorldEpisode, StoryTheaterEntry, StoryTheaterPreset, StoryTheaterMask,
     HeartSyncRecord, HeartSyncPsychQuestion, HeartSyncPsychSession, HeartSyncQuestionnaire, HeartSyncQuestionnaireSession,
     DebateSession, BoardGameSession, CharacterStudySession, LifeReplayRecord, CommunityCommitteeSession, TaskWorkshopRecord, TaskWorkshopSettings,
-    TimeCapsuleRecord, TimeCapsuleSettings, MyScheduleRecord, MyScheduleSettings, MyScheduleEntry, MyScheduleArchive,
+    TimeCapsuleRecord, TimeCapsuleSettings, TimeCapsuleInviteBatch, TimeCapsuleInviteItem, TimeCapsuleEntry, MyScheduleRecord, MyScheduleSettings, MyScheduleEntry, MyScheduleArchive,
     HealingSession, HealingMessage, HealingMemoryNode, HealingMemoryVector,
     OneChangeItem, OneChangeRecord, OneChangeStandardVersion, OneChangeStateEvent, OneChangeSettings,
 } from '../types';
@@ -1237,6 +1238,10 @@ export const DB = {
   },
 
   saveMessage: async (msg: Omit<Message, 'id' | 'timestamp'> & { timestamp?: number }): Promise<number> => {
+    if (msg.type === 'emoji' && msg.metadata?.stickerVision?.eligible && !msg.metadata.stickerVision.description) {
+      const { snapshotCachedEmoji } = await import('./visionAssetCache');
+      msg = await snapshotCachedEmoji(msg);
+    }
     const db = await openDB();
     return new Promise((resolve, reject) => {
         const transaction = db.transaction([STORE_MESSAGES, STORE_ASSETS], 'readwrite');
@@ -1640,17 +1645,26 @@ export const DB = {
     });
   },
 
-  saveEmoji: async (name: string, url: string, categoryId?: string): Promise<void> => {
-    const db = await openDB();
-    // 同 saveAsset：等事务真正落盘并把失败抛出去。发完 put 就返回的话，配额不足
-    // （iOS Safari 常见）时写入静默丢失，「一键优化」还会照报「已转 N 张」。
-    return new Promise((resolve, reject) => {
-      const transaction = db.transaction(STORE_EMOJIS, 'readwrite');
-      transaction.objectStore(STORE_EMOJIS).put({ name, url, categoryId });
+  saveEmoji: async (name: string, url: string, categoryId?: string, options?: { preserveVisualFrom?: string; refreshRemote?: boolean }): Promise<void> => {
+    const db = await openDB(); let copiedVision: Emoji['vision']; let failure: unknown;
+    await new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction(STORE_EMOJIS, 'readwrite'), store = transaction.objectStore(STORE_EMOJIS), read = store.get(name);
+      read.onsuccess = () => {
+        const previous = read.result as Emoji | undefined;
+        if (options?.preserveVisualFrom && previous?.url !== options.preserveVisualFrom) { failure = Error('素材已变化，旧优化结果未保存'); transaction.abort(); return; }
+        const keep = previous && (previous.url === url || !!options?.preserveVisualFrom && previous.url === options.preserveVisualFrom);
+        const row: Emoji = { ...(keep ? previous : {}), name, url, categoryId };
+        if (options?.refreshRemote && /^https?:/.test(url)) { delete row.vision; delete row.visionError; }
+        copiedVision = options?.preserveVisualFrom && options.preserveVisualFrom !== url ? row.vision : undefined;
+        try { store.put(row); } catch (error) { failure = error; transaction.abort(); }
+      };
       transaction.oncomplete = () => resolve();
-      transaction.onerror = () => reject(transaction.error);
-      transaction.onabort = () => reject(transaction.error || new Error('saveEmoji transaction aborted'));
+      transaction.onerror = transaction.onabort = () => reject(failure || transaction.error || Error('saveEmoji transaction aborted'));
     });
+    if (copiedVision?.description && (url.startsWith('blobref:') || url.startsWith('data:image/'))) {
+      const { seedKnownLocalVision } = await import('./visionAssetCache');
+      await seedKnownLocalVision(url, 'meme-v1', copiedVision.description, copiedVision);
+    }
   },
 
   touchEmoji: async (name: string, lastUsedAt = Date.now()): Promise<void> => {
@@ -4316,6 +4330,90 @@ export const DB = {
       });
   },
 
+  recoverTimeCapsuleInviteBatches: async (executorId:string, now=Date.now()):Promise<void> => {
+      const db=await openDB();
+      return new Promise((resolve,reject)=>{
+          const tx=db.transaction(STORE_TIME_CAPSULE,'readwrite'),store=tx.objectStore(STORE_TIME_CAPSULE),read=store.getAll();
+          read.onsuccess=()=>{
+              const capsuleIds=new Set((read.result as TimeCapsuleRecord[]).filter((row):row is TimeCapsuleEntry=>row.kind==='capsule').map(row=>row.id));
+              for(const row of read.result as TimeCapsuleRecord[]){
+                  if(row.kind!=='invite_batch')continue;
+                  let changed=false;
+                  const items=row.items.map(item=>{
+                      if(item.status!=='running'||item.executorId!==executorId&&Number(item.leaseUntil||0)>now)return item;
+                      changed=true;
+                      if(item.capsuleId&&capsuleIds.has(item.capsuleId))return {...item,status:'saved' as const,error:undefined,updatedAt:now,finishedAt:now,executorId:undefined,leaseUntil:undefined};
+                      return {...item,status:'interrupted' as const,error:'上次邀请已中断，可继续',updatedAt:now,finishedAt:now,executorId:undefined,leaseUntil:undefined};
+                  });
+                  if(changed)store.put({...row,items,updatedAt:now,revision:row.revision+1});
+              }
+          };
+          tx.oncomplete=()=>resolve();tx.onerror=tx.onabort=()=>reject(tx.error||new Error('邀请进度恢复失败'));
+      });
+  },
+
+  claimTimeCapsuleInviteItem: async (batchId:string,executorId:string,itemId?:string,now=Date.now()):Promise<{batch:TimeCapsuleInviteBatch;item:TimeCapsuleInviteItem}> => {
+      const db=await openDB();
+      return new Promise((resolve,reject)=>{
+          const tx=db.transaction(STORE_TIME_CAPSULE,'readwrite'),store=tx.objectStore(STORE_TIME_CAPSULE),all=store.getAll();
+          let result:{batch:TimeCapsuleInviteBatch;item:TimeCapsuleInviteItem}|undefined,failure:unknown;
+          all.onsuccess=()=>{
+              const rows=all.result as TimeCapsuleRecord[];
+              const active=rows.flatMap(row=>row.kind==='invite_batch'?row.items:[]).find(item=>item.status==='running'&&Number(item.leaseUntil||0)>now);
+              if(active){failure=new Error(active.executorId===executorId?'上次生成尚未安全结束，请先刷新恢复进度':'另一标签页正在执行邀请，请稍后刷新进度');tx.abort();return;}
+              const batch=rows.find((row):row is TimeCapsuleInviteBatch=>row.kind==='invite_batch'&&row.id===batchId);
+              if(!batch){failure=new Error('这批邀请已不存在');tx.abort();return;}
+              const index=itemId?batch.items.findIndex(item=>item.id===itemId):batch.items.findIndex(item=>item.status==='waiting'||item.status==='interrupted');
+              const old=index>=0?batch.items[index]:undefined;
+              const eligible=old&&(itemId?['failed','interrupted','waiting'].includes(old.status):['interrupted','waiting'].includes(old.status));
+              if(!old||!eligible){failure=new Error('没有可继续的邀请');tx.abort();return;}
+              const item={...old,status:'running' as const,error:undefined,startedAt:now,finishedAt:undefined,updatedAt:now,attempt:old.attempt+1,executorId,leaseUntil:now+30*60_000};
+              const items=[...batch.items];items[index]=item;
+              const next={...batch,items,updatedAt:now,revision:batch.revision+1};
+              store.put(next);result={batch:next,item};
+          };
+          tx.oncomplete=()=>result?resolve(result):reject(failure||new Error('邀请领取失败'));
+          tx.onerror=tx.onabort=()=>reject(failure||tx.error||new Error('邀请领取失败'));
+      });
+  },
+
+  finishTimeCapsuleInviteItem: async (input:{batchId:string;itemId:string;attempt:number;executorId:string;capsule:TimeCapsuleEntry;character:CharacterProfile;signal:AbortSignal;now?:number}):Promise<void> => {
+      const now=input.now??Date.now(),db=await openDB();input.signal.throwIfAborted();
+      return new Promise((resolve,reject)=>{
+          const tx=db.transaction([STORE_TIME_CAPSULE,STORE_CHARACTERS],'readwrite'),store=tx.objectStore(STORE_TIME_CAPSULE),chars=tx.objectStore(STORE_CHARACTERS);
+          let failure:unknown,didCommit=false;const abort=()=>{failure=input.signal.reason||new DOMException('本轮已取消','AbortError');try{tx.abort();}catch{/* committed */}};
+          input.signal.addEventListener('abort',abort,{once:true});const cleanup=()=>input.signal.removeEventListener('abort',abort);
+          const batchRead=store.get(input.batchId),charRead=chars.get(input.character.id);
+          const commit=()=>{
+              if(didCommit||batchRead.readyState!=='done'||charRead.readyState!=='done')return;
+              didCommit=true;
+              if(input.signal.aborted){abort();return;}
+              const batch=batchRead.result as TimeCapsuleInviteBatch|undefined,item=batch?.items.find(entry=>entry.id===input.itemId);
+              if(!batch||batch.kind!=='invite_batch'||!item||item.status!=='running'||item.attempt!==input.attempt||item.executorId!==input.executorId){failure=new Error('邀请进度已变化，未保存迟到结果');tx.abort();return;}
+              if(!charRead.result||item.charId!==input.character.id||item.characterSignature!==timeCapsuleCharacterSignatureHash(input.character)||timeCapsuleCharacterSignature(charRead.result)!==timeCapsuleCharacterSignature(input.character)){failure=new Error('邀请角色已变更或删除，未保存结果');tx.abort();return;}
+              if(input.capsule.source!=='invited'||input.capsule.charId!==item.charId){failure=new Error('胶囊与邀请角色不一致');tx.abort();return;}
+              const items=batch.items.map(entry=>entry.id===item.id?{...entry,status:'saved' as const,capsuleId:input.capsule.id,error:undefined,updatedAt:now,finishedAt:now,executorId:undefined,leaseUntil:undefined}:entry);
+              store.add(input.capsule);store.put({...batch,items,updatedAt:now,revision:batch.revision+1});
+          };
+          batchRead.onsuccess=commit;charRead.onsuccess=commit;
+          tx.oncomplete=()=>{cleanup();resolve();};tx.onerror=tx.onabort=()=>{cleanup();reject(failure||tx.error||new Error('胶囊与邀请进度保存失败'));};
+      });
+  },
+
+  settleTimeCapsuleInviteItem: async (input:{batchId:string;itemId:string;attempt:number;executorId:string;status:'failed'|'interrupted';error:string;now?:number}):Promise<void> => {
+      const now=input.now??Date.now(),db=await openDB();
+      return new Promise((resolve,reject)=>{
+          const tx=db.transaction(STORE_TIME_CAPSULE,'readwrite'),store=tx.objectStore(STORE_TIME_CAPSULE),read=store.get(input.batchId);let failure:unknown;
+          read.onsuccess=()=>{
+              const batch=read.result as TimeCapsuleInviteBatch|undefined,item=batch?.items.find(entry=>entry.id===input.itemId);
+              if(!batch||batch.kind!=='invite_batch'||!item||item.status!=='running'||item.attempt!==input.attempt||item.executorId!==input.executorId){failure=new Error('邀请进度已变化');tx.abort();return;}
+              const items=batch.items.map(entry=>entry.id===item.id?{...entry,status:input.status,error:input.error.slice(0,180),updatedAt:now,finishedAt:now,executorId:undefined,leaseUntil:undefined}:entry);
+              store.put({...batch,items,updatedAt:now,revision:batch.revision+1});
+          };
+          tx.oncomplete=()=>resolve();tx.onerror=tx.onabort=()=>reject(failure||tx.error||new Error('邀请进度保存失败'));
+      });
+  },
+
   deleteTimeCapsuleRecord: async (id: string): Promise<void> => {
       if (id === 'settings') return;
       const db = await openDB();
@@ -5188,8 +5286,8 @@ export const DB = {
       }, data.emojiCategories?.length || 0);
       await runSection('系统资源', data.assets !== undefined, async () => {
           if (mediaOnly) {
-              await mergeStore(STORE_ASSETS, (data.assets || []).filter(a => !isActivityTextAsset(a.id)), '系统资源', true);
-          } else await clearAndAdd(STORE_ASSETS, data.assets || [], '系统资源', true);
+              await mergeStore(STORE_ASSETS, (data.assets || []).filter(a => !isActivityTextAsset(a.id) && a.id !== 'vision-cache:epoch' && a.id !== OBSIDIAN_DIARY_EPOCH).map(restoreDiaryAsset), '系统资源', true);
+          } else await clearAndAdd(STORE_ASSETS, (data.assets || []).filter(a => a.id !== 'vision-cache:epoch' && a.id !== OBSIDIAN_DIARY_EPOCH).map(restoreDiaryAsset), '系统资源', true);
           data.assets = undefined as any;
       }, data.assets?.length || 0);
       await runSection('活动文字记录', data.activityTextAssets !== undefined && !mediaOnly, async () => {
@@ -5682,3 +5780,4 @@ export const DB = {
       await ensureStoryTimelineRepair(db);
   }
 };
+import {OBSIDIAN_DIARY_EPOCH,restoreDiaryAsset} from './obsidianDiaryConfig';

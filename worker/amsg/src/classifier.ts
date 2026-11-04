@@ -81,7 +81,8 @@ export type Directive =
   // 写日记: 短形态 [[DIARY: title|content]] 或长形态 [[DIARY_START: title|mood]]\n content \n[[DIARY_END]],
   // 飞书同形态 (FS_ 前缀). title 可空 → 客户端兜底用 `${char.name}的日记 - M/D`. mood 可空.
   | { type: 'notion_write_diary'; title: string; content: string; mood?: string }
-  | { type: 'feishu_write_diary'; title: string; content: string; mood?: string };
+  | { type: 'feishu_write_diary'; title: string; content: string; mood?: string }
+  | { type: 'obsidian_write_diary'; title: string; content: string; mood?: string };
 
 export type ClassificationResult =
   | {
@@ -276,6 +277,10 @@ const SIDE_EFFECT_TAGS: SideEffectSpec[] = [
     re: /\[\[DIARY:\s*([\s\S]+?)\]\]/g,
     toDirective: (m) => parseDiaryShort(m, 'notion_write_diary'),
   },
+  {
+    re: /\[\[OBS_DIARY_START:\s*([^\]]*?)\]\]\n?([\s\S]*?)\[\[OBS_DIARY_END\]\]/g,
+    toDirective: (m) => parseDiaryLong(m, 'obsidian_write_diary'),
+  },
   // 飞书写日记 — 同形态, FS_ 前缀
   {
     re: /\[\[FS_DIARY_START:\s*(.+?)\]\]\n?([\s\S]*?)\[\[FS_DIARY_END\]\]/g,
@@ -287,7 +292,7 @@ const SIDE_EFFECT_TAGS: SideEffectSpec[] = [
   },
 ];
 
-type DiaryDirectiveType = 'notion_write_diary' | 'feishu_write_diary';
+type DiaryDirectiveType = 'notion_write_diary' | 'feishu_write_diary' | 'obsidian_write_diary';
 
 /**
  * 长日记 (DIARY_START..DIARY_END / FS_DIARY_START..FS_DIARY_END) → directive.
@@ -295,7 +300,7 @@ type DiaryDirectiveType = 'notion_write_diary' | 'feishu_write_diary';
  */
 function parseDiaryLong(m: RegExpMatchArray, type: DiaryDirectiveType): Directive | null {
   const header = m[1].trim();
-  const content = (m[2] || '').trim();
+  const content = type === 'obsidian_write_diary' ? (m[2] || '') : (m[2] || '').trim();
   let title = '';
   let mood = '';
   if (header.includes('|')) {

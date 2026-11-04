@@ -386,6 +386,8 @@ export const createMcpSessionState = (): McpSessionState =>
 
 /** 一次请求的目标：最终 URL + 请求头构造。浏览器侧包代理，worker 侧直连。 */
 export interface McpTransportTarget {
+    /** Suppress the application's global fetch capture for a private sink. */
+    privateContent?: boolean;
     signal?: AbortSignal;
     url: string;
     headers: (
@@ -493,7 +495,8 @@ const postCore = async (
         try {
             resp = await fetch(target.url, {
                 method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal,
-            });
+                ...(target.privateContent ? {__sullyPrivateTransient:true} : {}),
+            } as RequestInit);
         } catch (e: any) {
             target.signal?.throwIfAborted();
             if (controller.signal.aborted) {
@@ -751,13 +754,16 @@ export const callMcpToolCore = async (
         inputSchema?: any;
         /** 日志里显示的服务器名，缺省用目标 URL 的主机名 */
         serverLabel?: string;
+        privateContent?: boolean;
+        noSessionRetry?: boolean;
     } = {},
 ): Promise<McpToolResult> => {
-    target = { ...target, signal: opts.signal ?? target.signal };
+    target = { ...target, signal: opts.signal ?? target.signal, privateContent: opts.privateContent ?? target.privateContent };
     target.signal?.throwIfAborted();
     const timeoutMs = opts.timeoutMs ?? MCP_REQUEST_TIMEOUT_MS;
     const normalizedArgs = normalizeMcpToolArguments(args, opts.inputSchema);
     const finish = (result: McpToolResult): McpToolResult => {
+        if (opts.privateContent) { console.info('🔌 [MCP] 私密操作完成', { success: result.success }); return result; }
         let resultPreview = '';
         if (result.success) {
             try { resultPreview = JSON.stringify(result.data).slice(0, 800); }
@@ -781,7 +787,7 @@ export const callMcpToolCore = async (
             ({ response } = await postCore(target, session, body, timeoutMs));
         } catch (e: any) {
             // 404/400 常见于服务器重启后 session 失效，重握手再试一次
-            if (/HTTP (400|404)/.test(e?.message || '')) {
+            if (!opts.noSessionRetry && /HTTP (400|404)/.test(e?.message || '')) {
                 Object.assign(session, createMcpSessionState());
                 await ensureInitializedCore(target, session, timeoutMs);
                 ({ response } = await postCore(
@@ -794,7 +800,7 @@ export const callMcpToolCore = async (
             }
         }
         if (!response) return finish({ success: false, error: '空响应' });
-        if (response.error) return finish({ success: false, error: `MCP 错误 ${formatMcpRpcError(response.error)}` });
+        if (response.error) return finish({ success: false, error: `MCP 错误 ${formatMcpRpcError(response.error)}`, ...(opts.privateContent && response.error.data ? {data:response.error.data} : {}) });
 
         const result = response.result;
         if (result?.resultType === 'input_required') {
@@ -804,10 +810,12 @@ export const callMcpToolCore = async (
                 data: result,
             });
         }
+        if(opts.privateContent && result?.structuredContent && typeof result.structuredContent==='object')
+            return finish({success:!result.isError,data:result.structuredContent,...(result.isError?{error:'MCP 工具执行失败'}:{})});
         if (result?.content && Array.isArray(result.content)) {
             const textParts = result.content.filter((c: any) => c?.type === 'text').map((c: any) => c.text || '');
-            const fullText = textParts.join('\n').trim();
-            if (result.isError) return finish({ success: false, error: fullText || 'MCP 工具执行失败', rawText: fullText });
+            const fullText = opts.privateContent ? textParts.join('\n') : textParts.join('\n').trim();
+            if (result.isError) { let data; try { data=JSON.parse(fullText); } catch {} return finish({ success: false, error: fullText || 'MCP 工具执行失败', rawText: fullText, ...(opts.privateContent&&data?{data}:{}) }); }
             try {
                 return finish({ success: true, data: JSON.parse(fullText), rawText: fullText });
             } catch {

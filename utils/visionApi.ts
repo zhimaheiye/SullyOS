@@ -1,8 +1,11 @@
+import { findStableVisionAsset, reuseCachedVisionMessages, seedKnownLocalVision, VISION_DESCRIPTION_LIMIT } from './visionAssetCache';
+import type { ExplicitVisionPermit } from './explicitVisionAction';
+import { isManualRelayEnabled } from './manualModelRelay';
 import type { ApiPreset, Message, VisionApiConfig } from '../types';
 import { DB } from './db';
-import { extractContent, safeFetchJson } from './safeApi';
+import { safeFetchJson } from './safeApi';
 import { normalizeApiBaseUrl, normalizeApiCredential, normalizeApiModel } from './apiConfigNormalize';
-import { isBlobRef } from './blobRef';
+import { isBlobRef, resolveRefToDataUrl } from './blobRef';
 import { readStickerVision, readStickerVisionDescription } from './stickerVision';
 
 export const VISION_DESCRIPTION_METADATA_KEY = 'visionDescription';
@@ -48,12 +51,33 @@ export const readVisionDescription = (message: Message): string => {
   return typeof value === 'string' ? value.trim() : '';
 };
 
-const cleanDescription = (value: string): string => value
-  .replace(/^\s*\[?图片\s*[：:]\s*/i, '')
-  .replace(/\]\s*$/i, '')
-  .replace(/\s+/g, ' ')
-  .trim()
-  .slice(0, 4000);
+/** Vision has no reasoning fallback. An incomplete answer cannot replace a good cache. */
+export function extractVisionDescription(data: any): string {
+  const choice = data?.choices?.[0], candidate = data?.candidates?.[0];
+  const finish = choice?.finish_reason ?? data?.stop_reason ?? candidate?.finishReason;
+  if (['length', 'max_tokens', 'MAX_TOKENS', 'content_filter', 'SAFETY', 'RECITATION', 'tool_calls', 'function_call', 'ERROR'].includes(finish)
+    || ['incomplete','failed','cancelled'].includes(data?.status) || data?.incomplete_details || data?.truncated === true
+    || data?.object === 'chat.completion.chunk' || data?.__sullySseComplete === false) throw Error('识图响应不完整；原描述未改动');
+  const finalText = (value: any): string => typeof value === 'string' ? value : Array.isArray(value)
+    ? value.filter(block => block && (block.type === 'text' || block.type === 'output_text') && typeof block.text === 'string').map(block => block.text).join('\n') : '';
+  // Only documented final-text fields; independent reasoning/thinking blocks never enter this string.
+  let text = choice ? finalText(choice.message?.content) : finalText(data?.content);
+  if (!choice && !text && Array.isArray(candidate?.content?.parts)) text = candidate.content.parts.filter((part: any) => part.thought !== true && typeof part.text === 'string').map((part: any) => part.text).join('\n');
+  if (!choice && !text && Array.isArray(data?.output)) text = data.output.filter((part: any) => part.type === 'message' && part.role === 'assistant').map((part: any) => finalText(part.content)).join('\n');
+  const tag = /<\/?(think|thinking|thought)\b[^>]*>/gi, stack: string[] = []; let end = 0, visible = '', match: RegExpExecArray | null;
+  while ((match = tag.exec(text))) {
+    if (!stack.length) visible += text.slice(end, match.index);
+    if (match[0].startsWith('</')) { if (stack.pop() !== match[1].toLowerCase()) throw Error('识图响应不完整；原描述未改动'); }
+    else stack.push(match[1].toLowerCase());
+    end = tag.lastIndex;
+  }
+  if (stack.length) throw Error('识图响应不完整；原描述未改动');
+  text = (visible + text.slice(end)).trim();
+  if (/^\[图片\s*[：:][\s\S]*\]$/.test(text)) text = text.replace(/^\[图片\s*[：:]\s*/, '').slice(0, -1).trim();
+  if (!text) throw Error('识图未返回有效最终描述；原描述未改动');
+  if (text.length > VISION_DESCRIPTION_LIMIT) throw Error('识图描述超过4000字；原描述未改动');
+  return text;
+}
 
 /** 调用 OpenAI 兼容视觉端点，把一张图片变成可交给纯文本模型的描述。
  *  options.prompt 允许调用方换用专用提示词（如表情包识图）；默认仍是普通图片提示词，
@@ -61,24 +85,32 @@ const cleanDescription = (value: string): string => value
 export async function describeImageWithVisionApi(
   imageUrl: string,
   config: VisionApiConfig,
-  options?: { prompt?: string },
+  options?: { prompt?: string; signal?: AbortSignal; retries?: number; privateTransient?: boolean; explicitPermit?: ExplicitVisionPermit; frameUrls?: string[]; gif?: boolean },
 ): Promise<string> {
   if (!isVisionApiReady(config)) {
     throw new Error('识图 API 已开启，但 URL、Key 或 Model 尚未填写完整');
   }
-  if (!canDescribeImage(imageUrl)) {
+  if (!options?.frameUrls?.length && !canDescribeImage(imageUrl)) {
     throw new Error('图片数据不可用，无法调用识图 API');
   }
 
   const prompt = options?.prompt?.trim() || VISION_PROMPT;
   const dedupKey = `${prompt}\u0000${imageUrl}`;
   const existing = inFlightDescriptions.get(dedupKey);
-  if (existing) return existing;
+  if (existing && !options?.signal) return existing;
 
   const request = (async () => {
+    options?.signal?.throwIfAborted();
+    // Private transient requests deliberately bypass the general request-body resolver.
+    // Resolve this one selected image explicitly without enabling persistent body captures.
+    const outgoingImage = options?.frameUrls?.[0] || (isBlobRef(imageUrl) ? await resolveRefToDataUrl(imageUrl) : imageUrl);
+    options?.signal?.throwIfAborted();
+    if (!outgoingImage || isBlobRef(outgoingImage)) throw new Error('本机参考图已不可用，请重新选择图片');
     const baseUrl = config.baseUrl.trim().replace(/\/+$/, '');
-    const data = await safeFetchJson(`${baseUrl}/chat/completions`, {
+    let data: any;
+    try { data = await safeFetchJson(`${baseUrl}/chat/completions`, {
       method: 'POST',
+      signal: options?.signal,
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${config.apiKey.trim()}`,
@@ -88,26 +120,30 @@ export async function describeImageWithVisionApi(
         messages: [{
           role: 'user',
           content: [
-            { type: 'text', text: prompt },
-            { type: 'image_url', image_url: { url: imageUrl } },
+            { type: 'text', text: prompt + (options?.gif ? '\n以下是同一GIF按时间顺序选取的少量代表帧。综合描述可见动作、文字变化与语气；未覆盖全部帧，不猜遗漏的细节。' : '') },
+            ...(options?.frameUrls || [outgoingImage]).map(url => ({ type: 'image_url', image_url: { url } })),
           ],
         }],
         temperature: 0,
         max_tokens: 1200,
         stream: false,
       }),
-    }, 1, 60_000, { appName: '消息', purpose: '识图' });
+    }, options?.retries ?? 1, 60_000, { appName: '消息', purpose: options?.explicitPermit ? '手动补全图片描述' : options?.privateTransient ? '外貌标签' : '识图' }, undefined,
+    { privateTransient: true, explicitVision: options?.explicitPermit });
+    } catch (error) {
+      if (options?.signal?.aborted || error instanceof Error && error.name === 'AbortError') throw error;
+      const status = /(?:HTTP|API Error)\s*(\d{3})/i.exec(error instanceof Error ? error.message : '')?.[1];
+      throw Error(status ? `识图请求失败（HTTP ${status}），原描述未改动` : '识图请求失败，请检查独立配置或服务；原描述未改动');
+    }
 
-    const description = cleanDescription(extractContent(data));
-    if (!description) throw new Error('识图 API 没有返回图片描述');
-    return description;
+    return extractVisionDescription(data);
   })();
 
-  inFlightDescriptions.set(dedupKey, request);
+  if (!options?.signal) inFlightDescriptions.set(dedupKey, request);
   try {
     return await request;
   } finally {
-    inFlightDescriptions.delete(dedupKey);
+    if (inFlightDescriptions.get(dedupKey) === request) inFlightDescriptions.delete(dedupKey);
   }
 }
 
@@ -121,7 +157,8 @@ export async function materializeVisionDescriptions(
   messages: Message[],
   config?: VisionApiConfig | null,
 ): Promise<Message[]> {
-  if (config?.enabled !== true) return messages;
+  messages = await reuseCachedVisionMessages(messages);
+  if (isManualRelayEnabled() || config?.enabled !== true) return messages;
   if (!isVisionApiReady(config)) {
     throw new Error('识图 API 已开启，但 URL、Key 或 Model 尚未填写完整');
   }
@@ -149,8 +186,8 @@ export async function materializeVisionDescriptions(
     }
 
     const cached = readVisionDescription(message);
-    if (cached) {
-      descriptionByImage.set(message.content, cached);
+    if (cached || message.metadata?.visionPreflightState?.image?.manualBlank) {
+      descriptionByImage.set(message.content, cached); await seedKnownLocalVision(message.content, 'photo-v1', cached);
       prepared.push(message);
       continue;
     }
@@ -162,18 +199,26 @@ export async function materializeVisionDescriptions(
       prepared.push(message);
       continue;
     }
-    const description = descriptionByImage.get(imageUrl)
+    let description = descriptionByImage.get(imageUrl)
       || await describeImageWithVisionApi(imageUrl, config);
-    descriptionByImage.set(imageUrl, description);
+    descriptionByImage.set(imageUrl, description); await seedKnownLocalVision(imageUrl, 'photo-v1', description);
+    const latest = await findStableVisionAsset(imageUrl, 'photo-v1');
+    if (latest) description = latest.description;
 
-    const metadata = {
+    let metadata = {
       ...(message.metadata || {}),
       [VISION_DESCRIPTION_METADATA_KEY]: description,
       visionRecognizedAt: Date.now(),
       visionModel: config.model.trim(),
+      ...(latest ? { visionPreflightState: { ...message.metadata?.visionPreflightState, image: { revision: latest.revision, manualBlank: latest.origin === 'manual' && !latest.description, assetKey: latest.key } } } : {}),
     };
     // 先写回 DB 再调用主模型：下一轮与刷新页面后都会直接命中，不重复扣识图额度。
-    await DB.updateMessageMetadata(message.id, prev => ({ ...(prev || {}), ...metadata }));
+    await DB.updateMessageMetadata(message.id, prev => {
+      if (prev?.visionDescription || prev?.visionPreflightState?.image?.manualBlank
+        || prev?.visionPreflightState?.image?.revision !== message.metadata?.visionPreflightState?.image?.revision) { metadata = prev as typeof metadata; return prev; }
+      metadata = { ...prev, visionDescription: metadata.visionDescription, visionRecognizedAt: metadata.visionRecognizedAt, visionModel: metadata.visionModel, ...(latest ? { visionPreflightState: { ...prev?.visionPreflightState, image: metadata.visionPreflightState.image } } : {}) };
+      return metadata;
+    });
     prepared.push({ ...message, metadata });
   }
 
@@ -210,7 +255,8 @@ export async function materializeStickerVisionDescriptions(
   messages: Message[],
   config?: VisionApiConfig | null,
 ): Promise<Message[]> {
-  if (config?.enabled !== true || !isVisionApiReady(config)) return messages;
+  messages = await reuseCachedVisionMessages(messages);
+  if (isManualRelayEnabled() || config?.enabled !== true || !isVisionApiReady(config)) return messages;
 
   const descriptionByImage = new Map<string, string>();
   const failedImages = new Set<string>();
@@ -222,7 +268,8 @@ export async function materializeStickerVisionDescriptions(
       continue;
     }
     const vision = readStickerVision(message);
-    if (!vision || readStickerVisionDescription(message)) {
+    if (readStickerVisionDescription(message)) await seedKnownLocalVision(message.content, 'meme-v1', readStickerVisionDescription(message)!);
+    if (!vision || readStickerVisionDescription(message) || message.metadata?.visionPreflightState?.sticker?.manualBlank) {
       prepared.push(message);
       continue;
     }
@@ -247,7 +294,7 @@ export async function materializeStickerVisionDescriptions(
       descriptionByImage.set(imageUrl, description);
       prepared.push(await writeStickerVisionDescription(message, description, config));
     } catch (error) {
-      console.warn('[stickerVision] 表情包识图失败，该表情本轮降级为名称模式', error);
+      console.warn('[stickerVision] 表情包识图失败，该表情本轮降级为名称模式');
       failedImages.add(imageUrl);
       prepared.push(message);
     }
@@ -258,7 +305,10 @@ export async function materializeStickerVisionDescriptions(
 
 /** 把识别到的描述合并进 metadata.stickerVision 并落库；DB 写回失败同样 fail-soft（只丢描述不丢消息）。 */
 async function writeStickerVisionDescription(message: Message, description: string, config: VisionApiConfig): Promise<Message> {
-  const metadata = {
+  await seedKnownLocalVision(message.content, 'meme-v1', description);
+  const latest = await findStableVisionAsset(message.content, 'meme-v1');
+  if (latest) description = latest.description;
+  let metadata: NonNullable<Message['metadata']> = {
     ...(message.metadata || {}),
     stickerVision: {
       ...(readStickerVision(message) || { eligible: true, name: '未知表情' }),
@@ -266,9 +316,15 @@ async function writeStickerVisionDescription(message: Message, description: stri
       recognizedAt: Date.now(),
       model: config.model.trim(),
     },
+    ...(latest ? { visionPreflightState: { ...message.metadata?.visionPreflightState, sticker: { revision: latest.revision, manualBlank: latest.origin === 'manual' && !latest.description, assetKey: latest.key } } } : {}),
   };
   try {
-    await DB.updateMessageMetadata(message.id, prev => ({ ...(prev || {}), ...metadata }));
+    await DB.updateMessageMetadata(message.id, prev => {
+      if (prev?.stickerVision?.description || prev?.visionPreflightState?.sticker?.manualBlank
+        || prev?.visionPreflightState?.sticker?.revision !== message.metadata?.visionPreflightState?.sticker?.revision) { metadata = prev || {}; return prev; }
+      metadata = { ...prev, stickerVision: { ...prev?.stickerVision, ...metadata.stickerVision }, ...(latest ? { visionPreflightState: { ...prev?.visionPreflightState, sticker: metadata.visionPreflightState.sticker } } : {}) };
+      return metadata;
+    });
   } catch (error) {
     console.warn('[stickerVision] 描述写回 metadata 失败，本轮仍按已识别内容渲染', error);
   }

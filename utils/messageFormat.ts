@@ -20,6 +20,8 @@ import { formatWithdrawalForCharacterContext, isWithdrawnMessage } from './messa
 import { serializeUserDiaryForExchange } from './journal';
 import { secretNoteContext } from './secretNote';
 import {friendFeedShareContext} from './friendFeedShareContext';
+import {friendFeedNoteTimeContext} from './friendFeedNotes';
+import {friendTimeText} from './friendFeedTime';
 import { formatSARModuleEventsForContext } from './vrWorld/sarModuleRuntime';
 import { formatOperatorAccountActivity, isOperatorAuthoredCharacterMessage } from './operatorMessageProvenance';
 import { formatRepairSegments, type HtmlRepairSegment } from './htmlFormatRepair';
@@ -117,6 +119,7 @@ export function normalizeMessageContent(
     msg: Message,
     charName: string,
     userName: string,
+    timeZone?: string,
 ): string {
     if (isOperatorAuthoredCharacterMessage(msg)) return formatOperatorAccountActivity(msg);
     const withdrawalContext = formatWithdrawalForCharacterContext(msg);
@@ -124,8 +127,13 @@ export function normalizeMessageContent(
 
     const type = msg.type as string;
     if (type === 'secret_note') return secretNoteContext(msg.content);
+    if (type === 'friend_feed_card') {
+        const time=msg.metadata?.friendFeedComment ? friendFeedNoteTimeContext(msg.metadata.friendFeedComment)
+            : '原话发表时间：'+friendTimeText(undefined)+'；相对日期按原话时间理解，未知不推定为今天。';
+        return msg.content.endsWith(time) ? msg.content : msg.content+'\n'+time;
+    }
     if (type === 'friend_feed_share_card') return msg.metadata?.friendFeedShare
-        ? friendFeedShareContext(msg.metadata.friendFeedShare,msg.charId)+(msg.metadata.friendFeedShare.imagesEnabled&&typeof msg.metadata.visionDescription==='string'?'\n配图描述（仅材料）：'+msg.metadata.visionDescription:'')
+        ? friendFeedShareContext(msg.metadata.friendFeedShare,msg.charId,timeZone)+(msg.metadata.friendFeedShare.imagesEnabled&&typeof msg.metadata.visionDescription==='string'?'\n配图描述（仅材料）：'+msg.metadata.visionDescription:'')
         : msg.content || '[分享的帖子内容不可用]';
 
     // 纯视觉类给占位；语音优先使用配套转写，避免把音频资源地址送进上下文。

@@ -39,9 +39,9 @@ describe('public update journal', () => {
     it('opens personal history first, separates original history, and keeps help reachable', async () => {
         await render();
         expect(host.querySelector('h1')?.textContent).toBe('更新日志');
-        expect([...host.querySelectorAll('time')].map(node => node.textContent)).toEqual(['2026-10-30', '2026-10-27', '2026-10-23', '2026-09-30', '2026-08-31']);
+        expect([...host.querySelectorAll('time')].map(node => node.textContent)).toEqual(['2026-11-04', '2026-10-30', '2026-10-27', '2026-10-23', '2026-09-30', '2026-08-31']);
         expect([...host.querySelectorAll('.release-card h3')].map(node => node.textContent)).toEqual([
-            '10 月 30 日更新', '10 月 27 日更新', '10 月 2—23 日更新', '9 月更新', '8 月更新',
+            '11 月 4 日更新', '10 月 30 日更新', '10 月 27 日更新', '10 月 2—23 日更新', '9 月更新', '8 月更新',
         ]);
         expect(host.textContent).toContain('已发布');
         expect(host.querySelector('.release-card-heading span')).toBeNull();
@@ -55,7 +55,7 @@ describe('public update journal', () => {
         expect(dates).toEqual([...dates].sort().reverse());
         await click('常见问题'); expect(host.textContent).toContain('角色的记忆如何互通');
         await click('更新日志'); await click('个人二改');
-        expect(host.querySelectorAll('.release-card')).toHaveLength(5);
+        expect(host.querySelectorAll('.release-card')).toHaveLength(6);
     });
 
     it.each(['/', '/SullyOS/', './'])('loads real HTML under base %s and backs to the same list before the desktop', async base => {
@@ -68,7 +68,7 @@ describe('public update journal', () => {
         await openCard('8 月更新');
         expect(host.querySelector('iframe')?.getAttribute('src')).toBe(`${base}changelogs/personal-2026-08.html`);
         await click('返回更新列表');
-        expect(host.querySelectorAll('.release-card')).toHaveLength(5);
+        expect(host.querySelectorAll('.release-card')).toHaveLength(6);
         await click('返回桌面'); expect(mocked.closeApp).toHaveBeenCalledOnce();
         expect(handleLocalBack()).toBe(false);
     });
@@ -89,10 +89,10 @@ describe('public update journal', () => {
 
     it('falls back to the journal if the old target is unknown or storage is unavailable', async () => {
         sessionStorage.setItem(FAQ_TARGET_SECTION_KEY, 'unknown-note'); await render();
-        expect(host.querySelectorAll('.release-card')).toHaveLength(5);
+        expect(host.querySelectorAll('.release-card')).toHaveLength(6);
         await act(async () => root.unmount()); root = createRoot(host);
         vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('unavailable'); });
-        await render(); expect(host.querySelectorAll('.release-card')).toHaveLength(5);
+        await render(); expect(host.querySelectorAll('.release-card')).toHaveLength(6);
     });
 
     it('reuses the existing desktop ID and leaves saved folder positions and custom ordering intact', () => {
@@ -112,9 +112,12 @@ describe('public update journal', () => {
         expect(page('2026-09')).toContain('表情');
         expect(page('2026-10')).toContain('剧本杀');
         expect(page('2026-10-30')).toContain('已发布');
-        for (const date of ['2026-08', '2026-09', '2026-10', '2026-10-27', '2026-10-30']) {
+        expect(page('2026-11-04')).toContain('Meta');
+        expect(page('2026-11-04')).toContain('仍在开发中');
+        expect(page('2026-11-04')).not.toMatch(/修复|迟到的旧读取|旧动态里的“今天”/);
+        for (const date of ['2026-08', '2026-09', '2026-10', '2026-10-27', '2026-10-30', '2026-11-04']) {
             const html = page(date);
-            expect(html).not.toMatch(/开发记录|推送日期|开发起点|Asia\/Shanghai|item-num|Sullyos-zhima|生图|自行配置的 API/);
+            expect(html).not.toMatch(/开发记录|推送日期|开发起点|Asia\/Shanghai|item-num|Sullyos-zhima|生图|自行配置的 API|私人版本|公开版/);
         }
     });
 });

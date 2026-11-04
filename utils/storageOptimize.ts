@@ -659,7 +659,7 @@ export async function optimizeResourceStorage(
         for await (const e of iterateStoreRows<Emoji>('emojis')) {
             tick('表情包');
             const token = await convert(e.url);
-            if (token) { await writeRow(() => DB.saveEmoji(e.name, token, e.categoryId)); await yieldMain(); }
+            if (token) { await writeRow(() => DB.saveEmoji(e.name, token, e.categoryId, { preserveVisualFrom: e.url })); await yieldMain(); }
         }
 
         // ── 9) 我方头像（user_profile 单例）───────────────────────

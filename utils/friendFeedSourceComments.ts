@@ -1,5 +1,6 @@
 import type {FriendPost} from './friendFeed';
 import {FRIEND_FEED_EXCERPT_LIMIT} from './friendFeedMaterial';
+import {friendPublication, validFriendTime} from './friendFeedTime';
 
 export interface WeiboOriginalComment {
     id: string; authorId: string; authorName: string; text: string; createdAt: number;
@@ -8,7 +9,7 @@ export interface WeiboOriginalComment {
 export interface WeiboCommentPage {
     rows: WeiboOriginalComment[]; cursor: string | null; fetchedAt: number;
 }
-export interface FriendSourceReply {id: string; authorName: string; text: string}
+export interface FriendSourceReply {id: string; authorName: string; text: string; createdAt?: number}
 export const FRIEND_SOURCE_COMMENT_LIMIT = 10;
 export function isWeiboOriginalComment(value: unknown): value is WeiboOriginalComment {
     const c = value as WeiboOriginalComment;
@@ -29,11 +30,13 @@ export function isFriendSourceReply(value: unknown): value is FriendSourceReply 
     const c = value as FriendSourceReply;
     return !!c && typeof c.id === 'string' && /^\d{5,25}$/.test(c.id)
         && typeof c.authorName === 'string' && c.authorName.length <= 150
-        && typeof c.text === 'string' && c.text.length <= FRIEND_FEED_EXCERPT_LIMIT;
+        && typeof c.text === 'string' && c.text.length <= FRIEND_FEED_EXCERPT_LIMIT
+        && (c.createdAt === undefined || validFriendTime(c.createdAt));
 }
 /** Imported comments are public material, never autobiographical events. */
-export function recentSourceComments(post: FriendPost) {
+export function recentSourceComments(post: FriendPost, timeZone?: string) {
     if (post.source?.platform !== 'weibo') return [];
     return [...(post.weiboComments?.rows || [])].sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))
-        .slice(0, FRIEND_SOURCE_COMMENT_LIMIT).map(c => ({id: c.id, authorName: c.authorName, text: c.text.slice(0, FRIEND_FEED_EXCERPT_LIMIT), ...(c.parentId ? {parentId: c.parentId} : {})}));
+        .slice(0, FRIEND_SOURCE_COMMENT_LIMIT).map(c => ({id: c.id, authorName: c.authorName, text: c.text.slice(0, FRIEND_FEED_EXCERPT_LIMIT),
+            ...friendPublication(c.createdAt, timeZone), createdAt:c.createdAt, ...(c.parentId ? {parentId: c.parentId} : {})}));
 }

@@ -1,6 +1,7 @@
 import { DB } from './db';
 import { NotionManager, FeishuManager } from './realtimeContext';
 import type { RealtimeConfig } from '../types';
+import {drainObsidianDiaries} from './obsidianDiary';
 
 // 待写日记队列 (写 Notion / 飞书).
 //
@@ -75,6 +76,7 @@ export async function drainPendingDiaries(
     realtimeConfig: RealtimeConfig | undefined,
     onSaved?: (charId: string) => void,
 ): Promise<void> {
+    void drainObsidianDiaries().catch(()=>{});
     const list = read();
     if (list.length === 0) return;
 

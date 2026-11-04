@@ -93,6 +93,7 @@ interface ChatModalsProps {
     onQuickRepairHtml: () => void;
     onToggleMessageFavorite?: () => void;
     messageFavorited?: boolean;
+    onDescribeImage?: (message: Message) => void;
     onDeleteEmoji: () => void;
     onDeleteCategory: () => void;
     onRenameCategory: () => void;
@@ -270,7 +271,7 @@ const ChatModals: React.FC<ChatModalsProps> = ({
     onTransfer, onImportEmoji, onSaveSettings,
     onOpenHistoryCleanup,
     onArchive, onCreatePrompt, onEditPrompt, onSavePrompt, onDeletePrompt,
-    onSetHistoryStart, onRestoreAdaptiveContext, onJumpToMessageInChat, onEnterSelectionMode, onReplyMessage, onEditMessageStart, onConfirmEditMessage, onDeleteMessage, onCopyMessage, onQuickRepairHtml, onToggleMessageFavorite, messageFavorited, onDeleteEmoji, onDeleteCategory, onRenameCategory, onDownloadCategory,
+    onSetHistoryStart, onRestoreAdaptiveContext, onJumpToMessageInChat, onEnterSelectionMode, onReplyMessage, onEditMessageStart, onConfirmEditMessage, onDeleteMessage, onCopyMessage, onQuickRepairHtml, onToggleMessageFavorite, messageFavorited, onDescribeImage, onDeleteEmoji, onDeleteCategory, onRenameCategory, onDownloadCategory,
     allCharacters = [], onSaveCategoryVisibility,
     translationEnabled, onToggleTranslation, translationExpanded, onToggleTranslationExpanded, translateSourceLang, translateTargetLang, onSetTranslateSourceLang, onSetTranslateLang,
     xhsEnabled, onToggleXhs,
@@ -1012,6 +1013,11 @@ const ChatModals: React.FC<ChatModalsProps> = ({
                     <button onClick={onQuickRepairHtml} className="w-full py-3 bg-fuchsia-50 text-fuchsia-700 font-medium rounded-2xl active:bg-fuchsia-100 transition-colors">
                         快速修复格式
                     </button>
+                    {selectedMessage?.type === 'image' && !selectedMessage.groupId && (selectedMessage.role === 'user' || selectedMessage.role === 'assistant') && onDescribeImage && (
+                        <button type="button" onClick={() => onDescribeImage(selectedMessage)} className="w-full py-3 bg-emerald-50 text-emerald-700 font-medium rounded-2xl active:bg-emerald-100 transition-colors">
+                            补全图片描述
+                        </button>
+                    )}
                     {!isWithdrawnMessage(selectedMessage) && <>
                     <button onClick={onEnterSelectionMode} className="w-full py-3 bg-slate-50 text-slate-700 font-medium rounded-2xl active:bg-slate-100 transition-colors flex items-center justify-center gap-2">
                         多选 / 批量删除

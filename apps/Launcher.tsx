@@ -21,6 +21,7 @@ import { trackEvent } from '../utils/analytics';
 import TheaterPlayer from '../components/schedule/TheaterPlayer';
 import { generateSlotTheater } from '../utils/theaterGenerator';
 import { persistScheduleTheaterCard } from '../utils/scheduleTheater';
+import { LauncherCalendarPage } from '../components/os/LauncherCalendarPage';
 
 const CompanionHome = React.lazy(() => import('../components/os/CompanionHome'));
 const HomelyHome = React.lazy(() => import('../components/os/HomelyHome'));
@@ -1268,7 +1269,7 @@ const Launcher: React.FC<{ staticPreview?: boolean }> = ({ staticPreview = false
           ))}
 
           {/* Final Page: Widgets */}
-          <WidgetsPage
+          <LauncherCalendarPage
             contentColor={contentColor}
             openApp={openApp}
             anniversaries={anniversaries}

@@ -33,3 +33,14 @@ describe('time capsule rules', () => {
     expect(isTimeCapsuleVisitDue({ ...settings, lastVisitAt: now - 61 * 60_000 }, now)).toBe(true);
   });
 });
+
+describe('character capsule minimal completeness',()=>{
+  const char={id:'synthetic',name:'合成角色',avatar:''};
+  it.each(['', '  ', '{"title":"缺正文"}', '{"content":""}', '{"content":"未完成', '```json\n{"content":"截断', '以下是：{"content":"仍未完成'])('rejects empty or incomplete output %s',raw=>{expect(()=>parseCharacterTimeCapsule(raw,char,'invited')).toThrow();});
+  it('retains plain text and both delay boundaries without fabricating content',()=>{
+    const now=Date.parse('2026-10-31T00:00:00+08:00');
+    expect(parseCharacterTimeCapsule('原样纯正文\n合成第二行',char,'invited',now).content).toBe('原样纯正文\n合成第二行');
+    expect(parseCharacterTimeCapsule('{"content":"合成","unlockInDays":0}',char,'invited',now).unlockAt).toBe(now+86400000);
+    expect(parseCharacterTimeCapsule('{"content":"合成","unlockInDays":999}',char,'invited',now).unlockAt).toBeLessThanOrEqual(maxTimeCapsuleUnlockAt(now));
+  });
+});

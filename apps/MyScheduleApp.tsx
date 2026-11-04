@@ -104,6 +104,11 @@ const MyScheduleApp: React.FC = () => {
     await load();
   };
 
+  const saveReminderSettings = async (patch: Partial<MyScheduleSettings>) => {
+    await DB.saveMyScheduleRecord({ ...settings, ...patch });
+    await load();
+  };
+
   const submit = async () => {
     if (!sourceText.trim() || busy) return;
     setBusy(true);
@@ -305,8 +310,15 @@ const MyScheduleApp: React.FC = () => {
     <button disabled={busy || !editDraft.title.trim() || !editDraft.startAt || (editDraft.hasEnd && !editDraft.endAt)} onClick={() => void saveEdit()} className="mt-7 flex h-12 w-full items-center justify-center gap-2 rounded-[12px] bg-[#2f6fed] text-sm font-black text-white disabled:bg-[#aab6c9]"><FloppyDisk size={19} />{busy ? '正在保存……' : editDraft.entryId ? '保存并更新时间轴' : '保存并加入时间轴'}</button>
   </main>;
 
-  const renderControl = () => <main className="min-h-0 flex-1 overflow-y-auto px-5 pb-[calc(var(--safe-bottom)+28px)] pt-4"><button onClick={() => setView('timeline')} className="flex items-center gap-1 text-xs font-bold text-[#59677b]"><CaretLeft size={16} />返回时间轴</button><h2 className="mt-7 text-[28px] font-black tracking-[-0.035em] text-[#15243b]">角色控制中心</h2><p className="mt-2 text-sm leading-6 text-[#5b677a]">每次新增日程，会自动把标题、时间和随笔卡片发给这里选中的角色。修改选择只影响之后的新记录，不会补发历史。</p>
-    {characters.length === 0 ? <div className="py-24 text-center text-sm text-[#718096]">先在神经链接中创建角色。</div> : <div className="mt-8 divide-y divide-[#d6dbe3]">{characters.map(char => { const checked = settings.selectedCharIds.includes(char.id); return <button key={char.id} onClick={() => void toggleRecipient(char.id)} className="flex w-full items-center gap-4 py-4 text-left focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#2f6fed]"><div className="h-12 w-12 shrink-0 overflow-hidden rounded-full bg-[#dde3eb]">{char.avatar ? <img src={char.avatar} alt={char.name} className="h-full w-full object-cover" /> : <div className="flex h-full w-full items-center justify-center font-black text-[#536177]">{char.name.slice(0, 1)}</div>}</div><div className="min-w-0 flex-1"><p className="truncate text-sm font-black text-[#24354f]">{char.name}</p><p className="mt-1 text-[10px] text-[#788497]">{checked ? '之后会收到我的日程卡片' : '不会收到新的日程卡片'}</p></div><div className={`flex h-7 w-7 items-center justify-center rounded-full ${checked ? 'bg-[#2f6fed] text-white' : 'border border-[#aeb8c6] text-transparent'}`}><Check size={15} weight="bold" /></div></button>; })}</div>}
+  const renderControl = () => <main className="min-h-0 flex-1 overflow-y-auto px-5 pb-[calc(var(--safe-bottom)+28px)] pt-4">
+    <button onClick={() => setView('timeline')} className="flex items-center gap-1 text-xs font-bold text-[#59677b]"><CaretLeft size={16} />返回时间轴</button>
+    <h2 className="mt-7 text-[28px] font-black tracking-[-0.035em] text-[#15243b]">角色控制中心</h2>
+    <section className="mt-7 rounded-[18px] bg-white p-4 shadow-[0_8px_22px_rgba(36,50,72,0.07)]">
+      <div className="flex items-center justify-between gap-4"><div><h3 className="text-sm font-black text-[#24354f]">生活提醒</h3><p className="mt-1 text-[10px] leading-4 text-[#788497]">任务工坊中的手动提醒由一位已开启主动消息 2.0 的角色发送。</p></div><button disabled={!settings.lifeReminderCharId} onClick={() => void saveReminderSettings({ lifeRemindersEnabled: !settings.lifeRemindersEnabled })} className={`relative h-7 w-12 shrink-0 rounded-full disabled:opacity-40 ${settings.lifeRemindersEnabled ? 'bg-[#2f6fed]' : 'bg-[#cbd3df]'}`}><span className={`absolute left-1 top-1 h-5 w-5 rounded-full bg-white transition-transform ${settings.lifeRemindersEnabled ? 'translate-x-5' : ''}`} /></button></div>
+      <label className="mt-4 block"><span className="mb-2 block text-[11px] font-black text-[#34445c]">提醒角色</span><select value={settings.lifeReminderCharId || ''} onChange={event => void saveReminderSettings({ lifeReminderCharId: event.target.value || undefined, lifeRemindersEnabled: event.target.value ? settings.lifeRemindersEnabled : false })} className="h-11 w-full rounded-[12px] bg-[#f4f6f8] px-3 text-sm text-[#26364f] outline-none focus:ring-2 focus:ring-[#2f6fed]"><option value="">请选择</option>{characters.map(char => <option key={char.id} value={char.id}>{char.name}{char.activeMsg2Config?.enabled ? '' : '（未开启主动消息 2.0）'}</option>)}</select></label>
+    </section>
+    <h3 className="mt-8 text-sm font-black text-[#24354f]">日程卡收件角色</h3><p className="mt-2 text-xs leading-5 text-[#5b677a]">每次新增日程，会自动把标题、时间和随笔卡片发给这里选中的角色。修改选择只影响之后的新记录，不会补发历史。</p>
+    {characters.length === 0 ? <div className="py-24 text-center text-sm text-[#718096]">先在神经链接中创建角色。</div> : <div className="mt-4 divide-y divide-[#d6dbe3]">{characters.map(char => { const checked = settings.selectedCharIds.includes(char.id); return <button key={char.id} onClick={() => void toggleRecipient(char.id)} className="flex w-full items-center gap-4 py-4 text-left focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#2f6fed]"><div className="h-12 w-12 shrink-0 overflow-hidden rounded-full bg-[#dde3eb]">{char.avatar ? <img src={char.avatar} alt={char.name} className="h-full w-full object-cover" /> : <div className="flex h-full w-full items-center justify-center font-black text-[#536177]">{char.name.slice(0, 1)}</div>}</div><div className="min-w-0 flex-1"><p className="truncate text-sm font-black text-[#24354f]">{char.name}</p><p className="mt-1 text-[10px] text-[#788497]">{checked ? '之后会收到我的日程卡片' : '不会收到新的日程卡片'}</p></div><div className={`flex h-7 w-7 items-center justify-center rounded-full ${checked ? 'bg-[#2f6fed] text-white' : 'border border-[#aeb8c6] text-transparent'}`}><Check size={15} weight="bold" /></div></button>; })}</div>}
   </main>;
 
   const renderArchives = () => <main className="min-h-0 flex-1 overflow-y-auto px-5 pb-[calc(var(--safe-bottom)+28px)] pt-4">
