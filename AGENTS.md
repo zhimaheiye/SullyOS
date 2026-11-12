@@ -2,7 +2,7 @@
 
 给 Codex 的项目导航。SullyOS 是装在浏览器里的虚拟手机系统（React + TS + Vite，local-first，IndexedDB 存储）。详细介绍见 [`README.md`](./README.md)。
 
-这份文件只做一件事：**告诉你遇到某类问题该去翻哪份文档**，别在代码里瞎逛。
+这份文件记录项目文档导航和公开二改的维护规则。
 
 > 包管理器统一用 **pnpm**：装依赖 `pnpm install`，别用 npm / yarn（仓库里是 `pnpm-lock.yaml`）。当前 Windows/Codex shell 已知不会稳定地把项目本地 `.bin` 注入 `pnpm <command>`；不要先重试已知会报“不是内部或外部命令”的 `pnpm vitest`。依赖已安装时直接运行仓库入口：测试 `.\node_modules\.bin\vitest.cmd run`、类型检查 `.\node_modules\.bin\tsc.cmd --noEmit`、生产构建 `.\node_modules\.bin\vite.cmd build`；Worker 构建用 `node .\scripts\build-workers.mjs`。
 
@@ -17,6 +17,13 @@
 > **验证结论必须区分“当前批次回归”和“仓库既有诊断”**：当前 `package.json` 的生产 `build` 不包含 `tsc --noEmit`，所以 Vite / Worker build 与 TypeScript strict check 是两套独立信号。若全仓类型检查非零，先与修改前基线比较，优先按“文件 + TS 错误码 + 稳定错误信息”识别新增项，不要只比较总数量；**本批新增诊断必须修，未触及路径的既有诊断只报告，不得为了“全仓清零”擅自扩散到无关文件**。拿不到可靠基线时应明确不确定性，不凭猜测大扫除。历史类型债清理必须作为独立任务 / 独立提交，遵循最小 diff，不顺手格式化、rename 或重构上游核心热点；详见 [`docs/upstream-sync-and-manual-deploy.md`](./docs/upstream-sync-and-manual-deploy.md) 的类型检查基线章节。
 
 > **IndexedDB 迁移回归测试不要写死当前全局版本号**：旧库起点可以固定历史版本（例如 `indexedDB.open(..., 87)`），但升级结果必须断言 `upgraded.version === DB_VERSION`，不要新增 `expect(DB_VERSION).toBe(<数字>)`。`utils/db.test.ts` 中故意创建 v999 来验证“现有库版本高于当前 build 时的 VersionError 回退”属于另一种场景，不要按陈旧版本断言修改。
+
+## 公开二改推送
+
+每次向公开仓库推送芝麻的二改，须在同一次推送中同步更新并提交以下两处：
+
+- 小手机「更新日志 → 个人二改」。更新 [个人日志正文](public/changelogs)，新增一期时也在 [FAQApp](apps/FAQApp.tsx) 登记入口。个人日志记录本次公开的二改，原版同步归入「原版更新」。
+- 根目录 [README.md](README.md)。同步本次二改的功能说明、归属标注及对应源码链接。扩展原版 App 时，只把新增或改动的部分标为芝麻二改。
 
 ## 文档地图
 
