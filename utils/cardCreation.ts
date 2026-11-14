@@ -1,3 +1,6 @@
+import { runRoleCreation } from './creationRunLock';
+import { consumeApiDiagnostic, settleApiDiagnostic } from './apiCallDiagnostics';
+import type { ApiCallMeta } from './apiCallLog';
 import type { APIConfig, CharacterProfile, UserProfile } from '../types';
 import { DB } from './db';
 import { computeContextRangeSnapshot, getMemoryPalaceHighWaterMarkForContext } from './chatContextRange';
@@ -109,6 +112,7 @@ export async function buildCardCreationMessages(char: CharacterProfile, user: Us
 /** A single completion with no tools and no chat lifecycle callbacks. It never persists a draft. */
 export async function generateCardDraft(input: {
     char: CharacterProfile; user: UserProfile; api: APIConfig; request: string; signal: AbortSignal;
+    meta?: ApiCallMeta; beforeRequest?: () => Promise<void>; onDiagnosticResult?: (result: unknown) => void;
     traceId?: string; onStage?: (stage: CardCreationStage) => void;
 }): Promise<CardDraft> {
     const { char, user, api, request, signal, onStage } = input;
@@ -118,6 +122,7 @@ export async function generateCardDraft(input: {
     if (!manualRelay && (!selected.baseUrl || !selected.model)) throw new Error('请先配置当前角色的聊天 API');
     const traceId = input.traceId || `card-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const started = performance.now();
+    let diagnosticResult: unknown;
     const local = new AbortController();
     let lastStage: CardCreationStage | 'start' = 'start';
     let lastAt = started;
@@ -132,6 +137,7 @@ export async function generateCardDraft(input: {
     traceLog.info('start', { traceId });
     let rejectWait!: (reason: Error) => void;
     const waitEnd = new Promise<never>((_resolve, reject) => { rejectWait = reject; });
+    void waitEnd.catch(() => {});
     const cancel = () => { local.abort(); rejectWait(new DOMException('已停止生成', 'AbortError')); };
     if (signal.aborted) cancel();
     else signal.addEventListener('abort', cancel, { once: true });
@@ -144,22 +150,30 @@ export async function generateCardDraft(input: {
                 stage('context');
             });
             local.signal.throwIfAborted();
+            await input.beforeRequest?.();
+            local.signal.throwIfAborted();
             stage('http');
             const response = await safeFetchJson(`${selected.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
                 method: 'POST', signal: local.signal,
                 headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${selected.apiKey || 'sk-none'}` },
                 body: JSON.stringify({ model: selected.model, messages, temperature: selected.temperature ?? api.temperature ?? 0.85, max_tokens: 8000, stream: false }),
-            }, 0, 0, { appName: '消息', charId: char.id, charName: char.name, purpose: '卡片创作预览' }, undefined, {
-                requestId: traceId,
+            }, 0, 0, { appName: '消息', charId: char.id, charName: char.name, purpose: '卡片创作预览', ...input.meta }, undefined, {
+                requestId: traceId, privateTransient: true, businessDiagnostic: true,
                 onHeaders: status => stage('headers', status),
                 onBody: status => stage('body', status),
             });
+            diagnosticResult = response;
+            input.onDiagnosticResult?.(response);
             local.signal.throwIfAborted();
             stage('parse');
-            return parseCreatedCard(extractContent(response));
+            return consumeApiDiagnostic(response, '卡片格式校验', () => parseCreatedCard(extractContent(response)), !!input.onDiagnosticResult);
         };
-        return await Promise.race([task(), waitEnd]);
+        return await runRoleCreation('role:' + char.id, local.signal, !!input.beforeRequest, async earlyFailure => {
+            void waitEnd.catch(earlyFailure);
+            return task();
+        });
     } catch (cause) {
+        if (!input.onDiagnosticResult) settleApiDiagnostic(diagnosticResult, local.signal.aborted ? 'cancelled' : 'failure', '创作结果处理', cause instanceof Error ? cause.message : '处理失败');
         const message = cause instanceof Error ? cause.message : '';
         traceLog.warn('error', {
             traceId, stage: lastStage, elapsedMs: Math.round(performance.now() - started),

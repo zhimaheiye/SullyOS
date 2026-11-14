@@ -1,5 +1,6 @@
 import { defineConfig, type ProxyOptions } from 'vite';
 import react from '@vitejs/plugin-react';
+import { createXiaoyuzhouMiddleware } from './server/xiaoyuzhou-middleware';
 import { execSync } from 'node:child_process';
 import { bakeVoiceMiddleware } from './server/bake-voice-middleware';
 import { closeAllMcpStdioServers, mcpStdioMiddleware } from './server/mcp-stdio-middleware';
@@ -98,6 +99,10 @@ export default defineConfig({
   plugins: [
     homeResourcePacksPlugin(),
     startupRecoveryPlugin(appBuildId),
+    { name: 'xiaoyuzhou-local',
+      configureServer(server) { const bridge = createXiaoyuzhouMiddleware(); server.middlewares.use('/api/xiaoyuzhou', bridge.handler); server.httpServer?.once('close', bridge.close); },
+      configurePreviewServer(server) { const bridge = createXiaoyuzhouMiddleware(); server.middlewares.use('/api/xiaoyuzhou', bridge.handler); server.httpServer?.once('close', bridge.close); },
+    },
     react(),
     staticCachePlugin({ buildId: appBuildId, appVersion: APP_VERSION_TAG }),
     {
@@ -147,7 +152,7 @@ export default defineConfig({
     watch: {
       // UnitOS 是一次性参考源码，不是 SullyOS 运行依赖。大小写两种名称都排除，
       // 让它在 dev server 运行期间也能被独立移动/删除。
-      ignored: ['**/UnitOS/**', '**/unityos/**', '**/cinema-data/media/**', '**/cinema-data/cache/**'],
+      ignored: ['**/UnitOS/**', '**/unityos/**', '**/cinema-data/media/**', '**/cinema-data/cache/**', '**/podcast-data/**', '**/.*.tmp'],
     },
     proxy: {
       // MiniMax 海外站代理 (由 minimax-region-router 中间件在检测到 X-MiniMax-Region: overseas 时重写)

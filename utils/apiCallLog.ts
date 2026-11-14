@@ -49,6 +49,8 @@ export type ApiCallRoute = 'cloud-instant-chat' | 'cloud-plate-consolidate';
 /** 落库的一条记录。 */
 export interface ApiCallLogEntry extends ApiCallMeta {
     id: string;
+    diagnosticState?: 'pending' | 'transport-only' | 'cancelled' | 'settled';
+    diagnosticDisabled?: boolean;
     /** 调用发起（实际是响应回来）时间戳 ms */
     timestamp: number;
     /** 见 ApiCallRoute。空 = 浏览器直连。 */
@@ -993,6 +995,9 @@ export function updateApiRequestCaptureUsage(input: {
 export function recordApiCall(input: {
     /** 同一条 HTTP 请求在显式记录与全局 fetch 兜底间共享的 ID，用于原子去重。 */
     requestId?: string;
+    startedAt?: number;
+    diagnosticFailure?: boolean;
+    diagnosticState?: ApiCallLogEntry['diagnosticState'];
     url: string;
     body?: unknown;
     status?: number;
@@ -1002,9 +1007,9 @@ export function recordApiCall(input: {
     responseText?: string;
     meta?: ApiCallMeta;
     durationMs?: number;
-}): void {
+}): Promise<void> | undefined {
     try {
-        const baseUrl = deriveBaseUrl(input.url);
+        const baseUrl = deriveBaseUrl(input.url.replace(/([?#]).*$/, '').replace(/(https?:\/\/)[^/]*@/i, '$1'));
         const model = extractModel(input.body);
         // 显式 meta 优先（safeFetchJson 各调用点传的精确信息）；没有就用环境兜底（裸 fetch）。
         const meta = hasMeta(input.meta) ? input.meta! : ambientMeta;
@@ -1043,8 +1048,8 @@ export function recordApiCall(input: {
             featureId: meta.featureId,
         };
         // 动态 import 避开 safeApi ↔ db 的潜在加载顺序问题；写库失败静默吞掉。
-        import('./db')
-            .then(({ DB }) => DB.appendApiCallLog(entry))
+        return import('./db')
+            .then(({ DB }) => DB.appendApiCallLog({ ...entry, startedAt: input.startedAt, diagnosticFailure: input.diagnosticFailure, diagnosticState: input.diagnosticState }))
             .catch(() => {});
     } catch {
         // best-effort：任何异常都不影响主请求

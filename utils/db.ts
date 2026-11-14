@@ -1,3 +1,5 @@
+import { CONVERSATION_PINS_KEY, beginConversationPinsRestore, readConversationPins, restoreConversationPins } from './conversationPins';
+import { apiDiagnosticBytes, DIAGNOSTIC_MAX_AGE, DIAGNOSTIC_MAX_SAVED, DIAGNOSTIC_SAVED_BYTES, invalidateApiDiagnostics, type ApiDiagnostic } from './apiCallDiagnostics';
 import type { MurderMysteryScript } from './murderMystery/script';
 import type { MurderMysterySession, MurderMysteryEvent } from './murderMystery/session';
 import { normalizeMurderMysterySession } from './murderMystery/session';
@@ -82,7 +84,8 @@ const DB_NAME = 'AetherOS_Data';
 // 按 source、homeTurnId 直查，不再扫整段私聊。建索引本身是幂等的 contains 判断，但老库停在 v94
 // 时不会触发 upgrade，必须占一个版本号才真正建得出来。
 // v96: 每角色实际生活状态与自动回复 episode；习惯仍保存在角色资料。
-export const DB_VERSION = 98;
+// v99: 公开小宇宙的独立节目、文稿与讨论存储。
+export const DB_VERSION = 99;
 
 const STORE_CHARACTERS = 'characters';
 const STORE_CHAR_GROUPS = 'character_groups'; // 角色分组定义（角色通过 groupId 指向；与群聊 groups 无关）
@@ -151,6 +154,7 @@ const STORE_MURDER_MYSTERY_EVENTS = 'murder_mystery_events';
 const STORE_BOARD_GAME_SESSIONS = 'board_game_sessions'; // 桌游：共享 session 外壳与各游戏独立状态
 const STORE_LIFE_REPLAY = 'life_replay';                 // 人生重映：私密事件预设 + 演绎 session
 const STORE_COMMUNITY_COMMITTEE = 'community_committee'; // 居委会：现实两难、倾诉 turns 与总结
+const STORE_PODCAST = 'podcast_records';
 const STORE_TASK_WORKSHOP = 'task_workshop';             // 任务工坊：任务/工具/来访便签/设置
 const STORE_TIME_CAPSULE = 'time_capsule';               // 时间胶囊：用户/角色胶囊与前台来访设置
 const STORE_MY_SCHEDULE = 'my_schedule';                   // 我的日程：用户现实时间轴与角色收件设置
@@ -527,6 +531,7 @@ export const openDB = (): Promise<IDBDatabase> => {
       createStore(STORE_LIFE_REPLAY, { keyPath: 'id' });
       createStore(STORE_COMMUNITY_COMMITTEE, { keyPath: 'id' });
       createStore(STORE_TASK_WORKSHOP, { keyPath: 'id' });
+      createStore(STORE_PODCAST, { keyPath: 'id' });
       createStore(STORE_TIME_CAPSULE, { keyPath: 'id' });
       createStore(STORE_MY_SCHEDULE, { keyPath: 'id' });
       createStore(STORE_XIAOHONGSHU, { keyPath: 'id' });
@@ -770,19 +775,61 @@ const idbTransaction = (transaction: IDBTransaction): Promise<void> => new Promi
     transaction.onabort = () => reject(transaction.error || new Error('IndexedDB transaction aborted'));
 });
 
+interface ApiDiagnosticIndexRow {
+    id: string;
+    completedAt: number;
+    bytes: number;
+    retained: ApiDiagnostic['retained'];
+}
+
+async function transactApiDiagnostics<T>(action: (
+    store: IDBObjectStore, rows: ApiDiagnosticIndexRow[],
+    log: { entries: { id: string; timestamp: number; diagnosticDisabled?: boolean }[]; clearedAt?: number },
+    resolveValue: (value: T) => void,
+) => void): Promise<T> {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_API_CALL_LOG, 'readwrite');
+        const store = tx.objectStore(STORE_API_CALL_LOG);
+        let result: T;
+        const index = store.get('diagnostic:index');
+        const logRequest = store.get('log');
+        logRequest.onsuccess = () => {
+            const log = logRequest.result ?? { id: 'log', entries: [] };
+            const now = Date.now();
+            const validIds = new Set(log.entries.filter((row: { timestamp: number }) => row.timestamp > now - API_CALL_LOG_MAX_AGE_MS)
+                .map((row: { id: string }) => row.id));
+            const rows: ApiDiagnosticIndexRow[] = [];
+            for (const row of index.result?.rows ?? []) {
+                if (row.completedAt > now - DIAGNOSTIC_MAX_AGE && validIds.has(row.id)) rows.push(row);
+                else store.delete(`diagnostic:${row.id}`);
+            }
+            action(store, rows, log, value => { result = value; });
+            if (rows.length) store.put({ id: 'diagnostic:index', rows });
+            else store.delete('diagnostic:index');
+        };
+        tx.oncomplete = () => resolve(result);
+        tx.onabort = () => reject(tx.error || new Error('API diagnostic transaction aborted'));
+    });
+}
+
 export const DB = {
   deleteDB: async (): Promise<void> => {
+      const pinReset = beginConversationPinsRestore();
+      try {
       // 删库前先关掉单例连接, 否则这条还开着的连接会 block 掉 deleteDatabase。
       if (dbPromise) {
           try { (await dbPromise).close(); } catch { /* ignore */ }
           dbPromise = null;
       }
-      return new Promise((resolve, reject) => {
+      await new Promise<void>((resolve, reject) => {
           const req = indexedDB.deleteDatabase(DB_NAME);
           req.onsuccess = () => resolve();
           req.onerror = () => reject(req.error);
           req.onblocked = () => console.warn('Delete blocked');
       });
+      localStorage.removeItem(CONVERSATION_PINS_KEY);
+      } finally { pinReset.finish(); }
   },
 
   getCharacter: async (id: string): Promise<CharacterProfile | undefined> => {
@@ -3933,6 +3980,8 @@ export const DB = {
           const store = tx.objectStore(STORE_API_CALL_LOG);
           const req = store.get('log');
           req.onsuccess = () => {
+              const clearedAt = req.result?.clearedAt ?? 0;
+              if (entry.startedAt != null ? entry.startedAt <= clearedAt : entry.timestamp < clearedAt) return;
               const cur: any[] = req.result?.entries ?? [];
               const duplicateIndex = cur.findIndex((e) => e?.id && e.id === entry?.id);
               if (duplicateIndex >= 0) {
@@ -3942,7 +3991,10 @@ export const DB = {
                   const defined = Object.fromEntries(
                       Object.entries(entry || {}).filter(([, value]) => value !== undefined),
                   );
-                  cur[duplicateIndex] = { ...existing, ...defined, id: existing.id };
+                  cur[duplicateIndex] = { ...existing, ...defined, id: existing.id,
+                      ...(existing.diagnosticFailure || entry.diagnosticFailure ? { ok: false, diagnosticFailure: true } : {}),
+                      ...(existing.diagnosticState === 'cancelled' || existing.diagnosticState === 'settled'
+                          ? { diagnosticState: existing.diagnosticState } : {}) };
               } else {
                   cur.unshift(entry);
               }
@@ -3951,7 +4003,9 @@ export const DB = {
                   .filter((e) => (e?.timestamp ?? 0) > cutoff)
                   .sort((a, b) => (b?.timestamp ?? 0) - (a?.timestamp ?? 0))
                   .slice(0, API_CALL_LOG_MAX_ENTRIES);
-              store.put({ id: 'log', entries: pruned });
+              const kept = new Set(pruned.map(row => row.id));
+              for (const row of cur) if (!kept.has(row.id)) store.delete(`diagnostic:${row.id}`);
+              store.put({ id: 'log', entries: pruned, clearedAt });
           };
           req.onerror = () => tx.abort();
           tx.oncomplete = () => resolve();
@@ -3960,16 +4014,80 @@ export const DB = {
       });
   },
 
-  clearApiCallLog: async (): Promise<void> => {
+  clearApiCallLog: async (clearedAt = Date.now()): Promise<void> => {
       const db = await openDB();
       if (!db.objectStoreNames.contains(STORE_API_CALL_LOG)) return;
       return new Promise((resolve, reject) => {
           const tx = db.transaction(STORE_API_CALL_LOG, 'readwrite');
-          tx.objectStore(STORE_API_CALL_LOG).put({ id: 'log', entries: [] });
-          tx.oncomplete = () => resolve();
+          const store = tx.objectStore(STORE_API_CALL_LOG);
+          const req = store.get('log');
+          req.onsuccess = () => {
+              store.put({ id: 'log', entries: [], clearedAt: Math.max(clearedAt, req.result?.clearedAt ?? 0) });
+              store.delete(IDBKeyRange.bound('diagnostic:', 'diagnostic;', false, true));
+          };
+          tx.oncomplete = () => {
+              invalidateApiDiagnostics(clearedAt);
+              resolve();
+          };
           tx.onerror = () => reject(tx.error || new Error('clearApiCallLog transaction failed'));
           tx.onabort = () => reject(tx.error || new Error('clearApiCallLog transaction aborted'));
       });
+  },
+
+  listApiDiagnostics: () => transactApiDiagnostics<ApiDiagnosticIndexRow[]>((_store, rows, _log, done) => done(rows)),
+
+  settleApiCallBusinessResult: (id: string, startedAt: number, outcome: 'success' | 'failure' | 'cancelled') =>
+      transactApiDiagnostics<void>((store, _rows, log, done) => {
+          const entry = log.entries.find(row => row.id === id);
+          if (entry && startedAt > (log.clearedAt ?? 0)) {
+              Object.assign(entry, { diagnosticState: outcome === 'cancelled' ? 'cancelled' : 'settled' },
+                  outcome === 'failure' ? { ok: false, diagnosticFailure: true } : {});
+              store.put({ ...log, id: 'log' });
+          }
+          done(undefined);
+      }),
+
+  getApiDiagnostic: (id: string) => transactApiDiagnostics<ApiDiagnostic | undefined>((store, rows, _log, done) => {
+      if (!rows.some(row => row.id === id)) { done(undefined); return; }
+      const request = store.get(`diagnostic:${id}`);
+      request.onsuccess = () => done(request.result?.snapshot);
+  }),
+
+  saveApiDiagnostic: (snapshot: ApiDiagnostic) => transactApiDiagnostics<boolean>((store, rows, log, done) => {
+      const entry = log.entries.find(row => row.id === snapshot.id);
+      if (!entry || entry.timestamp <= Date.now() - API_CALL_LOG_MAX_AGE_MS || entry.diagnosticDisabled
+          || snapshot.startedAt <= (log.clearedAt ?? 0) || snapshot.completedAt <= Date.now() - DIAGNOSTIC_MAX_AGE) {
+          done(false);
+          return;
+      }
+      if (rows.some(row => row.id === snapshot.id)) { done(true); return; }
+      const bytes = apiDiagnosticBytes(snapshot);
+      rows.push({ id: snapshot.id, completedAt: snapshot.completedAt, bytes, retained: snapshot.retained });
+      rows.sort((a, b) => b.completedAt - a.completedAt);
+      let totalBytes = rows.reduce((sum, row) => sum + row.bytes, 0);
+      while (rows.length > DIAGNOSTIC_MAX_SAVED || totalBytes > DIAGNOSTIC_SAVED_BYTES) {
+          const removed = rows.pop()!;
+          totalBytes -= removed.bytes;
+          store.delete(`diagnostic:${removed.id}`);
+      }
+      const kept = rows.some(row => row.id === snapshot.id);
+      if (kept) store.put({ id: `diagnostic:${snapshot.id}`, snapshot });
+      done(kept);
+  }),
+
+  deleteApiDiagnostic: async (id: string) => {
+      await transactApiDiagnostics<void>((store, rows, log, done) => {
+          const index = rows.findIndex(row => row.id === id);
+          if (index >= 0) rows.splice(index, 1);
+          store.delete(`diagnostic:${id}`);
+          const entry = log.entries.find(row => row.id === id);
+          if (entry) {
+              entry.diagnosticDisabled = true;
+              store.put({ ...log, id: 'log' });
+          }
+          done(undefined);
+      });
+      invalidateApiDiagnostics(Date.now(), id);
   },
 
   // --- 下一次 LLM 请求完整抓包（同 store 独立单例，永远只保留一份）---
@@ -4764,7 +4882,7 @@ export const DB = {
           });
       };
 
-      const [characters, characterGroups, messages, themes, emojis, emojiCategories, assets, galleryImages, userProfiles, diaries, tasks, anniversaries, roomTodos, roomNotes, groups, journalStickers, socialPosts, courses, characterStudySessions, games, worldbooks, storyTheaters, storyTheaterPresets, storyTheaterMasks, novels, bankTx, bankData, xhsActivities, xhsOwnedPosts, xhsStockImages, songs, quizzes, guidebookSessions, scheduledMessages, lifeSimStates, handbooks, trackers, trackerEntries, hotNewsSnapshots, vrNovels, vrAnnotations, customCreatorParts, vrMusic, vrGuestbook, vrScripts, vrStagedPlays, vrPresets, vrLetters, vrSettings, heartSyncRecords, debateSessions, boardGameSessions, murderMysteryScripts, murderMysterySessions, murderMysteryEvents, lifeReplayRecords, communityCommitteeSessions, taskWorkshopRecords, timeCapsuleRecords, myScheduleRecords, worlds, worldEpisodes, lifeRecords, medPlans, lifeRecordSettings] = await Promise.all([
+      const [characters, characterGroups, messages, themes, emojis, emojiCategories, assets, galleryImages, userProfiles, diaries, tasks, anniversaries, roomTodos, roomNotes, groups, journalStickers, socialPosts, courses, characterStudySessions, games, worldbooks, storyTheaters, storyTheaterPresets, storyTheaterMasks, novels, bankTx, bankData, xhsActivities, xhsOwnedPosts, xhsStockImages, songs, quizzes, guidebookSessions, scheduledMessages, lifeSimStates, handbooks, trackers, trackerEntries, hotNewsSnapshots, vrNovels, vrAnnotations, customCreatorParts, vrMusic, vrGuestbook, vrScripts, vrStagedPlays, vrPresets, vrLetters, vrSettings, heartSyncRecords, debateSessions, boardGameSessions, murderMysteryScripts, murderMysterySessions, murderMysteryEvents, lifeReplayRecords, communityCommitteeSessions, taskWorkshopRecords, podcastRecords, timeCapsuleRecords, myScheduleRecords, worlds, worldEpisodes, lifeRecords, medPlans, lifeRecordSettings] = await Promise.all([
           getAllFromStore(STORE_CHARACTERS),
           getAllFromStore(STORE_CHAR_GROUPS),
           getAllFromStore(STORE_MESSAGES),
@@ -4823,6 +4941,7 @@ export const DB = {
           getAllFromStore(STORE_LIFE_REPLAY),
           getAllFromStore(STORE_COMMUNITY_COMMITTEE),
           getAllFromStore(STORE_TASK_WORKSHOP),
+          getAllFromStore(STORE_PODCAST),
           getAllFromStore(STORE_TIME_CAPSULE),
           getAllFromStore(STORE_MY_SCHEDULE),
           getAllFromStore(STORE_WORLDS),
@@ -4902,6 +5021,7 @@ export const DB = {
           lifeReplayRecords,
           communityCommitteeSessions,
           taskWorkshopRecords,
+          podcastRecords,
           timeCapsuleRecords,
           myScheduleRecords,
           vrPostOffice: exportPostOfficeLocal(), // 邮局本机配置（身份/后端地址，存 localStorage）
@@ -4915,6 +5035,7 @@ export const DB = {
           mcpLocal: exportMcpLocal(),             // 通用 MCP 服务器配置（存 localStorage）
           stickerVisionLocal: exportStickerVisionLocal(), // 表情包视觉理解全局开关（存 localStorage）
           chatActionOrders: loadChatActionOrders(), // 私聊/群聊「＋」功能格的两套本机顺序
+          recentConversationPins: readConversationPins().pins,
           amsg2GlobalConfig: await exportAmsg2GlobalConfig(options), // 主动消息 2.0 全局配置（存独立的 ActiveMsg 库；后端连接默认不带走）
           beautyAuthorLocal: exportBeautyAuthorBackup(),
           beautyPreferences: exportBeautyPreferences(),
@@ -4941,6 +5062,8 @@ export const DB = {
           allowBackendConnection?: boolean;
       } = {}
   ): Promise<void> => {
+      const pinRestore = beginConversationPinsRestore();
+      try {
       const db = await openDB();
       invalidateStoryTimelineRepair(db);
       
@@ -4964,7 +5087,7 @@ export const DB = {
           STORE_MED_PLANS,
           STORE_LIFE_SETTINGS,
           STORE_HOTNEWS,
-          STORE_VR_NOVELS, STORE_VR_ANNOTATIONS, STORE_CC_PARTS, STORE_VR_MUSIC, STORE_VR_GUESTBOOK, STORE_VR_SCRIPTS, STORE_VR_PLAYS, STORE_VR_PRESETS, STORE_VR_LETTERS, STORE_VR_SETTINGS, STORE_HEART_SYNC, STORE_DEBATE, STORE_BOARD_GAME_SESSIONS, STORE_MURDER_MYSTERY_SCRIPTS, STORE_MURDER_MYSTERY_SESSIONS, STORE_MURDER_MYSTERY_EVENTS, STORE_LIFE_REPLAY, STORE_COMMUNITY_COMMITTEE, STORE_TASK_WORKSHOP, STORE_TIME_CAPSULE, STORE_MY_SCHEDULE, STORE_XIAOHONGSHU,
+          STORE_VR_NOVELS, STORE_VR_ANNOTATIONS, STORE_CC_PARTS, STORE_VR_MUSIC, STORE_VR_GUESTBOOK, STORE_VR_SCRIPTS, STORE_VR_PLAYS, STORE_VR_PRESETS, STORE_VR_LETTERS, STORE_VR_SETTINGS, STORE_HEART_SYNC, STORE_DEBATE, STORE_BOARD_GAME_SESSIONS, STORE_MURDER_MYSTERY_SCRIPTS, STORE_MURDER_MYSTERY_SESSIONS, STORE_MURDER_MYSTERY_EVENTS, STORE_LIFE_REPLAY, STORE_COMMUNITY_COMMITTEE, STORE_TASK_WORKSHOP, STORE_PODCAST, STORE_TIME_CAPSULE, STORE_MY_SCHEDULE, STORE_XIAOHONGSHU,
           STORE_WORLDS, STORE_WORLD_EPISODES,
           'memory_nodes', 'memory_vectors', 'memory_links', 'topic_boxes', 'anticipations', 'event_boxes',
           'room_plates', 'digest_reports',
@@ -5090,6 +5213,8 @@ export const DB = {
           data.lifeReplayRecords !== undefined,
           data.communityCommitteeSessions !== undefined,
           data.taskWorkshopRecords !== undefined,
+          data.podcastRecords !== undefined,
+          data.recentConversationPins !== undefined,
           data.timeCapsuleRecords !== undefined,
           data.myScheduleRecords !== undefined,
           (data as any).vrPostOffice !== undefined,
@@ -5504,6 +5629,11 @@ export const DB = {
           await clearAndAdd(STORE_COMMUNITY_COMMITTEE, data.communityCommitteeSessions, '居委会', false);
           data.communityCommitteeSessions = undefined as any;
       }, data.communityCommitteeSessions?.length || 0);
+      await runSection('小宇宙', data.podcastRecords !== undefined, async () => {
+          await clearAndAdd(STORE_PODCAST, data.podcastRecords, '小宇宙', false);
+          await import('./podcast/platform').then(module => module.invalidatePodcastStorage());
+          data.podcastRecords = undefined;
+      }, data.podcastRecords?.length || 0);
       await runSection('任务工坊', data.taskWorkshopRecords !== undefined, async () => {
           await clearAndAdd(STORE_TASK_WORKSHOP, data.taskWorkshopRecords, '任务工坊', false);
           data.taskWorkshopRecords = undefined as any;
@@ -5568,6 +5698,10 @@ export const DB = {
       await runSection('聊天功能顺序', data.chatActionOrders !== undefined, async () => {
           saveChatActionOrders(data.chatActionOrders);
           data.chatActionOrders = undefined;
+      }, 1);
+      await runSection('最近会话置顶', data.recentConversationPins !== undefined, async () => {
+          await restoreConversationPins(data.recentConversationPins, pinRestore.epoch);
+          data.recentConversationPins = undefined;
       }, 1);
       await runSection('主动消息配置', (data as any).amsg2GlobalConfig !== undefined, async () => {
           // 必须在 OSContext 那段「导入后跟云端对一次账」之前落地：那段的第一道门是
@@ -5778,6 +5912,7 @@ export const DB = {
       // 导入会覆盖相同 ID 的旧记录，不能复用导入前或中途建立的校正缓存。
       invalidateStoryTimelineRepair(db);
       await ensureStoryTimelineRepair(db);
+      } finally { pinRestore.finish(); }
   }
 };
 import {OBSIDIAN_DIARY_EPOCH,restoreDiaryAsset} from './obsidianDiaryConfig';

@@ -123,6 +123,7 @@ interface ChangelogEntry {
 }
 
 const PERSONAL_CHANGELOG_ENTRIES: ChangelogEntry[] = [
+    { id: 'personal-2026-11-14', title: '11 月 14 日更新', subtitle: '会话置顶、单次调用诊断、小宇宙与独立批量创作。', date: '2026-11-14', src: 'changelogs/personal-2026-11-14.html' },
     {
         "id": "personal-2026-11-04",
         "title": "11 月 4 日更新",

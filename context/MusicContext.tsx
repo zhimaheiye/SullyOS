@@ -638,7 +638,12 @@ export const MusicProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     // 注意: 不要设置 crossOrigin — NetEase CDN 没有 CORS 头，会变成静默加载失败
     audioRef.current = a;
 
-    const onPlay = () => setPlaying(true);
+    const onPlay = () => {
+      if (a.paused) return;
+      window.dispatchEvent(new Event('sully-music-playing'));
+      setPlaying(true);
+    };
+    const onPodcastPlay = () => a.pause();
     const onPause = () => setPlaying(false);
     const onTime = () => setProgress(a.currentTime);
     const onMeta = () => setDuration(a.duration || 0);
@@ -652,6 +657,7 @@ export const MusicProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     a.addEventListener('loadedmetadata', onMeta);
     a.addEventListener('error', onErr);
     a.addEventListener('ended', onEnd);
+    window.addEventListener('sully-podcast-playing', onPodcastPlay);
 
     return () => {
       a.removeEventListener('play', onPlay);
@@ -660,6 +666,7 @@ export const MusicProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       a.removeEventListener('loadedmetadata', onMeta);
       a.removeEventListener('error', onErr);
       a.removeEventListener('ended', onEnd);
+      window.removeEventListener('sully-podcast-playing', onPodcastPlay);
       try { a.pause(); a.src = ''; } catch {}
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

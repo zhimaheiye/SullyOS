@@ -311,7 +311,10 @@ async function fetchLlm(resource, init, transport = globalThis.fetch, browser = 
     headers.set("content-type", "application/json");
     headers.delete("content-length");
   }
+  const diagnostic = init?.__sullyDiagnostic;
+  diagnostic?.sent(url, options, true);
   const response = await transport(url, options);
+  diagnostic?.headers(response.status);
   if (!response.ok || method !== "POST") return response;
   if (response.headers.get("content-type")?.includes("text/event-stream")) {
     if (!response.body) throw Error("Anthropic \u8FD4\u56DE\u4E86\u7A7A\u6D41");

@@ -70,6 +70,8 @@ const LifeReplayApp = lazyApp(() => import('../apps/LifeReplayApp'));
 const HealingApp = lazyApp(() => import('../apps/HealingApp'));
 const TaskWorkshopApp = lazyApp(() => import('../apps/TaskWorkshopApp'));
 const TimeCapsuleApp = lazyApp(() => import('../apps/TimeCapsuleApp'));
+const XiaoyuzhouApp = lazyApp(() => import('../apps/XiaoyuzhouApp'));
+const CreationBatchApp = lazyApp(() => import('../apps/CreationBatchApp'));
 const MyScheduleApp = lazyApp(() => import('../apps/MyScheduleApp'));
 const OneChangeApp = lazyApp(() => import('../apps/OneChangeApp'));
 const MetaExperienceApp = lazyApp(() => import('../apps/MetaExperienceApp'));
@@ -115,6 +117,9 @@ const APP_BY_ID: Partial<Record<AppID, PreloadableLazy>> = {
   [AppID.TaskWorkshop]: TaskWorkshopApp,
   [AppID.TimeCapsule]: TimeCapsuleApp,
   [AppID.MySchedule]: MyScheduleApp,
+  [AppID.Xiaoyuzhou]: XiaoyuzhouApp,
+  [AppID.SideStoryBatch]: CreationBatchApp,
+  [AppID.HtmlCreationBatch]: CreationBatchApp,
   [AppID.OneChange]: OneChangeApp,
   [AppID.MetaClues]: MetaExperienceApp,
 };
@@ -1014,6 +1019,9 @@ const PhoneShell: React.FC = () => {
       case AppID.Healing: return <HealingApp />;
       case AppID.TaskWorkshop: return <TaskWorkshopApp />;
       case AppID.TimeCapsule: return <TimeCapsuleApp />;
+      case AppID.Xiaoyuzhou: return <XiaoyuzhouApp />;
+      case AppID.SideStoryBatch: return <CreationBatchApp kind="story" />;
+      case AppID.HtmlCreationBatch: return <CreationBatchApp kind="html" />;
       case AppID.MySchedule: return <MyScheduleApp />;
       case AppID.OneChange: return <OneChangeApp />;
       case AppID.MetaClues: return <MetaExperienceApp />;

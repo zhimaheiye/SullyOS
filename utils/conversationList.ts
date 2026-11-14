@@ -1,5 +1,6 @@
 import type { CharacterProfile, GroupProfile, Message } from '../types';
 import { isBlobRef } from './blobRef';
+import { sortPinnedConversations } from './conversationPins';
 
 export type ConversationSummary = {
     kind: 'private' | 'group';
@@ -43,6 +44,7 @@ export function conversationMessagePreview(message: Message): string {
 }
 
 export function formatConversationTime(timestamp: number, now = new Date()): string {
+    if (!Number.isFinite(timestamp)) return '';
     const value = new Date(timestamp);
     const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
     const startYesterday = startToday - 24 * 60 * 60 * 1000;
@@ -86,5 +88,5 @@ export function buildConversationSummaries(input: {
         });
     }
 
-    return items.sort((a, b) => b.timestamp - a.timestamp);
+    return sortPinnedConversations(items, []);
 }

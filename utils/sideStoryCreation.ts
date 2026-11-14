@@ -1,3 +1,6 @@
+import { runRoleCreation } from './creationRunLock';
+import { settleApiDiagnostic } from './apiCallDiagnostics';
+import type { ApiCallMeta } from './apiCallLog';
 import type { APIConfig, CharacterProfile, UserProfile } from '../types';
 import { buildGroupSideStoryMessages, type GroupSideStorySource } from './groupSideStory';
 import { buildReadOnlyCreationMessages } from './cardCreation';
@@ -55,6 +58,7 @@ export async function buildSideStoryMessages(char: CharacterProfile, user: UserP
 export async function generateSideStory(input: {
     char?: CharacterProfile; group?: GroupSideStorySource; user: UserProfile; api: APIConfig; request: string; previous?: string;
     signal: AbortSignal; stillCurrent?: () => boolean;
+    meta?: ApiCallMeta; beforeRequest?: () => Promise<void>; onDiagnosticResult?: (result: unknown) => void;
     onText?: (text: string) => void; onStage?: (stage: SideStoryStage) => void;
 }): Promise<SideStoryResult> {
     const { char, group, user, api, request, previous = '', signal, stillCurrent, onText, onStage } = input;
@@ -66,9 +70,11 @@ export async function generateSideStory(input: {
     const started = performance.now();
     let currentStage: SideStoryStage = 'history';
     let text = '';
+    let diagnosticResult: unknown;
     const local = new AbortController();
     let rejectWait!: (reason: Error) => void;
     const waitEnd = new Promise<never>((_resolve, reject) => { rejectWait = reject; });
+    void waitEnd.catch(() => {});
     let idleTimer: ReturnType<typeof setTimeout> | undefined;
     const fail = (reason: Error) => { local.abort(); rejectWait(reason); };
     const armIdle = () => {
@@ -98,6 +104,8 @@ export async function generateSideStory(input: {
             }
             local.signal.throwIfAborted();
             if (group && stillCurrent && !stillCurrent()) throw new Error('GROUP_SIDE_STORY_CHANGED');
+            await input.beforeRequest?.();
+            local.signal.throwIfAborted();
             stage('http');
             const hooks = { onDelta: (_delta: string, fullText: string) => {
                 if (local.signal.aborted) return;
@@ -113,9 +121,11 @@ export async function generateSideStory(input: {
                 method: 'POST', signal: local.signal,
                 headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${selected.apiKey || 'sk-none'}` },
                 body: JSON.stringify({ model: selected.model, messages, temperature: selected.temperature ?? api.temperature ?? 0.85, max_tokens: 16_000, stream: true }),
-            }, 0, 0, meta, hooks, {
-                privateTransient: true, onHeaders: () => stage('headers'), onBody: () => stage('body'),
+            }, 0, 0, { ...meta, ...input.meta }, hooks, { privateTransient: true, businessDiagnostic: true,
+                onHeaders: () => stage('headers'), onBody: () => stage('body'),
             });
+            diagnosticResult = response;
+            input.onDiagnosticResult?.(response);
             local.signal.throwIfAborted();
             const rawContent = response?.choices?.[0]?.message?.content;
             const finalText = typeof rawContent === 'string' ? rawContent : extractContent(response);
@@ -123,10 +133,15 @@ export async function generateSideStory(input: {
             onText?.(text);
             if (!text.trim()) throw new Error('模型没有返回正文，本轮未完成');
             const finishReason = response?.choices?.[0]?.finish_reason ?? null;
+            if (!input.onDiagnosticResult) settleApiDiagnostic(response, finishReason === 'stop' ? 'success' : 'failure', '番外正文');
             return { text, complete: finishReason === 'stop', finishReason };
         };
-        return await Promise.race([task(), waitEnd]);
+        return await runRoleCreation('role:' + (char?.id || group?.group.id || 'group'), local.signal, !!input.beforeRequest, async earlyFailure => {
+            void waitEnd.catch(earlyFailure);
+            return task();
+        });
     } catch (cause) {
+        if (!input.onDiagnosticResult) settleApiDiagnostic(diagnosticResult, local.signal.aborted ? 'cancelled' : 'failure', '创作结果处理', cause instanceof Error ? cause.message : '处理失败');
         log.warn('end', { stage: currentStage, elapsedMs: Math.round(performance.now() - started), outcome: cause instanceof Error && cause.name === 'AbortError' ? 'cancelled' : 'failed', status: /\b(429|500)\b/.exec(cause instanceof Error ? cause.message : '')?.[1] });
         throw cause;
     } finally {

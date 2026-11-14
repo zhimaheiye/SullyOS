@@ -1,3 +1,4 @@
+import { beginApiDiagnostic, noteApiDiagnosticError, type ApiDiagnosticAttempt } from './apiCallDiagnostics';
 /**
  * Safe API response parsing utilities.
  *
@@ -11,7 +12,7 @@
 //   - 全局 fetch 拦截器 + apiCallLog（用户在「设置 → API 调用记录」里看）
 // 后者的 meta 通过下面 safeFetchJson 的第 5 个参数挂到 __sullyMeta 上传出去。
 import { appendDevDebugApiLog, makeDebugLogger } from './devDebug';
-import { getApiCallAmbientContext, recordApiCall, type ApiCallMeta } from './apiCallLog';
+import { getApiCallAmbientContext, recordApiCall, type ApiCallMeta, type ApiCallLogEntry } from './apiCallLog';
 import { resolveBlobRefsInRequestBody } from './apiBlobRefs';
 import { waitForPalaceRequest } from './memoryPalace/maintenanceMode';
 import { isManualRelayCompletionUrl, maybeInterceptTextCompletion } from './manualModelRelay';
@@ -25,9 +26,40 @@ export function isChatCompletionUrl(url: string): boolean {
 }
 
 /** Parse a fetch Response as JSON safely (text-first, then JSON.parse) */
-export async function safeResponseJson(response: Response): Promise<any> {
-    const text = await response.text();
-    return parseRawBodyText(text, response.status, response.headers.get('content-type'));
+export async function safeResponseJson(response: Response, onRawBody?: (text: string) => void, capture?: ApiDiagnosticAttempt): Promise<any> {
+    const text = await readDiagnosticResponseText(response, capture);
+    try { onRawBody?.(text); } catch { /* diagnostics must not affect parsing */ }
+    return parseRawBodyText(text, response.status, response.headers.get('content-type'), capture);
+}
+
+export async function readDiagnosticResponseText(response: Response, capture?: ApiDiagnosticAttempt): Promise<string> {
+    let text: string;
+    if (capture && response.body) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        text = '';
+        try {
+            for (;;) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                const chunk = decoder.decode(value, { stream: true });
+                capture.chunk(chunk);
+                text += chunk;
+            }
+            const tail = decoder.decode();
+            capture.chunk(tail);
+            text += tail;
+        } catch (error) {
+            if (text) capture.incomplete();
+            throw error;
+        } finally {
+            reader.releaseLock();
+        }
+    } else {
+        text = await response.text();
+        capture?.chunk(text);
+    }
+    return text;
 }
 
 /** 判断响应是否是 SSE；兼容 OpenRouter 在首个 data 事件前发送的 ": OPENROUTER PROCESSING" 注释。 */
@@ -48,7 +80,7 @@ export function isSseResponseText(text: string, contentType?: string | null): bo
 }
 
 /** safeResponseJson 的纯文本内核：HTML/空响应/SSE/JSON 判定与解析（流式路径复用） */
-function parseRawBodyText(text: string, status: number, contentType?: string | null): any {
+function parseRawBodyText(text: string, status: number, contentType?: string | null, capture?: ApiDiagnosticAttempt): any {
     // Detect HTML / XML responses
     const trimmed = text.trimStart();
     if (trimmed.startsWith('<')) {
@@ -68,7 +100,7 @@ function parseRawBodyText(text: string, status: number, contentType?: string | n
     // SSE / 流式响应（有些 OpenAI 兼容代理无视 stream:false 强行流式返回）：
     // 注释/心跳行（以 ":" 开头）由 SseAssembler 忽略，data 事件照常拼成完整 content。
     if (isSseResponseText(text, contentType)) {
-        const assembled = parseSseToCompletion(text);
+        const assembled = parseSseToCompletion(text, complete => { if (!complete) capture?.incomplete(); });
         if (assembled) return assembled;
         const preview = text.slice(0, 200);
         throw new Error(
@@ -97,10 +129,12 @@ function parseRawBodyText(text: string, status: number, contentType?: string | n
  * 返回 { choices: [{ message: { content, role }, finish_reason }], ... } 方便上游
  * 用现有的 data.choices[0].message.content 路径消费，无需改调用点。
  */
-export function parseSseToCompletion(raw: string): any | null {
+export function parseSseToCompletion(raw: string, onEnd?: (complete: boolean) => void): any | null {
     const asm = new SseAssembler();
     // 按行切，逐行找 "data: " 开头（允许 \r\n、空行分隔）
-    for (const line of raw.split(/\r?\n/)) asm.feedLine(line);
+    let complete = false;
+    for (const line of raw.split(/\r?\n/)) if (asm.feedLine(line).done) complete = true;
+    onEnd?.(complete);
     return asm.finish();
 }
 
@@ -118,6 +152,7 @@ interface SseFeedDelta {
 }
 
 class SseAssembler {
+    private upstreamError: Error | undefined;
     private anthropicContent: any[] | undefined;
     private anthropicThinking: any[] | undefined;
     content = '';
@@ -151,6 +186,7 @@ class SseAssembler {
     }
 
     feedChunk(chunk: any): SseFeedDelta {
+        if (chunk?.error) this.upstreamError ??= new Error(`API 流内错误：${formatApiErrorPayload(chunk, 200)}`);
         this.gotAnyChunk = true;
         if (!this.firstChunk) this.firstChunk = chunk;
         // OpenAI 流式 usage 在最后一个 chunk（include_usage=true 时），也可能出现在中途；
@@ -221,6 +257,7 @@ class SseAssembler {
     }
 
     finish(): any | null {
+        if (this.upstreamError) throw this.upstreamError;
         if (!this.gotAnyChunk) return null;
         // 取证探针: 思考没抓到时把渠道实际用的 delta 字段名单打出来, 下一轮排查直接看名单。
         // (开思考的请求思考却为空 = 大概率又是没见过的字段形状)
@@ -274,10 +311,11 @@ export interface StreamHooks {
 async function readBodyWithStreaming(
     response: Response,
     hooks: StreamHooks,
-    timing?: { firstDeltaMs?: number },
+    timing?: { firstDeltaMs?: number; incomplete?: boolean },
     startedAt?: number,
+    capture?: ApiDiagnosticAttempt,
 ): Promise<any> {
-    if (!response.body?.getReader) return safeResponseJson(response);
+    if (!response.body?.getReader) return safeResponseJson(response, undefined, capture);
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     const asm = new SseAssembler();
@@ -315,6 +353,7 @@ async function readBodyWithStreaming(
         const { done, value } = await reader.read();
         if (done) break;
         const textChunk = decoder.decode(value, { stream: true });
+        capture?.chunk(textChunk);
         raw += textChunk;
         if (mode === 'undecided') {
             const t = raw.trimStart();
@@ -343,17 +382,19 @@ async function readBodyWithStreaming(
     }
     const tail = decoder.decode();
     if (tail) {
+        capture?.chunk(tail);
         raw += tail;
         if (mode === 'sse') pending += tail;
     }
     if (mode === 'sse') {
         consumeLines();
         if (pending.trim()) emit(asm.feedLine(pending.trim()));
+        if (!sawTerminalEvent) capture?.incomplete();
         const assembled = asm.finish();
         if (assembled) return assembled;
         // 一个 chunk 都没解析出来 → 按原始文本兜底（保留原 preview 报错行为）
     }
-    return parseRawBodyText(raw, response.status, contentType);
+    return parseRawBodyText(raw, response.status, contentType, capture);
 }
 
 /**
@@ -439,7 +480,7 @@ export async function safeFetchJson(
     /** 可选：流式增量回调（请求体带 stream:true 时传入才有意义；响应不是 SSE 时静默不触发）。 */
     streamHooks?: StreamHooks,
     /** Read-only request timing hooks; never include response contents or credentials. */
-    observation?: { requestId?: string; onHeaders?: (status: number) => void; onBody?: (status: number) => void; privateTransient?: boolean; explicitVision?: ExplicitVisionPermit },
+    observation?: { requestId?: string; onHeaders?: (status: number) => void; onBody?: (status: number) => void; privateTransient?: boolean; explicitVision?: ExplicitVisionPermit; businessDiagnostic?: boolean; groupHttpErrors?: boolean },
 ): Promise<any> {
     options = bindExplicitVisionPermit(url, options, observation?.explicitVision);
     if (!isExplicitVisionRequest(url, options) && isManualRelayCompletionUrl(String(url)) && options.method?.toUpperCase() === 'POST' && typeof options.body === 'string') {
@@ -487,7 +528,7 @@ export async function safeFetchJson(
         if (meta?.appName === '记忆宫殿') await waitForPalaceRequest(options.signal ?? undefined);
         // 全局 fetch 拦截器和这里的“已解析响应兜底”共享 ID。前者覆盖裸 fetch，
         // 后者不依赖 Response.clone()，避免部分 iOS/WebView 克隆流不结束时漏记。
-        const requestId = observation?.requestId || `api-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+        const requestId = (attempt === 0 ? observation?.requestId : undefined) || `api-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
         // 每次 attempt 建一个独立的 AbortController（仅用于 timeout）
         // 调用方自己的 options.signal 仍然有效，两者任一触发就 abort
         let attemptOptions = { ...sendOptions, __sullyApiCallId: requestId } as RequestInit;
@@ -506,10 +547,30 @@ export async function safeFetchJson(
             attemptOptions = { ...attemptOptions, signal: ac.signal };
         }
         const attemptStartedAt = Date.now();
+        const diagnostic = isChatCompletionUrl(urlStr) && attemptOptions.method?.toUpperCase() === 'POST'
+            && (!observation?.privateTransient || observation.businessDiagnostic)
+            && !isExplicitVisionRequest(urlStr, attemptOptions)
+            ? beginApiDiagnostic({
+                id: requestId, startedAt: attemptStartedAt, url: urlStr, options: attemptOptions,
+                adapted: isAnthropicEndpoint(urlStr),
+                onBusinessResult: outcome => import('./db').then(({ DB }) => DB.settleApiCallBusinessResult(requestId, attemptStartedAt, outcome)),
+            }) : undefined;
+        if (diagnostic) attemptOptions = { ...attemptOptions, __sullyDiagnostic: diagnostic } as RequestInit;
+        const recordAttempt = (ok: boolean, status?: number, data?: any, failure = false,
+            diagnosticState?: ApiCallLogEntry['diagnosticState']) => {
+            const write = recordApiCall({ requestId, startedAt: attemptStartedAt, url: urlStr,
+                body: observation?.privateTransient ? { model: JSON.parse(String(attemptOptions.body || '{}')).model } : attemptOptions.body,
+                status, ok, response: observation?.privateTransient && data ? { model: data.model, usage: data.usage } : data,
+                meta: logMeta, durationMs: Date.now() - attemptStartedAt,
+                diagnosticFailure: failure || undefined, diagnosticState });
+            diagnostic?.recorded(write);
+        };
+        let reading = false;
         try {
             const response = await fetchLlm(url, attemptOptions);
             if (timeoutHandle) clearTimeout(timeoutHandle);
             lastStatus = response.status;
+            diagnostic?.headers(response.status);
             try { observation?.onHeaders?.(response.status); } catch { /* diagnostics must not affect requests */ }
             const headersMs = Date.now() - attemptStartedAt;
 
@@ -522,7 +583,9 @@ export async function safeFetchJson(
                     continue;
                 }
                 // Non-retryable or last attempt: parse body for error details
-                const data = await safeResponseJson(response);
+                reading = true;
+                const data = await safeResponseJson(response, undefined, diagnostic);
+                reading = false;
                 try { observation?.onBody?.(response.status); } catch { /* diagnostics must not affect requests */ }
                 // If we somehow got valid JSON with error info, wrap it
                 const errMsg = formatApiErrorPayload(data, response.status);
@@ -530,9 +593,13 @@ export async function safeFetchJson(
             }
 
             const timing: { firstDeltaMs?: number } = {};
+            reading = true;
             const data = streamHooks
-                ? await readBodyWithStreaming(response, streamHooks, timing, attemptStartedAt)
-                : await safeResponseJson(response);
+                ? await readBodyWithStreaming(response, streamHooks, timing, attemptStartedAt, diagnostic)
+                : await safeResponseJson(response, undefined, diagnostic);
+            reading = false;
+            if (diagnostic?.excluded) return data;
+            diagnostic?.body(data, timing.firstDeltaMs, extractContent(data));
             try { observation?.onBody?.(response.status); } catch { /* diagnostics must not affect requests */ }
             if (isChatCompletionUrl(urlStr)) {
                 // TTFT 拆分埋点：headers = 首包响应头到达（≈排队+prefill 起点），
@@ -540,7 +607,7 @@ export async function safeFetchJson(
                 // total = 整包收完。定位「API 慢 20s」到底慢在 prefill 还是生成。
                 const totalMs = Date.now() - attemptStartedAt;
                 console.log(`⏱ [API timing] headers=${headersMs}ms${timing.firstDeltaMs != null ? ` firstDelta=${timing.firstDeltaMs}ms` : ''} total=${totalMs}ms${streamHooks ? ' streamed=1' : ''}`);
-                if (!observation?.privateTransient) appendDevDebugApiLog({
+                if (!diagnostic && !observation?.privateTransient) appendDevDebugApiLog({
                     url: urlStr,
                     method: options.method,
                     status: response.status,
@@ -552,21 +619,30 @@ export async function safeFetchJson(
                 });
                 // 已解析响应是最可靠的日志来源：不再把记账成败押在异步
                 // response.clone().text() 上。全局拦截器仍负责裸 fetch，并以 requestId 去重。
-                if (!observation?.privateTransient) recordApiCall({
-                    requestId,
-                    url: urlStr,
-                    body: attemptOptions.body,
-                    status: response.status,
-                    ok: response.ok,
-                    response: data,
-                    meta: logMeta,
-                    durationMs: totalMs,
-                });
+                const invalid = !!diagnostic && (diagnostic.isIncomplete || !Array.isArray(data?.choices));
+                if (diagnostic || !observation?.privateTransient) recordAttempt(!invalid, response.status, data, invalid,
+                    diagnostic && !invalid ? observation?.businessDiagnostic ? 'pending' : 'transport-only' : undefined);
+                if (invalid) diagnostic?.finish('failure', '响应完整性', '未取得完整文字补全响应');
+                else if (!observation?.businessDiagnostic) diagnostic?.finish('transport-only', '传输完成');
             }
             return data;
         } catch (e: any) {
             if (timeoutHandle) clearTimeout(timeoutHandle);
             lastError = e;
+            if (diagnostic && !diagnostic.excluded) {
+                lastStatus ??= diagnostic.status;
+                const aborted = options.signal?.aborted;
+                const timedOut = attemptOptions.signal?.reason?.name === 'TimeoutError'
+                    || /timeout|超时/i.test(String(attemptOptions.signal?.reason?.message || ''));
+                const cancelled = !timedOut && (aborted || e?.name === 'AbortError');
+                const stage = timedOut ? '超时' : cancelled ? '取消' : lastStatus && lastStatus >= 300 ? 'HTTP'
+                    : reading ? '读取／解析响应' : lastStatus ? '协议适配' : isAnthropicEndpoint(urlStr) ? '适配／网络' : '网络';
+                if (!cancelled) noteApiDiagnosticError(e, stage, lastStatus);
+                recordAttempt(false, lastStatus, undefined, !cancelled, cancelled ? 'cancelled' : undefined);
+                diagnostic.finish(cancelled ? 'cancelled' : 'failure', stage,
+                    timedOut ? '等待响应超时' : stage === '网络' ? '浏览器请求未完成' : String(e?.message || '请求失败'), reading && e?.name === 'TypeError');
+            }
+
 
             // AbortError（含 timeout）：是否重试看上层策略，先按可重试处理（网络层面）
             const isAbort = e?.name === 'AbortError' || /aborted|timeout/i.test(e?.message || '');
@@ -588,7 +664,7 @@ export async function safeFetchJson(
             }
 
             if (isChatCompletionUrl(urlStr)) {
-                if (!observation?.privateTransient) appendDevDebugApiLog({
+                if (!diagnostic && !observation?.privateTransient) appendDevDebugApiLog({
                     url: urlStr,
                     method: options.method,
                     status: lastStatus,

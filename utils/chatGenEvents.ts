@@ -56,7 +56,20 @@ export interface ChatGenDetail {
     ttlMs?: number;
 }
 
+const activeReplyCounts = new Map<string, number>();
+
+/** Shared busy evidence for explicit side workflows that must not compete with a main reply. */
+export function isChatReplyGenerating(charId: string): boolean {
+    return (activeReplyCounts.get(charId) || 0) > 0;
+}
+
 export function announceChatGen(event: string, detail: ChatGenDetail): void {
+    if (detail?.charId && event === CHAT_GEN_EVENTS.replyStart) {
+        activeReplyCounts.set(detail.charId, (activeReplyCounts.get(detail.charId) || 0) + 1);
+    } else if (detail?.charId && event === CHAT_GEN_EVENTS.replyEnd) {
+        const next = Math.max(0, (activeReplyCounts.get(detail.charId) || 0) - 1);
+        if (next) activeReplyCounts.set(detail.charId, next); else activeReplyCounts.delete(detail.charId);
+    }
     try {
         window.dispatchEvent(new CustomEvent(event, { detail }));
     } catch { /* SSR / 测试环境无 window */ }

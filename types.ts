@@ -1,5 +1,8 @@
 
 export enum AppID {
+  HtmlCreationBatch = 'html_creation_batch',
+  SideStoryBatch = 'side_story_batch',
+  Xiaoyuzhou = 'xiaoyuzhou',
   Launcher = 'launcher',
   Settings = 'settings',
   Character = 'character',
@@ -5153,6 +5156,7 @@ export interface FullBackupData {
     murderMysteryEvents?: import('./utils/murderMystery/session').MurderMysteryEvent[];
     lifeReplayRecords?: LifeReplayRecord[];    // 人生重映：私密事件预设、逐轮演绎与结果
     communityCommitteeSessions?: CommunityCommitteeSession[]; // 居委会：现实两难、逐轮倾诉、总结与写回进度
+    podcastRecords?: import('./utils/podcast/platform').PodcastRecord[];
     taskWorkshopRecords?: TaskWorkshopRecord[]; // 任务工坊：任务盒、工具箱、来访便签与前台轮转设置
     timeCapsuleRecords?: TimeCapsuleRecord[];    // 时间胶囊：用户/角色胶囊与前台轮转设置
     myScheduleRecords?: MyScheduleRecord[];      // 我的日程：用户现实时间轴与角色收件设置
@@ -5180,6 +5184,7 @@ export interface FullBackupData {
     stickerVisionLocal?: Record<string, string>;
     chatInputPreferences?: import('./utils/chatInputPreferences').ChatInputPreferences;
     chatActionOrders?: import('./utils/chatActionOrder').ChatActionOrders;
+    recentConversationPins?: import('./utils/conversationPins').ConversationPin[];
     beautyPreferences?: import('./utils/beautyPreferencesBackup').BeautyPreferencesBackup;
     beautyAuthorLocal?: import('./utils/beautyAuthorBackup').BeautyAuthorBackup; // 仅个人完整备份，公开美化包不携带
     desktopSkinLocal?: Record<string, string>; // 桌面皮肤偏好：电子宠物/手游风的界面配色 + 看板 banner（存 localStorage；看板图令牌导出时解析为 data URL）

@@ -1,3 +1,4 @@
+import { settleApiDiagnostic, apiDiagnosticErrorSummary } from '../utils/apiCallDiagnostics';
 import { resolveDialogueApi, dialogueMaxTokens } from '../utils/characterApi';
 import { resolveFeatureApi } from '../utils/featureApi';
 import { createReplyRun, withReplyCancellation } from '../utils/chatReplyCancellation';
@@ -723,6 +724,7 @@ export const useChatAI = ({
         // 这一轮走的是即时对话、并且云端已经受理：收尾时不要再打脏重传一次 fire_pack。
         // POST 上去的那份就是权威的（还多带了 chat 段），再传一遍是同样内容白走一趟网络。
         let instantChatAccepted = false;
+        let diagnosticResult: unknown;
         let friendFeedMainTask: Awaited<ReturnType<typeof prepareFriendFeedMainTask>>;
         // amsg2 工具在三个工具循环（麦当劳 / 瑞幸 / 通用）里都可能出现，执行方式完全一样，
         // 只有各自的 loopMessages 不同。
@@ -780,10 +782,12 @@ export const useChatAI = ({
             const baseUrl = effectiveApi.baseUrl.replace(/\/+$/, '');
             const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${effectiveApi.apiKey || 'sk-none'}` };
             const requestMain = (body: Record<string, any>, streamHooks?: Parameters<typeof completeMainChat>[0]['streamHooks']) => {
+                settleApiDiagnostic(diagnosticResult, 'success', '工具轮已处理');
+                diagnosticResult = undefined;
                 return completeMainChat({ body, url: `${baseUrl}/chat/completions`, headers, scope: 'private',
-                    privateTransient: !!diaryPrompt(char.id),
+                    privateTransient: !!diaryPrompt(char.id), businessDiagnostic: !diaryPrompt(char.id),
                     signal: replyRun.signal, streamHooks,
-                    meta: { appName: '消息', charId: char.id, charName: char.name, purpose: '聊天回复' } });
+                    meta: { appName: '消息', charId: char.id, charName: char.name, purpose: '聊天回复' } }).then(result => { diagnosticResult = result; return result; });
             };
 
             // ── 分段计时（从用户发送到 API 发出）──
@@ -2085,18 +2089,6 @@ export const useChatAI = ({
             }
 
             replyRun.check();
-            // DEBUG: Log full API response details for troubleshooting truncation issues
-            if (!String(data?.choices?.[0]?.message?.content||'').includes('[[OBS_DIARY')) console.log('🔍 [API Response Debug]', JSON.stringify({
-                finish_reason: data.choices?.[0]?.finish_reason,
-                usage: data.usage,
-                content_length: data.choices?.[0]?.message?.content?.length,
-                raw_content: data.choices?.[0]?.message?.content,
-                reasoning_content: extractReasoningContent(data),
-                reasoning_content_length: extractReasoningContent(data).length,
-                model: data.model,
-                id: data.id,
-            }, null, 2));
-
             // ─── 后处理管线 (13 步) ───
             // 详见 utils/applyAssistantPostProcessing.ts。本地路径跑完整管线；
             // 云端回复（activeMsgRuntime 冲刷收件箱）也调它，带 skipSecondPassLLM=true 和
@@ -2210,6 +2202,7 @@ export const useChatAI = ({
                 sarModuleSurface: assistantSurfaceMeta,
             }));
             replyRun.markCompleted();
+            settleApiDiagnostic(diagnosticResult, replyRun.hasSavedAssistantReply ? 'success' : 'failure', '聊天保存');
             // 最后一批正式消息已交给 setMessages；同一轮更新撤掉预览，不再逐条补弹。
             setStreamingBubbles([]);
             setStreamingThinking('');
@@ -2244,10 +2237,11 @@ export const useChatAI = ({
             if(friendFeedMainTask)await acknowledgeFriendFeedNotices(char.id,friendFeedMainTask.id).catch(()=>{});
 
         } catch (e: any) {
+            settleApiDiagnostic(diagnosticResult, replyRun.signal.aborted ? 'cancelled' : 'failure', '聊天处理／保存', e?.message);
             if (replyRun.signal.aborted) return;
             // 注意: 这个 catch 兜的是「拿到 API 响应之后」的整条后处理管线 (applyAssistantPostProcessing,
             // 13 步)。这里抛错多半不是网络问题, 而是解析/正则/落库异常。别再叫"连接中断"误导排查。
-            const errMsg = e?.message || String(e);
+            const errMsg = apiDiagnosticErrorSummary(e, diagnosticResult) || e?.message || String(e);
             // 瑞一杯模式下报错: 大概率是聊天模型/中转不支持 function calling(tools) → 带 tools 一发就 400。
             // 在 APK 里看不到控制台, 这里把完整原因 + 解法存成可读消息, 方便排查。
             if (luckinChatRef?.current?.active && /\b400\b|tool|function[_\s-]?call/i.test(errMsg)) {

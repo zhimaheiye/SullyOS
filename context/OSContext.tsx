@@ -1,3 +1,4 @@
+import { readConversationPins } from '../utils/conversationPins';
 import { handleLocalBack } from '../utils/localBackHandlers';
 import {isHomeAssetDisposal} from '../utils/homeAssetCancellation';
 import { processHomeMemoryAfterSave } from '../utils/homeMemoryPostHook';
@@ -1308,7 +1309,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               // 流式升级的响应归一化：SSE 攒齐拼回标准 chat.completion JSON——
               // 调用方（safeResponseJson / res.json() 均可）拿到与升级前等价的响应。
               if (streamUpgraded && response.ok) {
-                  response = await assembleUpgradedResponse(response);
+                  response = await assembleUpgradedResponse(response, (sendArgs[1] as any)?.__sullyDiagnostic);
               }
 
               // 「API 调用记录」统一记录入口：所有 /chat/completions（裸 fetch + safeFetchJson
@@ -4349,6 +4350,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               // SAR 活动室：公告/初见、双卡池及人格推演记录必须跟用户历史一起迁移。
               chatInputPreferences: (mode === 'text_only' || mode === 'full') ? loadChatInputPreferences() : undefined,
               chatActionOrders: (mode === 'text_only' || mode === 'full') ? loadChatActionOrders() : undefined,
+              recentConversationPins: (mode === 'text_only' || mode === 'full') ? readConversationPins().pins : undefined,
               sarLocalState: (mode === 'text_only' || mode === 'full') ? collectSARLocalBackup() : undefined,
 
               // 推送凭据 (VAPID)
@@ -4678,6 +4680,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               life_replay: 'lifeReplayRecords',
               community_committee: 'communityCommitteeSessions',
               task_workshop: 'taskWorkshopRecords',
+              podcast_records: 'podcastRecords',
               my_schedule: 'myScheduleRecords',
               worlds: 'worlds',
               world_episodes: 'worldEpisodes',

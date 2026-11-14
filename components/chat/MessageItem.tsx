@@ -1491,7 +1491,22 @@ const MessageItem = React.memo(({
         if (m.type === 'score_card') {
             let scoreData: any = null;
             try { scoreData = m.metadata?.scoreCard || JSON.parse(m.content); } catch {}
-            if (scoreData?.type === 'lifesim_reset_card') {
+            if (scoreData?.type === 'xiaoyuzhou_discussion_card') {
+            return commonLayout(
+                <div className="w-72 max-w-full overflow-hidden rounded-2xl border border-sky-100 bg-sky-50 text-slate-900 shadow-md" {...interactionProps}>
+                    <div className="bg-sky-900 px-4 py-3 text-white">
+                        <div className="text-xs text-sky-200">小宇宙 · 一起听</div>
+                        <div className="mt-1 break-words text-sm font-bold">{scoreData.title || '播客'}</div>
+                    </div>
+                    <div className="space-y-2 p-4">
+                        <div className="text-xs text-sky-700">{scoreData.podcast} · {scoreData.timeRange}</div>
+                        <p className="max-h-52 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-5">{scoreData.summary}</p>
+                    </div>
+                </div>,
+            );
+        }
+
+        if (scoreData?.type === 'lifesim_reset_card') {
                 return (
                     <div className={`flex items-center w-full ${selectionMode ? 'pl-8' : ''} animate-fade-in relative transition-[padding] duration-300`}>
                         {selectionMode && (

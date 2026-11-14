@@ -155,3 +155,6 @@ cinema-data/cache/
 /art/chibi/princess-carry-2026/**/*.png
 /art/photo-mode-2026/**/*.png
 /art/toon-style-2026/**/*.png
+
+# Local podcast audio, transcripts and optional client
+podcast-data/

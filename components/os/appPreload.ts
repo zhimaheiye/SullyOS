@@ -29,6 +29,9 @@ export const shouldUseIdleAppPreload = (
 // 新增 App 时若忘记在此登记，仅会少一次按下预取优化，不影响功能（打开时照常懒加载）。
 // 桌面入口被注释隐藏的 App（浏览器、手账、QQ 桥、居委会）不登记，避免预取用户打不开的代码。
 const importers: Partial<Record<AppID, () => Promise<unknown>>> = {
+  [AppID.Xiaoyuzhou]: () => import('../../apps/XiaoyuzhouApp'),
+  [AppID.SideStoryBatch]: () => import('../../apps/CreationBatchApp'),
+  [AppID.HtmlCreationBatch]: () => import('../../apps/CreationBatchApp'),
   [AppID.Settings]: () => import('../../apps/Settings'),
   [AppID.Character]: () => import('../../apps/Character'),
   [AppID.Chat]: () => import('../../apps/Chat'),

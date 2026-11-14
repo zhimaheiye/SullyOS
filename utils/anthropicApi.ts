@@ -1,5 +1,6 @@
 import { isAnthropicEndpoint, nativeRequestUrl } from './llmEndpoint';
 import { modelRejectsSamplingParams } from './samplingParamCompat';
+import type { ApiDiagnosticAttempt } from './apiCallDiagnostics';
 
 type Block = Record<string, any>;
 type FetchTransport = typeof fetch & { __sullyAnthropic?: boolean };
@@ -231,7 +232,10 @@ export async function fetchLlm(resource: RequestInfo | URL, init?: RequestInit, 
         if(typeof body!=='string')throw Error('Anthropic 请求必须为 JSON');
         options.body=JSON.stringify(toAnthropicRequest(parsed));headers.set('content-type','application/json');headers.delete('content-length');
     }
+    const diagnostic = (init as (RequestInit & { __sullyDiagnostic?: ApiDiagnosticAttempt }) | undefined)?.__sullyDiagnostic;
+    diagnostic?.sent(url, options, true);
     const response=await transport(url,options);
+    diagnostic?.headers(response.status);
     if(!response.ok || method!=='POST')return response;
     if(response.headers.get('content-type')?.includes('text/event-stream')) {
         if(!response.body)throw Error('Anthropic 返回了空流');

@@ -22,6 +22,7 @@ import {
   CardsThree,
   Globe,
   PenNib,
+  FileCode,
   PiggyBank,
   Compass,
   Camera,
@@ -99,6 +100,9 @@ export const Icons: Record<string, React.FC<{ className?: string }>> = {
   LifeReplay: ({ className }) => <ClockCounterClockwise className={className} weight="regular" />,
   TaskWorkshop: ({ className }) => <Briefcase className={className} weight="regular" />,
   TimeCapsule: ({ className }) => <HourglassMedium className={className} weight="regular" />,
+  Xiaoyuzhou: ({ className }) => <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><circle cx="12" cy="12" r="5"/><ellipse cx="12" cy="12" rx="10" ry="3.5" transform="rotate(-28 12 12)"/></svg>,
+  SideStoryBatch: ({ className }) => <PenNib className={className} weight="regular" />,
+  HtmlCreationBatch: ({ className }) => <FileCode className={className} weight="regular" />,
   MySchedule: ({ className }) => <CalendarDots className={className} weight="regular" />,
   CommunityCommittee: ({ className }) => <Handshake className={className} weight="regular" />,
   Healing: ({ className }) => <Tree className={className} weight="regular" />,
@@ -107,6 +111,9 @@ export const Icons: Record<string, React.FC<{ className?: string }>> = {
 };
 
 export const INSTALLED_APPS: AppConfig[] = [
+  { id: AppID.Xiaoyuzhou, name: '小宇宙', icon: 'Xiaoyuzhou', color: 'blue' },
+  { id: AppID.SideStoryBatch, name: '番外创作', icon: 'SideStoryBatch', color: 'violet' },
+  { id: AppID.HtmlCreationBatch, name: 'HTML 创作', icon: 'HtmlCreationBatch', color: 'indigo' },
   { id: AppID.Character, name: '神经链接', icon: 'Character', color: 'indigo' },
   { id: AppID.MemoryPalace, name: '记忆宫殿', icon: 'MemoryPalace', color: 'violet' },
   { id: AppID.Healing, name: '聊愈', icon: 'Healing', color: 'emerald' },

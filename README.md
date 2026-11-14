@@ -36,6 +36,8 @@
 | 🧰 **任务工坊**（[芝麻二改](apps/TaskWorkshopApp.tsx)） | 任务盒、工具箱、角色来访便签和手动提醒 |
 | ⏳ **时间胶囊**（[芝麻二改](apps/TimeCapsuleApp.tsx)） | 把话封到一年以内的未来，可以依次邀请多位角色写入 |
 | 📅 **我的日程**（[芝麻二改](apps/MyScheduleApp.tsx)） | 用自然语言或手动记录现实时间轴，并同步给选中的角色 |
+| 🎙️ **小宇宙**（[芝麻二改](apps/XiaoyuzhouApp.tsx)） | 电脑本机播客、时间戳文稿、跨 App 播放与角色讨论；静态网站不提供本机接口，见[使用说明](docs/features/xiaoyuzhou.md) |
+| ✍️ **番外创作／HTML 创作**（[芝麻二改](apps/CreationBatchApp.tsx)） | 多角色依次创作，停止后继续、单项重试与本轮结果视图；作品不自动写入聊天 |
 | 🪐 **Meta（开发中）**（[芝麻二改](apps/MetaExperienceApp.tsx)） | 单角色体验，记录本次重回次数 |
 | 📇 **档案** | 用户档案中枢：管理你的人设、关系标签、和角色互写印象 |
 | 🏦 **存钱罐** | 虚拟货币系统，虽然钱是假的 |
@@ -71,6 +73,8 @@
 |------|----------|----------|
 | 私聊与群聊 | 最近会话混排、按成员在群时段隔离历史、聊天阅读位置 | [最近会话](utils/conversationList.ts) · [群成员视野](utils/groupChat/membership.ts) · [滚动](hooks/useChatScroll.ts) |
 | 聊天输入与消息 | 粘贴图片、表情包关键词搜索与识图、「＋」菜单排序与分页、逐条转发 | [剪贴板](utils/clipboard.ts) · [关键词触发](utils/emojiTrigger.ts) · [表情包识图](utils/stickerVision.ts) · [菜单](components/chat/ChatActionOrganizer.tsx) · [转发](utils/chatForwardIndividual.ts) |
+| 最近会话置顶 | 私聊与群聊手动置顶、稳定顺序、本机持久化与完整备份 | [列表](components/chat/RecentConversationsView.tsx) · [置顶存储](utils/conversationPins.ts) |
+| API 调用诊断 | 在原调用记录中增加按次请求／响应诊断，已接入成功和失败滚动保留24小时；未覆盖链路不伪造原文 | [诊断](utils/apiCallDiagnostics.ts) · [设置页](components/settings/ApiCallLogModal.tsx) · [覆盖边界](docs/features/api-call-diagnostics.md) |
 | 私聊生成 | 心象译文、单次重回引导、选图后确认图片描述、一键写 Obsidian 日记 | [心象翻译](utils/thinkingTranslation.ts) · [重回请求](utils/chatRequestPayload.ts) · [图片预检](utils/visionPreflight.ts) · [日记写入](utils/manualObsidianDiary.ts) |
 | 卡片与番外 | 私聊 HTML 卡片手动修复与创作、私聊／群聊临时番外、截图留白、手动模型接力 | [HTML 修复](utils/htmlFormatRepair.ts) · [卡片与番外](components/chat/SideStoryModal.tsx) · [留白](utils/sideStoryMask.ts) · [模型接力](utils/manualModelRelay.ts) |
 | 查手机 | 共同好友与真人对话衔接、自定义 App 跨手机安装、智能体发送前扩写、生活记录生成调整 | [联系人对话](utils/relationshipChat.ts) · [安装与扩写](apps/CheckPhone.tsx) · [生活记录](apps/PersonaSim.tsx) |

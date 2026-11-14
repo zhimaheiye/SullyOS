@@ -125,6 +125,7 @@ export const MIRRORED_KEYS: readonly string[] = [
     'sullyos_update_2026_08_10_live2d_seen',
     'sullyos_update_2026_08_03_amsg2_seen',
     'os_last_active_char_id',
+    'sully-recent-conversation-pins-v1',
     'sully-chat-action-order-v1',        // 私聊/群聊「＋」功能格排序
 ];
 

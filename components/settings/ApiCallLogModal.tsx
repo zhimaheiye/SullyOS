@@ -1,6 +1,9 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import Modal from '../os/Modal';
 import { DB } from '../../utils/db';
+import { useLocalBackHandler } from '../../hooks/useLocalBackHandler';
+import { API_DIAGNOSTICS_CHANGED, DIAGNOSTIC_MAX_AGE, apiDiagnosticWriteFailed, getRecentApiDiagnostic,
+    clearRecentApiDiagnostics, listRecentApiDiagnosticIds, saveRecentApiDiagnostic, type ApiDiagnostic } from '../../utils/apiCallDiagnostics';
 import { FEATURE_APIS } from '../../utils/featureApi';
 import {
     API_REQUEST_CAPTURE_EVENT,
@@ -53,8 +56,19 @@ const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) =>
     const [capture, setCapture] = useState<ApiRequestCapture | null>(null);
     const [captureArmed, setCaptureArmedState] = useState(() => isApiRequestCaptureArmed());
 
-    const load = useCallback(async () => {
-        setLoading(true);
+    const [diagnosticRows, setDiagnosticRows] = useState(new Map<string, ApiDiagnostic['retained']>());
+    const [recentIds, setRecentIds] = useState<Set<string>>(new Set());
+    const [detail, setDetail] = useState<ApiCallLogEntry>();
+    const [diagnostic, setDiagnostic] = useState<ApiDiagnostic>();
+    const [diagnosticNotice, setDiagnosticNotice] = useState('');
+    const [diagnosticBusy, setDiagnosticBusy] = useState(false);
+    const detailHeading = useRef<HTMLSpanElement>(null);
+    const lastDetailTrigger = useRef<HTMLButtonElement | null>(null);
+    const selectedDiagnosticId = useRef<string>();
+    const initiallyOpened = useRef<string>();
+
+    const load = useCallback(async (silent = false) => {
+        if (!silent) setLoading(true);
         try {
             const [data, savedCapture] = await Promise.all([
                 DB.getApiCallLog(),
@@ -67,7 +81,7 @@ const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) =>
             setCaptureArmedState(isApiRequestCaptureArmed());
             // 这一批记录里只要有一条「实际后端」跟请求的模型对不上，就记一次。
             // 只记「出现过」这件事，模型名一个字都不带出去。
-            if (data.some((e: ApiCallLogEntry) =>
+            if (!silent && data.some((e: ApiCallLogEntry) =>
                 !!e.backendModel && e.backendModel !== e.model && !isSameCoreModel(e.model, e.backendModel)
             )) {
                 trackEvent('记录里出现模型不符警告');
@@ -75,13 +89,111 @@ const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) =>
         } catch {
             setEntries([]);
         } finally {
-            setLoading(false);
+            if (!silent) setLoading(false);
         }
     }, []);
 
     useEffect(() => {
         if (isOpen) load();
     }, [isOpen, load]);
+
+    const loadDiagnosticIndex = useCallback(async () => {
+        setRecentIds(listRecentApiDiagnosticIds());
+        try {
+            const rows = await DB.listApiDiagnostics();
+            setDiagnosticRows(new Map(rows.map(row => [row.id, row.retained])));
+        } catch { setDiagnosticRows(new Map()); }
+    }, []);
+
+    useEffect(() => {
+        if (!isOpen) {
+            selectedDiagnosticId.current = undefined;
+            setDetail(undefined);
+            setDiagnostic(undefined);
+            setDiagnosticNotice('');
+            return;
+        }
+        void loadDiagnosticIndex();
+        const refresh = () => { void load(true); void loadDiagnosticIndex(); };
+        window.addEventListener(API_DIAGNOSTICS_CHANGED, refresh);
+        return () => window.removeEventListener(API_DIAGNOSTICS_CHANGED, refresh);
+    }, [isOpen, load, loadDiagnosticIndex]);
+
+    useEffect(() => {
+        if (!detail || !isOpen) return;
+        let current = true;
+        let expiry: ReturnType<typeof setTimeout> | undefined;
+        const update = async () => {
+            clearTimeout(expiry);
+            try {
+                const snapshot = await DB.getApiDiagnostic(detail.id);
+                if (!current) return;
+                setDiagnostic(snapshot ?? getRecentApiDiagnostic(detail.id));
+                if (snapshot) expiry = setTimeout(update, Math.max(1, snapshot.completedAt + DIAGNOSTIC_MAX_AGE - Date.now()));
+            } catch {
+                if (current) {
+                    setDiagnostic(getRecentApiDiagnostic(detail.id));
+                    setDiagnosticNotice('本机诊断读取失败');
+                }
+            }
+        };
+        void update();
+        window.addEventListener(API_DIAGNOSTICS_CHANGED, update);
+        return () => { current = false; clearTimeout(expiry); window.removeEventListener(API_DIAGNOSTICS_CHANGED, update); };
+    }, [detail, isOpen]);
+
+    const closeDetail = useCallback(() => {
+        selectedDiagnosticId.current = undefined;
+        setDetail(undefined);
+        setDiagnostic(undefined);
+        setDiagnosticNotice('');
+        requestAnimationFrame(() => lastDetailTrigger.current?.focus());
+        return true;
+    }, []);
+    useLocalBackHandler(closeDetail, 110, isOpen && !!detail);
+    useEffect(() => {
+        if (!isOpen || !detail) return;
+        detailHeading.current?.focus();
+        const escape = (event: KeyboardEvent) => {
+            if (event.key !== 'Escape') return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            closeDetail();
+        };
+        window.addEventListener('keydown', escape, true);
+        return () => window.removeEventListener('keydown', escape, true);
+    }, [isOpen, detail, closeDetail]);
+
+    const retainDiagnostic = async () => {
+        if (!detail || diagnosticBusy) return;
+        const { id } = detail;
+        setDiagnosticBusy(true);
+        try {
+            if (await saveRecentApiDiagnostic(id)) {
+                const saved = await DB.getApiDiagnostic(id);
+                await loadDiagnosticIndex();
+                if (selectedDiagnosticId.current === id) {
+                    setDiagnostic(saved);
+                    setDiagnosticNotice(saved ? '已手动留存' : '已清除或淘汰');
+                }
+            } else if (selectedDiagnosticId.current === id) setDiagnosticNotice('近期内容已过期、清除或淘汰');
+        } catch { if (selectedDiagnosticId.current === id) setDiagnosticNotice('本机诊断未保存'); }
+        finally { setDiagnosticBusy(false); }
+    };
+
+    const deleteDiagnostic = async () => {
+        if (!detail || diagnosticBusy) return;
+        const { id } = detail;
+        setDiagnosticBusy(true);
+        try {
+            await DB.deleteApiDiagnostic(id);
+            if (selectedDiagnosticId.current === id) {
+                setDiagnostic(undefined);
+                setDiagnosticNotice('已清除本次诊断');
+            }
+        } catch { if (selectedDiagnosticId.current === id) setDiagnosticNotice('清除失败'); }
+        finally { setDiagnosticBusy(false); }
+    };
 
     useEffect(() => {
         const handleCaptureChange = async (event: Event) => {
@@ -95,9 +207,11 @@ const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) =>
     }, []);
 
     const handleClear = useCallback(async () => {
-        if (!window.confirm('确定清空所有 API 调用记录吗？此操作不可撤销。')) return;
+        if (!window.confirm('确定清空所有 API 调用记录和对应诊断吗？此操作不可撤销。')) return;
         await DB.clearApiCallLog();
         setEntries([]);
+        setRecentIds(new Set());
+        setDiagnosticRows(new Map());
         trackEvent('清空 API 调用记录');
     }, []);
 
@@ -115,29 +229,43 @@ const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) =>
     return (
         <Modal
             isOpen={isOpen}
-            title="API 调用记录"
-            onClose={onClose}
+            title={detail ? <span ref={detailHeading} tabIndex={-1}>本次调用诊断</span> : 'API 调用记录'}
+            onClose={detail ? closeDetail : onClose}
             footer={
                 <div className="flex gap-2 w-full">
                     <button
-                        onClick={onClose}
+                        onClick={detail ? closeDetail : onClose}
                         className="flex-1 py-3 bg-slate-100 text-slate-600 font-bold rounded-2xl active:scale-95 transition-transform"
                     >
-                        关闭
+                        {detail ? '返回记录' : '关闭'}
                     </button>
-                    <button
+                    {detail ? diagnostic && (diagnostic.retained ? (
+                        <button onClick={deleteDiagnostic} disabled={diagnosticBusy} className="px-3 py-3 bg-rose-50 text-rose-700 font-bold rounded-2xl disabled:opacity-50">清除诊断</button>
+                    ) : (
+                        <button onClick={retainDiagnostic} disabled={diagnosticBusy} className="px-3 py-3 bg-primary/10 text-primary font-bold rounded-2xl disabled:opacity-50">保存本次诊断</button>
+                    )) : <button
                         onClick={handleClear}
                         disabled={entries.length === 0}
                         className="px-5 py-3 bg-rose-50 text-rose-500 font-bold rounded-2xl active:scale-95 transition-transform disabled:opacity-40"
                     >
                         清空
-                    </button>
+                    </button>}
                 </div>
             }
         >
+            {detail && <div className="space-y-3 text-sm">
+                <p className="break-words font-semibold">{formatTime(detail.timestamp).day} {formatTime(detail.timestamp).time} · {detail.purpose || detail.appName || '文字调用'}</p>
+                <p className="text-xs text-slate-600">诊断可能含聊天、记忆与角色资料。成功与失败的已接入诊断自动在本机滚动保留24小时，容量满时会提前清理。</p>
+                {diagnosticNotice && <p role="status" className="text-xs font-medium text-primary">{diagnosticNotice}</p>}
+                {diagnostic ? <DiagnosticContent diagnostic={diagnostic} /> : <p className="text-sm text-slate-600">
+                    {apiDiagnosticWriteFailed(detail.id) ? '本机诊断未保存' : diagnosticUnavailable(detail)}
+                </p>}
+            </div>}
+            <div hidden={!!detail}>
             <div className="flex items-start justify-between gap-2 mb-3 px-1">
                 <p className="text-[11px] text-slate-400 leading-relaxed">
                     只保留最近 <span className="font-semibold text-slate-500">5 天</span>的调用，超期自动丢弃。记录在你本地浏览器，不上传。
+                    已接入的成功与失败诊断在本机滚动保留24小时，可随时删除。
                 </p>
                 <button
                     onClick={() => { if (!showHelp) trackEvent('打开实际后端字段说明'); setShowHelp(v => !v); }}
@@ -149,6 +277,10 @@ const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) =>
                     ?
                 </button>
             </div>
+            {recentIds.size > 0 && <button type="button" onClick={clearRecentApiDiagnostics}
+                className="mb-3 rounded-lg px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-100 focus-visible:ring-2 focus-visible:ring-primary">
+                清除近期内容
+            </button>}
 
             {showHelp && (
                 <div className="mb-3 rounded-2xl bg-amber-50/70 border border-amber-200/60 px-4 py-3 text-[11px] text-slate-600 leading-relaxed space-y-2">
@@ -260,12 +392,15 @@ const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) =>
                                         )}
                                         <span
                                             className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                                                e.superseded ? 'bg-slate-100 text-slate-500'
-                                                    : e.pending ? 'bg-amber-100 text-amber-600'
+                                                e.superseded || e.diagnosticState === 'cancelled' || e.diagnosticState === 'transport-only' ? 'bg-slate-100 text-slate-500'
+                                                    : e.pending || e.diagnosticState === 'pending' ? 'bg-amber-100 text-amber-600'
                                                         : e.ok ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-600'
                                             }`}
                                         >
                                             {e.superseded ? '已顶替'
+                                                : e.diagnosticState === 'cancelled' ? '已取消'
+                                                : e.diagnosticState === 'pending' ? '业务待结算'
+                                                : e.diagnosticState === 'transport-only' ? '传输完成'
                                                 : e.pending ? '生成中'
                                                     : e.ok ? '成功' : `失败${e.status ? ` ${e.status}` : ''}`}
                                         </span>
@@ -332,14 +467,66 @@ const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) =>
                                         <PromptBreakdownView blocks={e.promptBreakdown} promptTokens={e.promptTokens} />
                                     </>
                                 )}
+                                {!e.pending && e.diagnosticState !== 'cancelled' && (
+                                    <button type="button" onClick={event => {
+                                        event.stopPropagation();
+                                        lastDetailTrigger.current = event.currentTarget;
+                                        selectedDiagnosticId.current = e.id;
+                                        setDiagnostic(getRecentApiDiagnostic(e.id));
+                                        setDiagnosticNotice('');
+                                        setDetail(e);
+                                    }} className="mt-2 min-h-9 rounded-xl bg-slate-100 px-3 text-xs font-semibold text-slate-700 hover:bg-slate-200 focus-visible:ring-2 focus-visible:ring-primary">
+                                        {diagnosticRows.get(e.id) === 'manual' ? '手动留存' : recentIds.has(e.id) && !diagnosticRows.has(e.id) ? '查看近期内容' : '查看诊断'}
+                                    </button>
+                                )}
                             </div>
                         );
                     })}
                 </div>
             )}
+            </div>
         </Modal>
     );
 };
+
+function diagnosticUnavailable(entry: ApiCallLogEntry) {
+    if (entry.diagnosticDisabled) return '已清除本次诊断。';
+    if (entry.diagnosticState === 'pending') return '业务尚未结算，诊断内容暂不可用。';
+    if (entry.route?.startsWith('cloud-')) return '模型调用发生在云端，浏览器未取得诊断正文。';
+    if (entry.route?.startsWith('local-')) return '本机 CLI 调用未接入原文诊断。';
+    return '此调用未捕获诊断，或内容已过期、清除或淘汰。';
+}
+
+function DiagnosticContent({ diagnostic: d }: { diagnostic: ApiDiagnostic }) {
+    const label = d.retained === 'manual' ? '手动留存' : d.retained === 'automatic' ? '自动留存' : '仅本页近期内容';
+    return <>
+        <div className="rounded-xl bg-slate-100 p-3 text-xs leading-relaxed text-slate-700">
+            <p className="font-semibold">{label} · {d.outcome === 'failure' ? '失败' : d.outcome === 'transport-only' ? '传输完成 · 业务未接入' : '程序判定成功'}</p>
+            <p>{d.stage} · {d.status == null ? '未取得 HTTP 状态' : `HTTP ${d.status}`}</p>
+            <p>结束原因 {d.finishReason || '未返回'}</p>
+            <p>{[
+                d.headersMs == null ? '' : `响应头 ${d.headersMs}ms`,
+                d.firstDeltaMs == null ? '' : `首段 ${d.firstDeltaMs}ms`,
+                d.bodyMs == null ? '' : `正文 ${d.bodyMs}ms`,
+                `结算 ${d.completedAt - d.startedAt}ms`,
+            ].filter(Boolean).join(' · ')}</p>
+        </div>
+        <DiagnosticSection label="请求输入" text={d.request} placeholder={d.requestNote || '未捕获请求正文'} />
+        <DiagnosticSection label={d.layer === 'adapted' ? '适配后的响应' : '收到的响应文本'} text={d.response}
+            placeholder={d.responseNote || '未收到响应正文'} note={d.partial ? '仅收到部分，后续未知。' : undefined} />
+        <DiagnosticSection label="提取后的正文" text={d.extracted} placeholder="没有可显示的提取正文" />
+        <DiagnosticSection label="错误" text={d.error} placeholder={d.outcome === 'failure' ? '没有可显示的错误详情' : '程序未报告错误'} />
+    </>;
+}
+
+function DiagnosticSection({ label, text, placeholder, note }: { label: string; text?: string; placeholder: string; note?: string }) {
+    return <section className="min-w-0">
+        <h3 className="mb-1 font-semibold">{label}</h3>
+        {note && <p className="mb-1 text-xs text-amber-700">{note}</p>}
+        {text ? <pre tabIndex={0} className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-xl bg-slate-100 p-3 text-xs text-slate-800 select-text">{text}</pre>
+            : <p className="text-xs text-slate-600">{placeholder}</p>}
+    </section>;
+}
 
 const CAPTURE_KIND_LABEL: Record<ApiRequestCaptureSectionKind, string> = {
     request: '参数',

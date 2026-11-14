@@ -243,6 +243,7 @@ export function normalizeMessageContent(
                 return `[我的日程] ${userName}把自己的现实日程同步给了${charName}：${start}—${end}${tag ? `【${tag}】` : ''}「${card.title || '未命名事项'}」。${card.note ? `随笔原文：${card.note}` : '没有附加随笔。'}这是用户主动同步的时间线信息，可以在后续聊天中自然关心或提及；不得擅自改写用户随笔，也不得声称已经替用户完成现实事项。`;
             }
             // 其它结算卡类型（songwriting/study/lifesim 日常 等）：如果有 summary/content 字段优先用
+            if (card?.type === 'xiaoyuzhou_discussion_card') return `[小宇宙·讨论小结] ${card.title || '播客'}：${card.summary || ''}（用户明确分享的小结；未分享文稿和讨论不可读取。）`;
             if (typeof card?.summary === 'string' && card.summary.trim()) return `[系统卡片] ${card.summary.trim()}`;
             return '[系统卡片]';
         } catch {

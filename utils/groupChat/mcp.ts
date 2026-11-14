@@ -1,4 +1,5 @@
-import { safeResponseJson } from '../safeApi';
+import type { ApiCallMeta } from '../apiCallLog';
+import { safeFetchJson } from '../safeApi';
 import { callMcpTool, getMcpUseNativeTools } from '../mcpClient';
 import {
     buildMcpOpenAITools,
@@ -16,6 +17,7 @@ import { toolCallFingerprint } from '../agenticToolFeedback';
 import { isManualRelayEnabled } from '../manualModelRelay';
 
 interface GroupMcpCompletionOptions {
+    meta?: ApiCallMeta;
     url: string;
     headers: HeadersInit;
     body: Record<string, any>;
@@ -47,17 +49,9 @@ export async function completeGroupChatWithMcp(options: GroupMcpCompletionOption
             mergeUsage(usageTotal, data.usage);
             return data;
         }
-        const response = await fetch(options.url, {
-            method: 'POST',
-            headers: options.headers,
-            body: JSON.stringify(body),
-            signal: options.signal,
-        });
-        if (!response.ok) {
-            const preview = await response.text().catch(() => '');
-            throw new Error(`API 返回 ${response.status}${preview ? `: ${preview.slice(0, 160)}` : ''}`);
-        }
-        const data = await safeResponseJson(response);
+        const data = await safeFetchJson(options.url, {
+            method: 'POST', headers: options.headers, body: JSON.stringify(body), signal: options.signal,
+        }, 0, 0, options.meta);
         mergeUsage(usageTotal, data.usage);
         return data;
     };
