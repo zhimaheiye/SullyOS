@@ -21,6 +21,7 @@ import {
 import { formatFeishuWriteFailure } from './feishuDiagnostics';
 import {
     fetchWeatherWithFallback,
+    normalizeFreeWeatherSource,
     generateWeatherAdvice as generateWeatherAdviceCore,
     checkSpecialDates as checkSpecialDatesCore,
     clearGeocodeCache,
@@ -55,7 +56,9 @@ export interface RealtimeConfig {
     userHolidays?: UserHolidayConfig;
     // 天气配置
     weatherEnabled: boolean;
-    weatherApiKey: string;  // OpenWeatherMap API Key（可选；留空走免 key 的 Open-Meteo）
+    weatherApiKey: string;  // OpenWeatherMap API Key（可选；留空走所选免费源）
+    weatherFreeSource?: import('./weatherSources').FreeWeatherSource;
+    weatherCities?: Record<string, string>; // Per-character override; missing/blank inherits weatherCity.
     weatherCity: string;    // 城市名 (如 "北京"、"Beijing"，Open-Meteo 支持中文)
 
     // 新闻配置
@@ -98,6 +101,7 @@ export interface RealtimeConfig {
 export const defaultRealtimeConfig: RealtimeConfig = {
     weatherEnabled: false,
     weatherApiKey: '',
+    weatherFreeSource: 'open-meteo',
     weatherCity: 'Beijing',
     newsEnabled: false,
     newsApiKey: '',
@@ -121,14 +125,14 @@ export const defaultRealtimeConfig: RealtimeConfig = {
 };
 
 // 缓存
-let weatherCache: { data: WeatherData | null; timestamp: number } = { data: null, timestamp: 0 };
+const weatherCache = new Map<string, {data: WeatherData; timestamp: number}>();
 let newsCache: { data: NewsItem[]; timestamp: number } = { data: [], timestamp: 0 };
 
 
 export const RealtimeContextManager = {
 
     /**
-     * 获取天气信息。填了 OpenWeatherMap key 优先走 OWM，失败或没填 key 时回落免费的 Open-Meteo。
+     * 获取天气信息。OWM（有 key 时）→ 所选免费源 → 另一免费源，缓存按城市、Key 与首选源隔离。
      */
     fetchWeather: async (config: RealtimeConfig): Promise<WeatherData | null> => {
         if (!config.weatherEnabled || !config.weatherCity) {
@@ -139,17 +143,20 @@ export const RealtimeContextManager = {
         const cacheMs = config.cacheMinutes * 60 * 1000;
 
         // 检查缓存
-        if (weatherCache.data && (now - weatherCache.timestamp) < cacheMs) {
-            return weatherCache.data;
+        const key = JSON.stringify([config.weatherCity.trim(), config.weatherApiKey?.trim(), normalizeFreeWeatherSource(config.weatherFreeSource)]);
+        const cached = weatherCache.get(key);
+        if (cached && (now - cached.timestamp) < cacheMs) {
+            return cached.data;
         }
 
-        const weather = await fetchWeatherWithFallback(config.weatherCity, config.weatherApiKey);
+        const weather = await fetchWeatherWithFallback(config.weatherCity, config.weatherApiKey, config.weatherFreeSource);
         if (!weather) {
             return null;
         }
 
         // 更新缓存
-        weatherCache = { data: weather, timestamp: now };
+        if (weatherCache.size >= 100) weatherCache.delete(weatherCache.keys().next().value!);
+        weatherCache.set(key, { data: weather, timestamp: now });
 
         return weather;
     },
@@ -467,7 +474,7 @@ export const RealtimeContextManager = {
      * 清除缓存
      */
     clearCache: () => {
-        weatherCache = { data: null, timestamp: 0 };
+        weatherCache.clear();
         newsCache = { data: [], timestamp: 0 };
         clearGeocodeCache();
     },
@@ -1621,6 +1628,9 @@ export interface XhsNote {
     author: string;
     authorId: string;
     xsecToken?: string;
+    xsecSource?: string;
+    url?: string;
+    platform?: 'xhs' | 'rednote';
     coverUrl?: string;
     type?: string;  // 'normal' | 'video'
     comments?: {

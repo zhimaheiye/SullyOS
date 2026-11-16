@@ -103,6 +103,8 @@ export interface ScheduleCardAppearance {
   accentColor?: string;
   /** 仅允许 .sully-schedule-* 作用域的进阶美化。 */
   customCss?: string;
+  /** 非原版配色时，桌面小组件仍用毛玻璃透出壁纸、沿用桌面字色，只保留配色里的强调色。 */
+  desktopGlass?: boolean;
 }
 
 export type JournalAppearancePresetId =
@@ -355,6 +357,11 @@ export type ActiveMsg2Mode = 'fixed' | 'auto' | 'prompted';
 export type ActiveMsg2Recurrence = 'none' | 'daily' | 'weekly';
 
 export interface ActiveMsg2GlobalConfig {
+  /**
+   * 全局总开关：false 时保留 Worker 地址、密钥与各角色配置，暂停本机一切向云端的请求与轮询；
+   * undefined / true 均为开启（兼容存量配置）。
+   */
+  enabled?: boolean;
   /** Confirmed by /config-check, scoped to the Worker URL that was checked. */
   anthropicMessagesSupported?: boolean;
   anthropicMessagesWorkerUrl?: string;
@@ -363,6 +370,10 @@ export interface ActiveMsg2GlobalConfig {
   workerUrl: string;
   /** 与 worker 约定的共享密钥；配了就每次请求带 X-Client-Token，缺/错 worker 返回 401 */
   serverToken?: string;
+  /** 请求经 SullyOS 中转服务器转发（设置里叫「大陆连接优化」），见 utils/amsgRelay.ts */
+  useRelay?: boolean;
+  /** 中转令牌，在 SullyOS 的 Discord 群里用 /中转令牌 领取。绑着 Discord 账号，只存在本机，不随默认备份导出 */
+  relayToken?: string;
   /**
    * 一键部署时生成的 AMSG_MASTER_KEY（worker 侧用它加密任务内容）。
    * 存在这里只为「重装时沿用同一把」——它一换，之前加密进 D1 的任务就全解不开了，
@@ -372,9 +383,22 @@ export interface ActiveMsg2GlobalConfig {
   /** 上次「连接」（在 worker 端建表）成功的时间 */
   initializedAt?: number;
   /**
+   * 推送投递方式：
+   * - 'web-push'（缺省）：浏览器/PWA 原生 Web Push（或 APK 原生通道）
+   * - 'third-party'：通过第三方推送 App（WxPusher / Bark / MeoW）转发，绕过老 iOS 无 Web Push 限制与 Google FCM 连通性问题
+   */
+  pushMode?: 'web-push' | 'third-party';
+  /** 第三方推送 App 配置（属于个人连接信息，随 BACKEND_CONNECTION_KEYS 在不含后端连接的备份中剥离） */
+  thirdPartyPush?: {
+    provider: 'wxpusher' | 'bark' | 'meow';
+    token: string;
+    serverUrl?: string;
+  };
+  /**
    * 即时对话：聊天的每一轮都交给云端跑（POST /instant-chat），回复走推送回来。
    * 只在设置页那一处开关（开关本身还有连接 / 通知权限 / worker 能力三道门），
    * 关掉就是现在的本地直连生成。
+   * undefined = 用户没点过：Worker 连接验证成功过就算开（判定统一走 isInstantChatSwitchedOn）。
    */
   instantChatEnabled?: boolean;
   /**
@@ -461,6 +485,10 @@ export interface ActiveMsg2TaskRecord {
   status: ActiveMsg2TaskStatus;
   createdAt: number;
   lastError?: string;
+  /** 「离开后消息」的云端任务：每个角色最多一条，对方开口后往后推，见 docs/away-message.md。 */
+  away?: boolean;
+  /** 「见面离开提醒」的云端任务：见面中途走开时建，回到见面或开口就取消，见 docs/date-leave-reminder.md。 */
+  dateLeave?: boolean;
 }
 
 export interface ActiveMsg2CharacterConfig {
@@ -578,8 +606,10 @@ export interface RealtimeConfig {
     userHolidays?: import('./utils/userHolidays').UserHolidayConfig;
   // 天气配置
   weatherEnabled: boolean;
-  weatherApiKey: string;  // OpenWeatherMap API Key（可选；留空走免 key 的 Open-Meteo）
-  weatherCity: string;    // 城市名（如 "北京"、"Beijing"）
+  weatherApiKey: string;  // OpenWeatherMap API Key（可选；留空走所选免费源）
+  weatherFreeSource?: import('./utils/weatherSources').FreeWeatherSource;
+  weatherCities?: Record<string, string>; // Per-character override; missing/blank inherits weatherCity.
+    weatherCity: string;    // 城市名（如 "北京"、"Beijing"）
 
   // 新闻配置
   newsEnabled: boolean;
@@ -2274,6 +2304,25 @@ export interface DateState {
     peekStatus: string;
     /** 当前批次解析出的观测数据（开了 OBSERVE 才有），用于恢复会话时回填 HUD */
     observation?: DateObservation;
+    /** 挂起那一刻最后一条 AI 回复的正文：恢复后据此判断离开期间有没有新回复要接着播。 */
+    lastAssistantContent?: string;
+    /** 还停在开场白上（用户没开过口）：恢复后照旧不给开场白配音。 */
+    showingOpening?: boolean;
+    /** 没发出去的输入框草稿。 */
+    draftInput?: string;
+}
+
+/** 见面对话中途走开时挂起的见面，只存在内存里（见 docs/date-leave-reminder.md）。 */
+export interface SuspendedDate {
+    charId: string;
+    charName: string;
+    encounterId: string;
+    peekStatus: string;
+    cameFromChat: boolean;
+    state: DateState | null;
+    suspendedAt: number;
+    /** 切走时还没回来的那次回复；恢复后据此显示「正在输入」，落定后刷新记录。 */
+    pendingTurn?: Promise<unknown>;
 }
 
 // ─── 见面 · 剧情剧场 ────────────────────────────────────────────────
@@ -2368,6 +2417,7 @@ export interface StoryTheaterEntry {
     archiveAfter: number;
     /** 归档时至少留在会话里的最近楼层数；旧数据默认 5。 */
     archiveKeepRecent?: number;
+    archiveMode?: 'auto' | 'manual';
     archiveStrategy: StoryTheaterArchiveStrategy;
     archives: StoryTheaterArchive[];
     /** 仅虚构剧场启用；真实陪伴继续沿用原有线性消息流。 */
@@ -2850,6 +2900,7 @@ export interface CharacterProfile {
       napMinutes?: number;
     };
   };
+  userPersona?: import('./utils/userPersona').CharacterUserPersona;
   /** Local default for this character's dialogue; absent means follow Settings. Never shared in cards. */
   dialogueApi?: DialogueApiConfig;
   id: string;
@@ -3198,14 +3249,15 @@ export interface CharacterProfile {
   // Cross-session guidebook insights: what char has discovered about user across games
   guidebookInsights?: string[];
 
-  // 主动消息配置
-  proactiveConfig?: {
-    enabled: boolean;
-    intervalMinutes: number; // 30, 60, 120, 240, etc.
-  };
-
   // 情绪Buff系统
   activeMsg2Config?: ActiveMsg2CharacterConfig;
+  /**
+   * 离开后消息：对方多久没说话，角色就来找对方（见 docs/away-message.md）。
+   * 开着主动消息 2.0 的角色走云端推送，其余在下次打开页面时本地补上。
+   */
+  awayMessage?: { enabled: boolean; delayMinutes?: number };
+  /** 见面离开提醒：见面对话中走开多久，角色在私聊里找对方（见 docs/date-leave-reminder.md）。 */
+  dateLeaveReminder?: { enabled: boolean; delayMinutes?: number };
   activeBuffs?: CharacterBuff[];
   buffInjection?: string;   // 注入到systemPrompt的叙事型情绪底色描述
   emotionConfig?: {
@@ -3338,7 +3390,6 @@ export interface CharacterProfile {
 
   /**
    * 虚拟世界「彼方」的个人状态：是否自主登入、登入间隔、各本小说的独立书签等。
-   * 独立于 proactiveConfig（主动发消息），互不挤占触发。
    */
   vrState?: VRWorldCharState;
 }
@@ -5288,6 +5339,7 @@ export interface FullBackupData {
     chatTranslateTargetLangByChar?: Record<string, string>;
     chatTranslateEnabledByChar?: Record<string, boolean>;
     chatTranslateExpandedByChar?: Record<string, boolean>;
+    chatTranslateStyleByChar?: Record<string, 'bubble' | 'subtitle'>;
     chatArchivePrompts?: any;
     journalDefaultTemplate?: { mode?: 'builtin' | 'custom' | 'blank'; customText?: string };
     chatActiveArchivePromptId?: string;

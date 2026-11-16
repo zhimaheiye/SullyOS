@@ -1,14 +1,16 @@
 # SullyOS · 个人二改
 
 <div align="center">
-<img width="800" alt="banner" src="https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/sDN.png" />
+<a href="art/sully-support/exports/readme-support-1600x860.png">
+<img width="800" alt="支持 Sully：微信赞赏码，所有赞赏用于项目更新与维护" src="art/sully-support/exports/readme-support-1600x860.png" />
+</a>
 </div>
 
 本仓库是芝麻基于 [SullyOS·糯米机](https://github.com/qegj567-cloud/SullyOS) 做的个人二改，是一个装在浏览器里的虚拟手机。芝麻已取得分享本仓库链接和公开这个二改实例的授权。
 
 想了解芝麻的实现，可以直接从[二改源码入口](#芝麻二改的源码入口)查看公开代码。其余项目功能与原作素材来自上游，个人非商业学习和参考适用原版许可。需要二改原版功能时，请通过官方 Discord（DC）社区向上游原作者申请授权。对外发布、再分发和使用官方在线服务各自需要相应授权，第三方内容遵循各自的许可。详见 [LICENSE](LICENSE) 和[上游社区授权说明](docs/community-authorization.md)。
 
-公开体验：[芝麻的 SullyOS](https://zhima-sullyos.netlify.app/)。功能范围见[公开版范围](docs/public-release.md)。
+公开体验：[GitHub Pages](https://zhimaheiye.github.io/SullyOS/) · [Netlify](https://zhima-sullyos.netlify.app/)（本次仅更新 GitHub Pages）。功能范围见[公开版范围](docs/public-release.md)。
 
 不是那种只有一个输入框的聊天页。里面有桌面、App、通知、相册和电话。你可以创建角色，再像使用手机一样和他们互动。
 
@@ -89,6 +91,19 @@
 
 哔哔与微博同步、彼方与 3D 小屋的万圣节活动、Anthropic 原生接口、语音识别、Android 图标切换和阅读美化均为原版贡献。原版已有的 HTML 卡片源码查看与复制沿用上游收编的实现，最初的社区创意来自芝麻。原版更新见小手机「更新日志 → 原版更新」。[上游仓库](https://github.com/qegj567-cloud/SullyOS) · [公开版范围](docs/public-release.md)
 
+## 2026 年 11 月原版同步
+
+本次同步上游至 [`4143862c7`](https://github.com/qegj567-cloud/SullyOS/commit/4143862c7)，以下均为**原版功能**：
+
+- **独立用户空间**：角色与经历、桌面和草稿按用户隔离；可继承角色配置、迁入独立用户，并按当前或全部用户备份。[说明与入口](docs/user-spaces.md)
+- **离开后消息与见面挂起**：按角色设置离开后的留言；见面途中切换 App 可以接续，离开提醒可单独开启。本地与云端适用条件见[离开后消息](docs/away-message.md)和[见面提醒](docs/date-leave-reminder.md)。
+- **聊天展示与记录**：外挂字幕、思考与回复分离、记忆日期编辑、查手机记录同步和哔哔账号身份改进。[字幕说明](docs/chat-translation.md)
+- **主动消息 2.0 与日常使用**：全局开关、第三方推送配置、免费天气兜底，以及网页缓存、音乐代理和备份改进。旧主动消息 1.0 已随上游下线。
+
+芝麻的最近会话置顶、单次 API 诊断、电脑本机小宇宙和独立批量创作继续保留，源码归属见上表。多用户空间本身来自上游；二改功能随所属用户保存。完整说明见小手机「更新日志 → 原版更新」的 [11 月同步记录](public/changelogs/upstream-2026-11-16.html)。
+
+公开版不连接官方主动消息中转、邮局／漂流瓶／信号及美化分享后台。本次只发布前端与供用户自行部署的 Worker 文件，不替用户更新正在运行的 Worker；云端新能力需要用户自行更新后端。小宇宙的电脑本机接口不由 GitHub Pages 提供。
+
 ## 本地运行
 
 包管理器是 pnpm。
@@ -125,6 +140,16 @@ Windows 上也可以双击 `run.bat` 或 `open-local-web.bat`，地址是 `http:
 - "叮叮叮！你有一条新的后悔情绪未处理！"
 
 但放心，我护短。如果你被人欺负，我会试图用 Bug 去攻击对方（大概）。
+
+## 支持上游作者 Sully
+
+以下为上游作者的赞赏入口，款项归上游作者，用于原项目更新与维护。**赞赏完全自愿，不影响正常使用**，不附带额外权益、更新承诺或优先服务。请按自己的意愿与余力决定就好。
+
+点击顶部横图可查看大图，也可单独保存 [微信赞赏小票](assets/sully-support/wechat-support-card.png)（单次上限 ¥200），再到微信扫一扫中从相册识别。应用内的入口在 **设置页最下方 → 打赏 Sully**。
+
+想留下名字的话，请在付款时的【添加备注】写下希望公开展示的署名。每月更新会收录进「饲养员感谢名单」；未备注默认为「神秘猫奴」。
+
+—— 条 & TO 敬上
 
 ## 配置说明（怎么让角色说话）
 
@@ -352,7 +377,7 @@ npx wrangler secret put JINA_API_KEY --config wrangler.public-proxy.toml
 | 功能 | 位置 | 说明 |
 |------|------|------|
 | 主动消息 2.0（含即时对话） | [`worker/amsg/`](./worker/amsg/) + 设置里一键部署或填地址 | 每个玩家部署自己的 Cloudflare Worker 和数据库。一键部署通过上面的公共代理转发该玩家自己的 Cloudflare 接口，不把数据存进发行方账号。教程见 [`docs/amsg2-setup-walkthrough.md`](./docs/amsg2-setup-walkthrough.md) |
-| 主动消息推送 | `worker/proactive-push/` + `utils/proactivePushConfig.ts` | 这个版本不附带任何私人推送地址，也不共用发行方正在运行的推送服务 |
+| 主动消息 2.0 | `worker/amsg/` | 用户自行部署并配置；旧 1.0 已下线，不共用发行方或上游的运行服务 |
 | 小红书 Lite | 跟随主代理的 `/api` | 公共代理负责签名。玩家仍要在设置里粘贴自己的小红书 cookie |
 | 网易云音乐（可选覆盖） | 播放器设置里可单独填 | 不填就跟随主代理。会员 cookie 仍是玩家自己的 |
 | Notion、飞书、云备份、语音 | 各自的设置 | 公共代理只转发玩家自己的账号和密钥，不保存备份或聊天记录 |

@@ -1,3 +1,6 @@
+import { resolveCharacterUser } from './userPersona';
+import { stripDateVoiceTranslations } from './dateVoiceText';
+import {weatherForCharacter} from './characterWeather';
 import {secretNoteContext} from './secretNote';
 import { buildCharacterResponsePrinciples } from './characterResponsePrinciples';
 import { expandHomeContextHistory } from './homeContextSegments';
@@ -39,6 +42,7 @@ import { filterGroupMessagesForMember, hasEverBeenGroupMember } from './groupCha
 import { voiceLanguagePromptLabel } from './voiceLanguage';
 import { serializeUserDiaryForExchange } from './journal';
 import { formatOperatorAccountActivity, isOperatorAuthoredCharacterMessage } from './operatorMessageProvenance';
+import { normalizeVoiceTags } from './sanitize';
 
 // 语音格式指导按当前 TTS 服务商二选一：用 MiniMax 才注入 MiniMax 那套（含 <#秒#> 停顿标记），
 // 用鱼声则注入鱼声版（去掉 MiniMax 专属标记，改用标点 / 省略号控制停顿）。
@@ -326,6 +330,7 @@ export const ChatPrompts = {
     ): Promise<{ stable: string; volatileState: string; recencyTail: string; history: import('./context').ContextMessage[] }> => {
         // 主动消息的模板是最后一次聊天时打好、到点才渲染的，凡是「打包这一刻」的状态
         // 到触发时都已经过期，一律不烤进模板。见 PromptBuildOptions 的清单。
+        userProfile = resolveCharacterUser(userProfile, char);
         const forFirePack = promptOptions?.forFirePack === true;
         const toolsEnabled = !promptOptions?.disableTools;
         // 即时对话：这一轮交给 worker 生成，时钟和真实世界块由它在 fire 时刻补。
@@ -350,13 +355,13 @@ export const ChatPrompts = {
             })
             : Promise.resolve(null);
         const userLocationPromise = forFirePack
-            ? Promise.resolve(getBackgroundUserLocationContext(userProfile.name))
-            : promptOptions?.includeUserLocation ? getUserLocationContext(userProfile.name) : Promise.resolve('');
+            ? Promise.resolve(getBackgroundUserLocationContext(userProfile.name, char.id))
+            : promptOptions?.includeUserLocation ? getUserLocationContext(userProfile.name, char.id) : Promise.resolve('');
 
         // 记忆宫殿检索结果现在从 char.memoryPalaceInjection 读取。
         // deferVolatile：时间/宫殿召回/情绪 buff 三块不进 stable，由下面的 volatileState 承接。
         const coreT0 = performance.now();
-        const config = realtimeConfig || defaultRealtimeConfig;
+        const config = weatherForCharacter(realtimeConfig || defaultRealtimeConfig, char.id);
         if (!forFirePack && !timelyByWorker && char.timeAwarenessEnabled !== false && config.userHolidays?.enabled) {
             await RealtimeContextManager.getUserHoliday(config, userProfile.name);
         }
@@ -1005,7 +1010,7 @@ ${xhsEnabled ? `${[notionEnabled, feishuEnabled, notionNotesEnabled].filter(Bool
         // 状态也会隐藏 date/call/story 消息，而 API 历史仍会携带它们。
         // fire_pack 不烤：打包时确实刚挂电话，但那条主动消息可能是第二天凌晨才发出去的，
         // 角色照着这句接一句「刚才电话里说的那个……」就穿帮了。
-        const returningFromMode = !forFirePack
+        const returningFromMode = !forFirePack && promptOptions?.appRules === undefined
             ? (promptOptions?.returningFromMode || detectChatModeTransition(currentMsgs))
             : null;
         if (returningFromMode) {
@@ -1162,7 +1167,9 @@ ${voiceActingGuide()}`;
                     if(options?.useVisionDescriptions || !images.length)return {role:m.role,content:text+(images.length?'\n配图描述暂不可用，请不要猜测。':'')};
                     return {role:m.role,content:[{type:'text',text},...images.map((url:string)=>({type:'image_url',image_url:{url}}))]};
                 }
-                let content: any = m.content;
+                // 历史里的坏语音格式按规范写法呈现：模型照着上文学格式，旧错不能一路示范下去
+                let content: any = m.role === 'assistant' && typeof m.content === 'string' ? normalizeVoiceTags(m.content) : m.content;
+                if (m.metadata?.source === 'date' && m.role === 'assistant') content = stripDateVoiceTranslations(content || '');
                 const timeStr = timeAwarenessOn && hasReliableMessageTimestamp(m) ? `[${ChatPrompts.formatDate(m.timestamp, charTz)}]` : '';
                 const sourceTag = (() => {
                     const source = m.metadata?.source;

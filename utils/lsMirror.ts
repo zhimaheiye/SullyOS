@@ -17,6 +17,7 @@
  */
 
 import { DB } from './db';
+import { subscribeSpaceStorageChanges } from './userSpaces';
 import { HOME3D_LOCAL_KEYS } from './home3DBackup';
 import { healAllMemoryPalaceHighWaterMarks } from './memoryPalace/highWaterMark';
 
@@ -127,6 +128,93 @@ export const MIRRORED_KEYS: readonly string[] = [
     'os_last_active_char_id',
     'sully-recent-conversation-pins-v1',
     'sully-chat-action-order-v1',        // 私聊/群聊「＋」功能格排序
+    // 悬浮球与快捷导航
+    'sully_navigation_ball_enabled_v1',
+    'sully_navigation_ball_slots_v1',
+    'sully_navigation_ball_position_v1',
+    // SAR 活动室存档与偏好（钓鱼/恐龙箱庭/NPC好感剧情/收藏册/芯片抽卡/模块商店/推演）
+    'vr_fishing_market_v1',
+    'vr_sar_club_v1',
+    'vr_sar_gacha_v1',
+    'vr_sar_module_shop_v1',
+    'vr_sar_simulations_v1',
+    'vr_fishing_simple_mode',
+    'vr_sar_session_theme_v1',
+    'sar-garden-guide-v1',
+    'sar-facility-guide-water-v1',
+    'sar-facility-guide-garden-v1',
+    'sar-facility-guide-gacha-v1',
+    'sar-facility-guide-simulation-v1',
+    'sar-facility-guide-modules-v1',
+    'sar-facility-guide-npc-v1',
+    'sar-facility-guide-collection-v1',
+    // 瑞幸 / 麦当劳 / 通用 MCP 配置
+    'aetheros.luckin.mcpToken',
+    'aetheros.luckin.mcpEnabled',
+    'aetheros.mcd.mcpToken',
+    'aetheros.mcd.mcpEnabled',
+    'aetheros.mcp.servers',
+    'aetheros.mcp.useNativeTools',
+    // 音乐登录、播放队列与自创专辑
+    'sully_music_cfg_v1',
+    'sully_music_state_v1',
+    'sully_music_local_album_v1',
+    // 彼方/家园定时排程
+    'vr_schedules',
+    'vr_last_fire_map',
+    'world_home_schedules',
+    'world_home_last_fire_map',
+    // 彼方邮局身份与信号坠落处归属
+    'vr_po_base',
+    'vr_po_device',
+    'signal_my_authorship',
+    'signal_my_lines',
+    'signal_notice_ack',
+    // 网络代理、搜索与其它全局偏好
+    'sully_proxy_worker_url',
+    'browser_brave_key',
+    'browser_use_real_search',
+    'sully_firecrawl_api_key',
+    'sullyos_chat_input_preferences_v1',
+    'schedule_app_theme',
+    'handbook_lifestream_depth',
+    'groupchat_context_limit',
+    'bm25_mode',
+    'spark_char_handles',
+    'spark_user_id',
+    // 桌面皮肤与美化偏好/作者身份
+    'companion_frame_style_v1',
+    'companion_layout_v1',
+    'tama_style_v2',
+    'mg_style_v1',
+    'tama_board_fg',
+    'tama_accent_hue',
+    'sully-beauty-author-identity-v1',
+    'sully-beauty-usage-v1',
+    'sully-beauty-repo-status-v1',
+    'sully-beauty-author-defaults-v1',
+    'sullyos_chat_wardrobe_update_v2_seen',
+    'sullyos_chat_wardrobe_guide_v2_done',
+    'sully-beauty-catalog-notice-v1',
+    'sully-beauty-author-notice-v1',
+    // 免责声明、引导与版本更新公告已读标记（防清 localStorage 后重弹历史更新队列）
+    'sullyos_disclaimer_accepted',
+    'os_first_use_memory_guide_v1',
+    'sullyos_backup_reminder',
+    'sullyos_anniversary_gift_v1',
+    'sullyos_real_location_intro_v1_seen',
+    'sullyos_navigation_ball_intro_v1_seen',
+    'sullyos_update_user_spaces_v1_seen',
+    'sullyos_update_20261115_amsg2_seen',
+    'sullyos_update_20261115_support_seen',
+    'sullyos_update_2026_10_home3d_beta_seen',
+    'sullyos_update_2026_09_small_updates_seen',
+    'sullyos_user_holidays_intro_v1',
+    'sullyos_update_2026_09_11_sar_seen',
+    'sullyos_notice_2026_08_network_transit_seen',
+    'sullyos_update_2026_08_30_collaboration_seen',
+    'sullyos_update_2026_08_10_live2d_seen',
+    'sullyos_update_2026_08_03_amsg2_seen',
 ];
 
 const MIRROR_ASSET_ID = 'ls_mirror_v1';
@@ -218,6 +306,7 @@ export async function initLocalStorageMirror(): Promise<string[]> {
 
     if (!listenersAttached && typeof window !== 'undefined' && typeof document !== 'undefined') {
         listenersAttached = true;
+        subscribeSpaceStorageChanges(key => { if (key === '*' || MIRRORED_KEYS_SET.has(key)) scheduleDebouncedSnapshot(); });
         const snap = () => {
             if (pendingDebounceTimer !== null) {
                 clearTimeout(pendingDebounceTimer);

@@ -1,3 +1,5 @@
+import {cleanCharacterWeatherCities} from './characterWeather';
+import { normalizeFreeWeatherSource, type FreeWeatherSource } from './weatherSources';
 /**
  * amsgToolPack — 满血 v2 服务端工具循环的云端状态数据形状（前端 / amsg worker 共用）
  *
@@ -52,11 +54,13 @@ export interface AmsgToolConfig extends AgenticToolRealtimeConfig {
   proxyWorkerUrl: string;
   /**
    * 实时天气：worker 到点自己去拉一次填进提示词（不是工具，是常驻注入，跟前台一样）。
-   * key 留空走免费的 Open-Meteo，所以只要开关加城市就够。
+   * key 留空走所选免费源，失败后自动尝试另一免费源。
    */
   weatherEnabled: boolean;
+  weatherCities?: Record<string, string>;
   weatherCity?: string;
   weatherApiKey?: string;
+  weatherFreeSource?: FreeWeatherSource;
   /** 热榜要拉哪几个平台（继承来的 newsEnabled 管开关）。留空 worker 用内置默认。 */
   newsPlatforms?: string[];
   /** 上云这份比工具侧多一个 cookie（lite 模式的登录态），并且两个开关字段是必填。 */
@@ -134,8 +138,10 @@ export const buildToolConfig = (
     proxyWorkerUrl: getProxyWorkerUrl(),
     weatherEnabled: !!rc?.weatherEnabled,
     ...(rc?.userHolidays ? { userHolidays: { ...rc.userHolidays, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone } } : {}),
+    ...(rc?.weatherCities ? {weatherCities: cleanCharacterWeatherCities(rc.weatherCities)} : {}),
     ...(rc?.weatherCity ? { weatherCity: rc.weatherCity } : {}),
     ...(rc?.weatherApiKey ? { weatherApiKey: rc.weatherApiKey } : {}),
+    weatherFreeSource: normalizeFreeWeatherSource(rc?.weatherFreeSource),
     newsEnabled: !!rc?.newsEnabled,
     ...(rc?.newsApiKey ? { newsApiKey: rc.newsApiKey } : {}),
     ...(rc?.newsPlatforms?.length ? { newsPlatforms: rc.newsPlatforms } : {}),
@@ -217,6 +223,8 @@ export const parseToolConfig = (value: string): AmsgToolConfig | null => {
       // 原生 tools 是整个模型请求的传输偏好，排程工具也需要它。
       delete parsed.mcpServers;
     }
+    if (parsed.weatherCities !== undefined) parsed.weatherCities = cleanCharacterWeatherCities(parsed.weatherCities);
+    parsed.weatherFreeSource = normalizeFreeWeatherSource(parsed.weatherFreeSource);
     return parsed as AmsgToolConfig;
   } catch {
     return null;

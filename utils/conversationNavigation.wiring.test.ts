@@ -35,7 +35,8 @@ describe('recent conversation navigation wiring', () => {
 
     it('uses the fine-grained chat snapshot for every private unread writer', () => {
         expect(osContext).not.toContain('setChatViewSnapshot(');
-        expect(osContext.match(/isPrivateChatActivelyVisible\(/g)).toHaveLength(4);
+        // Upstream retired the proactive 1.0 writer; the three remaining writers retain the visibility gate.
+        expect(osContext.match(/isPrivateChatActivelyVisible\(/g)).toHaveLength(3);
         expect(osContext).not.toContain('activeAppRef.current === AppID.Chat && activeCharIdScheduleRef.current ===');
     });
 

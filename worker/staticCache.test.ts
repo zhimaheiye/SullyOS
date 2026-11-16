@@ -1,6 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { webcrypto } from 'node:crypto';
 import { createStaticCache, type StaticManifest } from './staticCache';
+import { CODE_IDLE_TIMEOUT_MS, StaticCodeTimeoutError } from './staticCodeFetch';
+
+afterEach(() => vi.useRealTimers());
 
 // Cache Storage is a browser boundary; responses and requests remain real Fetch objects.
 class MemoryCache {
@@ -17,13 +20,13 @@ class MemoryCaches {
   async delete(name: string) { return this.stores.delete(name); }
 }
 const BASE = 'https://example.com/SullyOS/';
-async function fixture(buildId = 'one', storage = new MemoryCaches(), limits: { maxEntries?: number; maxBytes?: number } = {}) {
+async function fixture(buildId = 'one', storage = new MemoryCaches(), limits: { maxEntries?: number; maxBytes?: number } = {}, extraShell: string[] = []) {
   // Every release rebuilds the entry chunk, so its hashed name is unique to the build.
   const main = `assets/build/main-${buildId}-abcdefgh.js`;
   const lazy = 'assets/build/lazy-ijklmnop.js';
   const css = 'assets/build/ChatInputArea-DVfhoVgz.css';
   const bodies: Record<string, string> = {
-    'index.html': `<html>${buildId}<script type="module" src="./${main}"></script></html>`, [main]: 'console.log(1)', [lazy]: 'lazy',
+    'index.html': `<html>${buildId}<script data-sully-build="${buildId}"></script><script type="module" src="./${main}"></script></html>`, [main]: 'console.log(1)', [lazy]: 'lazy',
     [css]: '.chat{display:flex}',
     'themes/a.webp': 'image', 'themes/b.webp': 'image b', 'themes/c.webp': 'image c',
   };
@@ -31,13 +34,13 @@ async function fixture(buildId = 'one', storage = new MemoryCaches(), limits: { 
   const entries = await Promise.all(Object.entries(bodies).map(async ([url, body]) => ({
     url, bytes: body.length, revision: Buffer.from(await webcrypto.subtle.digest('SHA-256', new TextEncoder().encode(body))).toString('hex'),
   })));
-  const manifest: StaticManifest = { buildId, appVersion: 'v3.12', entries, shell: ['index.html', main] };
+  const manifest: StaticManifest = { buildId, appVersion: 'v3.12', entries, shell: ['index.html', main, ...extraShell] };
   let offline = false;
   let time = 1_000_000;
   const requests: string[] = [];
   const requestModes: string[] = [];
   const pending: Promise<unknown>[] = [];
-  const hooks: { respond?: (request: Request) => Response | undefined } = {};
+  const hooks: { respond?: (request: Request) => Response | undefined | Promise<Response> } = {};
   const engine = createStaticCache({
     manifest, scope: BASE, caches: storage as unknown as CacheStorage, ...limits, now: () => time,
     digest: async bytes => Buffer.from(await webcrypto.subtle.digest('SHA-256', bytes)).toString('hex'),
@@ -61,6 +64,170 @@ async function fixture(buildId = 'one', storage = new MemoryCaches(), limits: { 
 }
 
 describe('static resource cache', () => {
+  it('accepts host-injected HTML only when both page identity and build references match', async () => {
+    const f = await fixture();
+    f.bodies['index.html'] = f.bodies['index.html'].replace('</html>', '<script>/* host injection */</script></html>');
+    await f.engine.install();
+    expect((await f.engine.stats()).offlineReady).toBe(true);
+  });
+  it.each(['older-build', ''])('rejects stale HTML identity %s even with identical JS URLs', async identity => {
+    const f = await fixture();
+    f.bodies['index.html'] = f.bodies['index.html'].replace('data-sully-build="one"', identity ? `data-sully-build="${identity}"` : '');
+    await expect(f.engine.install()).rejects.toThrow();
+    expect((await f.engine.stats()).offlineReady).toBe(false);
+  });
+  it.each(['js', 'css'])('retries a stalled %s body once without returning partial bytes', async kind => {
+    const f = await fixture();
+    vi.useFakeTimers();
+    const path = kind === 'js' ? f.lazy : f.css;
+    let firstSignal: AbortSignal | undefined;
+    f.hooks.respond = request => {
+      if (request.url.endsWith(path) && request.cache !== 'reload') {
+        firstSignal = request.signal;
+        return new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('partial')); } }));
+      }
+      return undefined;
+    };
+    const result = f.text(path);
+    await vi.advanceTimersByTimeAsync(CODE_IDLE_TIMEOUT_MS);
+    expect(await result).toBe(f.bodies[path]);
+    expect(firstSignal?.aborted).toBe(true);
+    expect(f.requestModes).toEqual(['default', 'reload']);
+    await f.settle(); f.offline();
+    expect(await f.text(path)).toBe(f.bodies[path]);
+  });
+  it('fails after two header stalls and does not mark an intact release stale', async () => {
+    const f = await fixture();
+    vi.useFakeTimers();
+    f.hooks.respond = () => new Promise(() => {});
+    const result = f.text(f.lazy);
+    const check = expect(result).rejects.toBeInstanceOf(StaticCodeTimeoutError);
+    await vi.advanceTimersByTimeAsync(CODE_IDLE_TIMEOUT_MS * 2);
+    await check;
+    expect(f.requestModes).toEqual(['default', 'reload']);
+    expect([...f.storage.stores.values()].flatMap(cache => [...cache.entries.keys()])).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it('replaces only the cached script whose body never finishes', async () => {
+    const f = await fixture(); await f.engine.install();
+    const shell = [...f.storage.stores.values()][0];
+    await shell.put(BASE + f.main, new Response(new ReadableStream({
+      start(controller) { controller.enqueue(new TextEncoder().encode('partial')); },
+    })));
+    f.requests.length = 0; f.requestModes.length = 0;
+    vi.useFakeTimers();
+    const result = f.text(f.main);
+    await vi.advanceTimersByTimeAsync(CODE_IDLE_TIMEOUT_MS);
+    expect(await result).toBe('console.log(1)');
+    expect(f.requestModes).toEqual(['reload']);
+    await f.settle(); f.offline();
+    expect(await f.text('')).toContain('<html>one');
+    expect(await f.text(f.main)).toBe('console.log(1)');
+  });
+  it('shares the single retry budget between timeout and integrity failures', async () => {
+    const f = await fixture();
+    vi.useFakeTimers();
+    f.hooks.respond = request => request.cache === 'reload' ? new Response('corrupt') : new Promise(() => {});
+    const result = f.engine.handle(new Request(BASE + f.lazy))!;
+    await vi.advanceTimersByTimeAsync(CODE_IDLE_TIMEOUT_MS);
+    expect((await result).type).toBe('error');
+    expect(f.requestModes).toEqual(['default', 'reload']);
+    await f.settle();
+  });
+  it('does not retry a caller-aborted code request', async () => {
+    const f = await fixture();
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    f.hooks.respond = () => new Promise(() => {});
+    const result = f.engine.handle(new Request(BASE + f.lazy, { signal: controller.signal }))!;
+    const check = expect(result).rejects.toMatchObject({ name: 'AbortError' });
+    await vi.advanceTimersByTimeAsync(0); controller.abort(); await check;
+    expect(f.requests).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it('does not apply code deadlines or body buffering to images', async () => {
+    const f = await fixture();
+    vi.useFakeTimers();
+    let finish!: (response: Response) => void;
+    f.hooks.respond = () => new Promise(resolve => { finish = resolve; });
+    const result = f.text('themes/a.webp');
+    await vi.advanceTimersByTimeAsync(CODE_IDLE_TIMEOUT_MS * 3);
+    expect(f.requests).toHaveLength(1);
+    finish(new Response('image'));
+    expect(await result).toBe('image'); await f.settle();
+  });
+  it('keeps successful concurrent downloads after a failure and resumes only missing files after a restart', async () => {
+    const extraShell = ['themes/a.webp', 'themes/b.webp', 'themes/c.webp'];
+    const f = await fixture('one', new MemoryCaches(), {}, extraShell);
+    f.hooks.respond = request => {
+      if (request.url.endsWith('themes/b.webp')) throw new TypeError('connection closed');
+      return undefined;
+    };
+    await expect(f.engine.install()).rejects.toThrow('connection closed');
+    expect((await f.engine.stats()).offlineReady).toBe(false);
+    expect(f.requests).not.toContain(BASE);
+
+    // A partial shell survives a worker restart and optional-cache clearing, but cannot boot.
+    const offline = await fixture('one', f.storage, {}, extraShell);
+    await offline.engine.clearRuntime(); offline.offline();
+    expect(await offline.text(offline.main)).toBe('console.log(1)');
+    expect(await offline.text('themes/a.webp')).toBe('image');
+    expect(await offline.text('themes/c.webp')).toBe('image c');
+    await expect(offline.text('')).rejects.toThrow('offline');
+
+    const resumed = await fixture('one', f.storage, {}, extraShell);
+    await resumed.engine.install();
+    expect(resumed.requests).toEqual([BASE + 'themes/b.webp', BASE]);
+    expect((await resumed.engine.stats()).offlineReady).toBe(true);
+    resumed.offline();
+    expect(await resumed.text('')).toContain('<html>one');
+    expect(await resumed.text(resumed.main)).toBe('console.log(1)');
+  });
+  it('does not retain corrupt downloads and revalidates files retained by an incomplete installation', async () => {
+    const f = await fixture('one', new MemoryCaches(), {}, ['themes/a.webp']);
+    f.hooks.respond = request => request.url.endsWith(f.main) ? new Response('console.log(2)') : undefined;
+    await expect(f.engine.install()).rejects.toThrow();
+    const shell = [...f.storage.stores].find(([name]) => name.endsWith('-shell-one'))![1];
+    expect(await shell.match(BASE + f.main)).toBeUndefined();
+    expect((await f.engine.stats()).offlineReady).toBe(false);
+    expect([...shell.entries.keys()].some(key => key.includes('themes/a.webp'))).toBe(true);
+
+    // A previously verified file can itself become damaged while stored. Never trust it on resume.
+    await shell.put(BASE + f.main, new Response('console.log(2)'));
+    const resumed = await fixture('one', f.storage, {}, ['themes/a.webp']);
+    await resumed.engine.install();
+    expect(resumed.requests).toEqual([BASE + resumed.main, BASE]);
+    expect(resumed.requestModes).toEqual(['reload', 'no-cache']);
+    resumed.offline(); expect(await resumed.text(resumed.main)).toBe('console.log(1)');
+  });
+  it('retains dependencies when the entry page fails validation and downloads only the entry on retry', async () => {
+    const f = await fixture();
+    const entry = f.bodies['index.html'];
+    f.bodies['index.html'] = '<html><script src="./assets/build/wrong-abcdefgh.js"></script></html>';
+    await expect(f.engine.install()).rejects.toThrow();
+    expect((await f.engine.stats()).offlineReady).toBe(false);
+    f.bodies['index.html'] = entry;
+    f.requests.length = 0;
+    await f.engine.install();
+    expect(f.requests).toEqual([BASE]);
+    expect((await f.engine.stats()).offlineReady).toBe(true);
+  });
+  it('shares concurrent installation attempts and allows retry after the shared failure', async () => {
+    const f = await fixture();
+    f.hooks.respond = request => {
+      if (request.url.endsWith(f.main)) throw new TypeError('connection closed');
+      return undefined;
+    };
+    const first = f.engine.install();
+    const second = f.engine.install();
+    expect(second).toBe(first);
+    const attempts = await Promise.allSettled([first, second]);
+    expect(attempts.map(attempt => attempt.status)).toEqual(['rejected', 'rejected']);
+    expect(f.requests).toEqual([BASE + f.main]);
+    f.hooks.respond = undefined;
+    await f.engine.install();
+    expect((await f.engine.stats()).offlineReady).toBe(true);
+  });
   it('repairs truncated immutable HTTP responses before returning script bytes to the page', async () => {
     const f = await fixture();
     f.hooks.respond = request => request.url.endsWith(f.main) && request.cache !== 'reload'
@@ -303,6 +470,25 @@ describe('static resource cache', () => {
     expect(names.filter(name => name.includes('-shell-'))).toHaveLength(2);
     expect(names).toContain('different-app');
     expect(names.some(name => name.endsWith('-shell-a'))).toBe(false);
+  });
+  it('keeps the last complete release when newer incomplete releases are cleaned up', async () => {
+    const a = await fixture('a'); await a.engine.install();
+    await a.storage.open('different-app');
+    for (const build of ['b', 'c', 'd']) {
+      const update = await fixture(build, a.storage);
+      update.bodies['index.html'] = '<html>missing entry</html>';
+      await expect(update.engine.install()).rejects.toThrow();
+      await update.engine.activate();
+    }
+    const names = await a.storage.keys();
+    expect(names.filter(name => name.includes('-shell-')).map(name => name.split('-shell-')[1])).toEqual(['a', 'c', 'd']);
+    expect(names).toContain('different-app');
+    a.offline(); expect(await a.text('')).toContain('<html>a');
+
+    // Once another complete release exists, it replaces a as the offline fallback.
+    const e = await fixture('e', a.storage); await e.engine.install(); await e.engine.activate();
+    const next = await fixture('f', a.storage); await next.engine.install(); await next.engine.activate();
+    expect((await a.storage.keys()).filter(name => name.includes('-shell-')).map(name => name.split('-shell-')[1])).toEqual(['e', 'f']);
   });
   it('returns successful network data even if Cache Storage is unavailable', async () => {
     const f = await fixture();

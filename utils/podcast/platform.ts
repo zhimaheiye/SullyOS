@@ -5,7 +5,7 @@ export type PlatformSnapshot = { rows: PodcastRecord[]; revision: number; epoch:
 export type PlatformLease = { platform: 'podcast'; revision: number; epoch: string; canonToken: string };
 export type PodcastMode = { token: string; playMode: 'normal' };
 export const readPodcastMode = async (): Promise<PodcastMode> => ({ token: 'public', playMode: 'normal' });
-const announce = () => window.dispatchEvent(new Event('podcast-updated'));
+const announce = () => { if (typeof window !== 'undefined') window.dispatchEvent(new Event('podcast-updated')); };
 const storeName = 'podcast_records';
 export async function readPlatform(_platform: 'podcast'): Promise<PlatformSnapshot> {
     const db = await openDB();

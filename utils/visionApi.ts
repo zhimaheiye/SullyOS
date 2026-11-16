@@ -3,7 +3,8 @@ import type { ExplicitVisionPermit } from './explicitVisionAction';
 import { isManualRelayEnabled } from './manualModelRelay';
 import type { ApiPreset, Message, VisionApiConfig } from '../types';
 import { DB } from './db';
-import { safeFetchJson } from './safeApi';
+import { getApiCallAmbientContext, type ApiCallMeta } from './apiCallLog';
+import { extractContent, safeFetchJson } from './safeApi';
 import { normalizeApiBaseUrl, normalizeApiCredential, normalizeApiModel } from './apiConfigNormalize';
 import { isBlobRef, resolveRefToDataUrl } from './blobRef';
 import { readStickerVision, readStickerVisionDescription } from './stickerVision';
@@ -86,6 +87,7 @@ export async function describeImageWithVisionApi(
   imageUrl: string,
   config: VisionApiConfig,
   options?: { prompt?: string; signal?: AbortSignal; retries?: number; privateTransient?: boolean; explicitPermit?: ExplicitVisionPermit; frameUrls?: string[]; gif?: boolean },
+  meta?: ApiCallMeta,
 ): Promise<string> {
   if (!isVisionApiReady(config)) {
     throw new Error('识图 API 已开启，但 URL、Key 或 Model 尚未填写完整');
@@ -98,6 +100,15 @@ export async function describeImageWithVisionApi(
   const dedupKey = `${prompt}\u0000${imageUrl}`;
   const existing = inFlightDescriptions.get(dedupKey);
   if (existing && !options?.signal) return existing;
+
+  const ambient = getApiCallAmbientContext();
+  const callMeta: ApiCallMeta = meta
+    ? { ...meta, purpose: meta.purpose || '识图' }
+    : {
+      ...ambient,
+      appName: ambient.appName || '消息',
+      purpose: '识图',
+    };
 
   const request = (async () => {
     options?.signal?.throwIfAborted();
@@ -128,7 +139,7 @@ export async function describeImageWithVisionApi(
         max_tokens: 1200,
         stream: false,
       }),
-    }, options?.retries ?? 1, 60_000, { appName: '消息', purpose: options?.explicitPermit ? '手动补全图片描述' : options?.privateTransient ? '外貌标签' : '识图' }, undefined,
+    }, options?.retries ?? 1, 60_000, { ...callMeta, purpose: options?.explicitPermit ? '手动补全图片描述' : options?.privateTransient ? '外貌标签' : '识图' }, undefined,
     { privateTransient: true, explicitVision: options?.explicitPermit });
     } catch (error) {
       if (options?.signal?.aborted || error instanceof Error && error.name === 'AbortError') throw error;
@@ -156,6 +167,7 @@ export async function describeImageWithVisionApi(
 export async function materializeVisionDescriptions(
   messages: Message[],
   config?: VisionApiConfig | null,
+  meta?: ApiCallMeta,
 ): Promise<Message[]> {
   messages = await reuseCachedVisionMessages(messages);
   if (isManualRelayEnabled() || config?.enabled !== true) return messages;
@@ -173,7 +185,7 @@ export async function materializeVisionDescriptions(
       const refs=share.imageRefs.filter((r:unknown)=>typeof r==='string'&&(isBlobRef(r)||r.startsWith('data:image/'))).slice(0,18);
       const descriptions:string[]=[];
       for(const [index,ref] of refs.entries()){
-        const description=descriptionByImage.get(ref)||await describeImageWithVisionApi(ref,config);
+        const description=descriptionByImage.get(ref)||await describeImageWithVisionApi(ref,config,undefined,meta);
         descriptionByImage.set(ref,description);descriptions.push(`配图 ${index+1}：${description}`);
       }
       if(!descriptions.length){prepared.push(message);continue;}
@@ -200,7 +212,7 @@ export async function materializeVisionDescriptions(
       continue;
     }
     let description = descriptionByImage.get(imageUrl)
-      || await describeImageWithVisionApi(imageUrl, config);
+      || await describeImageWithVisionApi(imageUrl, config, undefined, meta);
     descriptionByImage.set(imageUrl, description); await seedKnownLocalVision(imageUrl, 'photo-v1', description);
     const latest = await findStableVisionAsset(imageUrl, 'photo-v1');
     if (latest) description = latest.description;

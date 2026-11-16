@@ -1,3 +1,4 @@
+import CharacterLinkActions from '../components/character/CharacterLinkActions';
 import CharacterApiPanel from '../components/character/CharacterApiPanel';
 import CharacterSettingsSection from '../components/character/CharacterSettingsSection';
 import CharacterStatsPanel from '../components/character/CharacterStatsPanel';
@@ -570,7 +571,7 @@ const Character: React.FC = () => {
                   ],
                   temperature: 0.3,
               })
-          }, 0, 0, { appName: '角色', charId: targetId, purpose: '月度记忆精炼', featureId: 'memorySummary' });
+          }, 0, 0, { appId: 'character', appName: '神经链接', charId: targetId, charName: formData.name, featureId: 'memorySummary', purpose: '月度核心记忆提炼' });
           const dt = Math.round(performance.now() - t0);
           const summary = extractContent(data);
           if (!summary) {
@@ -666,7 +667,7 @@ const Character: React.FC = () => {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
               body: JSON.stringify({ model: apiConfig.model, messages: (await ContextBuilder.buildCharacterRequest(characterContextInput, [{ role: 'user', content: prompt }])), temperature: 0.5, max_tokens: 8000, stream: false }),
-          }, 0, 0, { appName: '角色', charId: targetId, purpose: '日记归档', featureId: 'memorySummary' });
+          }, 0, 0, { appId: 'character', appName: '神经链接', charId: targetId, charName: formData.name, featureId: 'memorySummary', purpose: '单日记忆强制归档' });
           let summary = extractContent(data).replace(/^["']|["']$/g, '');
           if (!summary) throw new Error('空响应');
 
@@ -853,7 +854,7 @@ const Character: React.FC = () => {
                             max_tokens: 8000,
                             temperature: 0.5
                         })
-                    }, 0, 0, { appName: '角色', charId: targetId, purpose: '批量日记归档', featureId: 'memorySummary' });
+                    }, 0, 0, { appId: 'character', appName: '神经链接', charId: targetId, charName: formData.name, featureId: 'memorySummary', purpose: '批量记忆总结' });
                 } catch {
                     // 单天失败软跳过，继续后面的日期（与原 if(response.ok) 的语义一致）
                 }
@@ -1043,7 +1044,7 @@ ${isInitialGeneration ? `
                   // 流式响应由 safeResponseJson 拼回完整对象，下游 extractContent 无需改动。
                   stream: apiConfig.stream === true
               })
-          }, 0, 0, { appName: '角色', charId: targetId, purpose: '印象归纳', featureId: 'memorySummary' });
+          }, 0, 0, { appId: 'character', appName: '神经链接', charId: targetId, charName, featureId: 'memorySummary', purpose: '生成用户印象档案' });
           const parsed = parseGeneratedImpression(data);
 
           if (editingIdRef.current === targetId) {
@@ -1316,9 +1317,7 @@ ${isInitialGeneration ? `
                                            </div>
                                        );
                                    })}
-                                   <button onClick={handleAddCharacter} className="w-full py-4 rounded-3xl border border-dashed border-violet-300/70 text-violet-400 text-sm bg-white/50 hover:bg-white transition-colors flex items-center justify-center gap-2 shrink-0">
-                                       <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>新建链接
-                                   </button>
+                                   <CharacterLinkActions onCreate={handleAddCharacter} />
                                </>
                            );
                        }
@@ -1340,9 +1339,7 @@ ${isInitialGeneration ? `
                                        }}
                                    />
                                ))}
-                               <button onClick={handleAddCharacter} className="w-full py-4 rounded-3xl border border-dashed border-violet-300/70 text-violet-400 text-sm bg-white/50 hover:bg-white transition-colors flex items-center justify-center gap-2 shrink-0">
-                                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>新建链接
-                               </button>
+                               <CharacterLinkActions onCreate={handleAddCharacter} />
                                {totalPages > 1 && (
                                    <div className="flex items-center justify-center gap-3 pt-2 shrink-0">
                                        <button onClick={() => setCharPage(Math.max(0, page - 1))} disabled={page === 0}

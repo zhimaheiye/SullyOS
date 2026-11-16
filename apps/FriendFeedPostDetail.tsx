@@ -9,7 +9,8 @@ import FriendFeedImages from './FriendFeedImages';
 import FriendFeedWeiboComments from './FriendFeedWeiboComments';
 import {sourceLabel} from '../utils/friendFeedSource';
 
-export default function FriendFeedPostDetail({post,characters,user,onComment,onProfile,onRefresh,busy,status,replying,onShare,onReply,focusComment,onReadVisible}: {
+export default function FriendFeedPostDetail({post,characters,user,onComment,onProfile,onRefresh,busy,status,replying,onShare,onReply,focusComment,onReadVisible,onEdit,onDelete}: {
+    onEdit?:(comment:FriendComment)=>void;onDelete?:(comment:FriendComment)=>void;
     post?:FriendPost;characters:CharacterProfile[];user:UserProfile;onComment:()=>void;onProfile:(id:string,accountId?:string)=>void;onRefresh:()=>void;busy:boolean;status:string;replying:boolean;onShare?:()=>void;onReply?:(target:FriendReplyTarget)=>void;focusComment?:{id:string};onReadVisible?:(ids:string[])=>void;
 }) {
     const [expanded,setExpanded]=useState<Set<string>>(()=>new Set());
@@ -38,12 +39,15 @@ export default function FriendFeedPostDetail({post,characters,user,onComment,onP
     if(!post)return <p className="friend-feed-empty">这条动态已删除或已隐藏。</p>;
     const author=characters.find(c=>c.id===post.authorId);
     const name=post.accountId&&post.accountId!=='main'?post.authorName:post.authorId==='user'?user.name||'我':author?.name||post.authorName;
-    const renderComment=(c:FriendComment,nested=false)=><article className="ff-detail-comment" key={c.id} data-comment-id={c.id} tabIndex={-1} data-highlighted={focusComment?.id===c.id||undefined}>
+    const renderComment=(c:FriendComment,level:1|2|3=1)=><article className="ff-detail-comment" key={c.id} data-comment-id={c.id} data-level={level} tabIndex={-1} data-highlighted={focusComment?.id===c.id||undefined}>
         <FriendFeedAvatar name={c.authorName} avatar={c.accountId&&c.accountId!=='main'?undefined:c.authorId==='user'?user.avatar:characters.find(char=>char.id===c.authorId)?.avatar}/>
-        <div><button type="button" className="ff-setting-link" onClick={()=>onProfile(c.authorId,c.accountId)}>{c.authorName}</button>{c.localReply&&(nested?<small className="ff-comment-to"> 回复 @{c.localReply.authorName}</small>:<blockquote className="ff-source-reply"><small>回复 {c.localReply.authorName}</small><p>{c.localReply.text}</p></blockquote>)}
+        <div><button type="button" className="ff-setting-link" onClick={()=>onProfile(c.authorId,c.accountId)}>{c.authorName}</button>{c.localReply&&(level>1?<small className="ff-comment-to"> 回复 @{c.localReply.authorName}</small>:<blockquote className="ff-source-reply"><small>回复 {c.localReply.authorName}</small><p>{c.localReply.text}</p></blockquote>)}
             {c.sourceReply&&<blockquote className="ff-source-reply"><small>回复微博原评论 · {c.sourceReply.authorName}</small><p>{c.sourceReply.text}</p></blockquote>}<p>{c.text}</p>
-            <footer><time>{new Date(c.createdAt).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}</time>
-                {onReply&&<button type="button" className="ff-comment-reply" aria-label={`回复${c.authorName}的评论`} onClick={()=>onReply({kind:'local',id:c.id})}>回复</button>}</footer>
+            <footer><span className="ff-comment-meta"><time>{new Date(c.createdAt).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}</time>
+                {c.editedAt&&<small>已编辑</small>}</span><span className="ff-comment-actions">
+                {onReply&&<button type="button" className="ff-comment-reply" aria-label={`回复${c.authorName}的评论`} onClick={()=>onReply({kind:'local',id:c.id})}>回复</button>}
+                {onEdit&&<button type="button" className="ff-comment-reply" aria-label={`编辑${c.authorName}的评论`} onClick={()=>onEdit(c)}>编辑</button>}
+                {onDelete&&<button type="button" className="ff-comment-reply" aria-label={`删除${c.authorName}的评论`} onClick={()=>onDelete(c)}>删除</button>}</span></footer>
         </div>
     </article>;
     return <div className="ff-post-detail" ref={container}>
@@ -65,7 +69,7 @@ export default function FriendFeedPostDetail({post,characters,user,onComment,onP
             {!post.comments.length&&<p className="ff-comments-empty">还没有评论，留句话吧。</p>}
             {threads.map(({root,replies})=><div className="ff-comment-thread" key={root.id}>
                 {renderComment(root)}{!!replies.length&&<div className="ff-thread-replies" aria-label={`${root.authorName}的评论下的回复`}>
-                    {(expanded.has(root.id)?replies:replies.slice(0,3)).map(c=>renderComment(c,true))}
+                    {(expanded.has(root.id)?replies:replies.slice(0,3)).map(c=>renderComment(c,c.localReply?.id===root.id?2:3))}
                     {replies.length>3&&<button type="button" className="ff-thread-toggle" aria-expanded={expanded.has(root.id)} onClick={()=>setExpanded(current=>{
                         const next=new Set(current);if(next.has(root.id))next.delete(root.id);else next.add(root.id);return next;
                     })}>{expanded.has(root.id)?'收起回复':`查看全部 ${replies.length} 条回复`}</button>}

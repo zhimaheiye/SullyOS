@@ -1,3 +1,4 @@
+import { useChatNotificationSound } from '../hooks/useChatNotificationSound';
 import ChatRuntimeStyle from '../components/chat/ChatRuntimeStyle';
 import { resolveDialogueApi } from '../utils/characterApi';
 import {ChatCardSurface} from '../components/chat/ChatCardSurface';
@@ -23,6 +24,7 @@ import { PRESET_THEMES } from '../components/chat/ChatConstants';
 import { resolveChatTheme, scopeBubbleThemeCss } from '../utils/groupChat/theme';
 import { resolveBubbleCornerRadii, shouldHideBubbleTail } from '../utils/bubbleAppearance';
 import { buildChatFineTuneCss } from '../utils/chatFineTuneCss';
+import { isReducedBlurActive, useReducedBlur } from '../utils/blurPolicy';
 import { parseDirectorActions, stripSkipMarker, parseGroupTopicBox } from '../utils/groupChat/parse';
 import { GroupPacketMeta, PacketReceiptMeta, ClaimResult, claimPacket, effectivePacketStatus, makePacketMeta } from '../utils/groupChat/redpacket';
 import { messageLogText } from '../utils/groupChat/format';
@@ -54,7 +56,7 @@ import { buildReplySnapshotContent } from '../utils/applyAssistantPostProcessing
 import ChromeCssEditor from '../components/chat/ChromeCssEditor';
 import WhiteboxSoundEditor from '../components/chat/WhiteboxSoundEditor';
 import HtmlCard from '../components/chat/HtmlCard';
-import { WhiteboxSound, parseWhiteboxSound, upsertWhiteboxSound, stripWhiteboxSoundDirective, resolveActiveSound, playWhiteboxSound, unlockWhiteboxAudio } from '../utils/whiteboxSound';
+import { WhiteboxSound, parseWhiteboxSound, upsertWhiteboxSound, stripWhiteboxSoundDirective, unlockWhiteboxAudio } from '../utils/whiteboxSound';
 import { buildHtmlPrompt } from '../utils/htmlPrompt';
 import { materializeStickerVisionDescriptions, materializeVisionDescriptions } from '../utils/visionApi';
 import { buildStickerVisionMetadata, loadGlobalStickerVisionEnabled, resolveStickerVisionEnabled, type StickerVisionMode } from '../utils/stickerVision';
@@ -216,7 +218,13 @@ const GroupMessageItem = React.memo(({
         ...(bubbleVariant === 'shadow' ? { boxShadow: '0 4px 12px rgba(0,0,0,0.12)' } : {}),
         ...(bubbleVariant === 'flat' ? { boxShadow: 'none' } : {}),
         ...(bubbleVariant === 'wechat' ? { boxShadow: 'none', border: '1px solid rgba(15,23,42,0.05)' } : {}),
-        ...(bubbleVariant === 'ios' ? { boxShadow: '0 10px 24px rgba(148,163,184,0.16)', border: '1px solid rgba(255,255,255,0.75)', backdropFilter: 'blur(12px)' } : {}),
+        ...(bubbleVariant === 'ios'
+            ? {
+                  boxShadow: '0 10px 24px rgba(148,163,184,0.16)',
+                  border: '1px solid rgba(255,255,255,0.75)',
+                  ...(isReducedBlurActive() ? {} : { backdropFilter: 'blur(12px)' }),
+              }
+            : {}),
     };
     // 气泡底纹画在 CSS background-image 上，拿不到 <img> 那层的自动解析，只能在顶层
     // 无条件解析一次（hook 不能进条件分支）。挂件/头像挂件走 TokenImg，各自组件内解析。
@@ -498,7 +506,9 @@ const GroupMessageItem = React.memo(({
 // --- Main Component ---
 
 const GroupChat: React.FC = () => {
+    const playChatNotificationSound = useChatNotificationSound();
     const { closeApp, groups, createGroup, updateGroup, deleteGroup, addGroupMembers, removeGroupMembers, characters, apiConfig, addToast, userProfile, virtualTime, characterGroups, theme: osTheme, customThemes, realtimeConfig, groupChatLaunchIntent, clearGroupChatLaunchIntent } = useOS();
+    const reducedBlur = useReducedBlur();
     const [view, setView] = useState<'list' | 'chat'>('list');
     const [activeGroup, setActiveGroup] = useState<GroupProfile | null>(null);
     useEffect(() => { cancelManualRelayForApp('group_chat'); }, [activeGroup?.id]);
@@ -699,7 +709,7 @@ const GroupChat: React.FC = () => {
         if (isNew && last?.role === 'assistant') {
             const now = Date.now();
             if (sync.lastAt == null || now - sync.lastAt > SOUND_ROUND_GAP_MS) {
-                playWhiteboxSound(resolveActiveSound(activeGroup?.chromeCustomCss, activeGroup?.chatSound, osTheme.chatChromeCustomCss, osTheme.chatSound));
+                if (activeGroup) playChatNotificationSound('group', activeGroup.id);
             }
             sync.lastAt = now;
         }
@@ -1095,9 +1105,9 @@ const GroupChat: React.FC = () => {
 
     const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
+        if (e.target) e.target.value = '';
         if (!file) return;
         await handleImageFile(file);
-        if (e.target) e.target.value = '';
     };
 
     // --- Logic: 红包 2.0 ---
@@ -1579,6 +1589,7 @@ ${activeGroup ? buildGroupTopicContext(activeGroup, member.id) : ''}
                 signal: abort.signal,
                 onStatus: setMcpStatus,
                 supportsNativeTools: true,
+                meta: { appId: 'groupchat', appName: '群聊', purpose: '群聊导演回复' },
             });
 
             // Token 统计：从导演响应里读 usage（兼容 OpenAI 兼容接口的标准字段）
@@ -1704,6 +1715,7 @@ ${activeGroup ? buildGroupTopicContext(activeGroup, member.id) : ''}
                         signal: abort.signal,
                         onStatus: status => setMcpStatus(status ? `${member.name}：${status}` : ''),
                         supportsNativeTools: true,
+                        meta: { appId: 'groupchat', appName: '群聊', charId: member.id, charName: member.name, purpose: '群聊角色发言' },
                     });
 
                     // Token 统计：整轮累加显示
@@ -1805,8 +1817,8 @@ ${activeGroup ? buildGroupTopicContext(activeGroup, member.id) : ''}
                 <ChatRuntimeStyle />
                 {/* safe-top spacer 透明 + backdrop-blur，下方容器/list bubbles 透出+模糊（跟 iOS 系统 status bar 一致），避免 header 白 bg 在刘海下铺一条突兀白带 */}
                 <div className="shrink-0 z-10 sticky top-0">
-                    <div className="bg-transparent backdrop-blur-xl" style={{ height: 'var(--safe-top)' }} />
-                    <div className="bg-white/70 backdrop-blur-md flex items-end pb-3 px-4 border-b border-white/40 h-20">
+                    <div className={reducedBlur ? 'bg-white/95' : 'bg-transparent backdrop-blur-xl'} style={{ height: 'var(--safe-top)' }} />
+                    <div className={`${reducedBlur ? 'bg-white/95' : 'bg-white/70 backdrop-blur-md'} flex items-end pb-3 px-4 border-b border-white/40 h-20`}>
                         <button onClick={closeApp} className="p-2 -ml-2 rounded-full hover:bg-black/5 active:scale-90 transition-transform">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6 text-slate-600"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
                     </button>
@@ -1912,8 +1924,9 @@ ${activeGroup ? buildGroupTopicContext(activeGroup, member.id) : ''}
         ? { backgroundColor: '#F6F0D8', backgroundImage: 'none' }
         : groupChatRootStyle;
     return (
-        <div className={`sully-chat-root ${finalGroupRootClass}`} style={finalGroupRootStyle}>
+        <div className="h-full w-full relative overflow-hidden text-slate-900">
             <ChatRuntimeStyle />
+            <div className={`sully-chat-root ${finalGroupRootClass}`} style={finalGroupRootStyle}>
             {/* 外观 App 的全局聊天细节与私聊共用同一份生成 CSS。 */}
             {groupFineTuneCss && <style>{groupFineTuneCss}</style>}
             {/* 白框自定义 CSS：全局默认在前、群专属在后（后者叠加覆盖）。作用于 .sully-chat-* 各零件。 */}
@@ -2029,7 +2042,7 @@ ${activeGroup ? buildGroupTopicContext(activeGroup, member.id) : ''}
                             setVisibleCount(nextVisibleCount);
                             setMessages(moreMsgs);
                             setTotalMsgCount(totalCount);
-                        }} className="px-4 py-2 bg-white/50 backdrop-blur-sm rounded-full text-xs text-slate-500 shadow-sm border border-white hover:bg-white transition-colors">
+                        }} className="px-4 py-2 bg-white/60 rounded-full text-xs text-slate-500 shadow-sm border border-white hover:bg-white transition-colors">
                             加载历史消息 ({collapsedCount})
                         </button>
                     </div>
@@ -2223,12 +2236,17 @@ ${activeGroup ? buildGroupTopicContext(activeGroup, member.id) : ''}
                         >
                             <div className={`w-14 h-14 rounded-2xl flex items-center justify-center shadow-sm border relative ${activeGroup?.htmlModeEnabled ? 'bg-fuchsia-100 text-fuchsia-600 border-fuchsia-200' : 'bg-fuchsia-50 text-fuchsia-500 border-fuchsia-100'}`}>
                                 <Code className="w-6 h-6" weight="bold" />
-                                {activeGroup?.htmlModeEnabled && <span className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-fuchsia-500 border-2 border-white" />}
+                                {activeGroup?.htmlModeEnabled && <span className="sully-chat-badge-dot absolute -top-1 -right-1 w-3 h-3 rounded-full bg-fuchsia-500 border-2 border-white" />}
                             </div>
                             <span className="text-xs font-bold">{activeGroup?.htmlModeEnabled ? 'HTML已开' : 'HTML模式'}</span>
                         </button>,
                 ]}
             />
+            </div>
+            {/* .sully-chat-root 仅包裹群聊舞台；对话框与底部面板挂载在舞台外，避免白框顶层规则继承进系统界面。 */}
+
+            {voiceDialogueLines && <DialogueVoicePanel lines={voiceDialogueLines} apiConfig={apiConfig} onClose={() => setVoiceDialogueLines(null)} />}
+            {previewImage && <ImageViewer value={previewImage} fallback={previewImage} onClose={() => setPreviewImage(null)} />}
 
             {/* --- Modals --- */}
 
@@ -2265,7 +2283,7 @@ ${activeGroup ? buildGroupTopicContext(activeGroup, member.id) : ''}
                     </div>
                     <div>
                         <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 block">群名称</label>
-                        <input value={tempGroupName} onChange={e => setTempGroupName(e.target.value)} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:bg-white focus:border-violet-300 transition-all" />
+                        <input value={tempGroupName} onChange={e => setTempGroupName(e.target.value)} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:bg-white focus:border-violet-300 transition-all" />
                     </div>
 
                     <div className="pt-2 border-t border-slate-100">
@@ -2426,8 +2444,8 @@ ${activeGroup ? buildGroupTopicContext(activeGroup, member.id) : ''}
                                     <div key={box.id} className="rounded-2xl border border-slate-100 bg-white p-3 shadow-sm">
                                         {editing ? (
                                             <div className="space-y-2">
-                                                <input value={topicTitleDraft} onChange={e => setTopicTitleDraft(e.target.value)} className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs font-bold" placeholder="话题盒标题" />
-                                                <textarea value={topicSummaryDraft} onChange={e => setTopicSummaryDraft(e.target.value)} className="w-full min-h-28 px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs leading-5 resize-y" placeholder="共同回忆总结" />
+                                                <input value={topicTitleDraft} onChange={e => setTopicTitleDraft(e.target.value)} className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs font-bold text-slate-800 placeholder:text-slate-400" placeholder="话题盒标题" />
+                                                <textarea value={topicSummaryDraft} onChange={e => setTopicSummaryDraft(e.target.value)} className="w-full min-h-28 px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-800 placeholder:text-slate-400 leading-5 resize-y" placeholder="共同回忆总结" />
                                                 <div className="flex gap-2">
                                                     <button onClick={() => setEditingTopicBoxId(null)} className="flex-1 py-2 rounded-xl bg-slate-100 text-slate-500 text-[11px] font-bold">取消</button>
                                                     <button onClick={() => void saveTopicBoxEdit(box.id)} className="flex-1 py-2 rounded-xl bg-violet-500 text-white text-[11px] font-bold">保存并同步卡片</button>
@@ -2533,12 +2551,12 @@ ${activeGroup ? buildGroupTopicContext(activeGroup, member.id) : ''}
             {/* Edit Message Modal */}
             <Modal
                 isOpen={modalType === 'edit-message'} title="编辑内容" onClose={() => { setModalType('none'); setSelectedMessage(null); }}
-                footer={<><button onClick={() => { setModalType('none'); setSelectedMessage(null); }} className="flex-1 py-3 bg-slate-100 rounded-2xl">取消</button><button onClick={confirmEditMessage} className="flex-1 py-3 bg-primary text-white font-bold rounded-2xl">保存</button></>}
+                footer={<><button onClick={() => { setModalType('none'); setSelectedMessage(null); }} className="flex-1 py-3 bg-slate-100 text-slate-700 rounded-2xl">取消</button><button onClick={confirmEditMessage} className="flex-1 py-3 bg-primary text-white font-bold rounded-2xl">保存</button></>}
             >
                 <textarea
                     value={editContent}
                     onChange={e => setEditContent(e.target.value)}
-                    className="w-full h-32 bg-slate-100 rounded-2xl p-4 resize-none focus:ring-1 focus:ring-primary/20 transition-all text-sm leading-relaxed"
+                    className="w-full h-32 bg-slate-100 rounded-2xl p-4 resize-none focus:ring-1 focus:ring-primary/20 transition-all text-sm text-slate-800 leading-relaxed"
                 />
             </Modal>
 
@@ -2653,7 +2671,7 @@ ${activeGroup ? buildGroupTopicContext(activeGroup, member.id) : ''}
             {activeGroup && modalType === 'chrome-css' && (
                 <div className="fixed inset-0 z-[110] flex items-end justify-center bg-black/5" onClick={() => setModalType('none')}>
                     <div
-                        className="w-full max-h-[68vh] overflow-y-auto rounded-t-3xl border-t border-white/60 bg-white/95 p-5 shadow-[0_-12px_40px_rgba(15,23,42,0.18)] backdrop-blur-xl [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                        className="w-full max-h-[68vh] overflow-y-auto rounded-t-3xl border-t border-white/60 bg-white/95 text-slate-800 p-5 shadow-[0_-12px_40px_rgba(15,23,42,0.18)] backdrop-blur-xl [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
                         style={{ paddingBottom: 'calc(1.25rem + var(--safe-bottom))' }}
                         onClick={(e) => e.stopPropagation()}
                     >
@@ -2713,7 +2731,7 @@ ${activeGroup ? buildGroupTopicContext(activeGroup, member.id) : ''}
                 return (
                     <div className="fixed inset-0 z-[110] flex items-end justify-center bg-black/5" onClick={() => setModalType('none')}>
                         <div
-                            className="w-full max-h-[68vh] overflow-y-auto rounded-t-3xl border-t border-white/60 bg-white/95 p-5 shadow-[0_-12px_40px_rgba(15,23,42,0.18)] backdrop-blur-xl [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                            className="w-full max-h-[68vh] overflow-y-auto rounded-t-3xl border-t border-white/60 bg-white/95 text-slate-800 p-5 shadow-[0_-12px_40px_rgba(15,23,42,0.18)] backdrop-blur-xl [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
                             style={{ paddingBottom: 'calc(1.25rem + var(--safe-bottom))' }}
                             onClick={(e) => e.stopPropagation()}
                         >
@@ -2771,7 +2789,7 @@ ${activeGroup ? buildGroupTopicContext(activeGroup, member.id) : ''}
                         value={tempHtmlPrompt}
                         onChange={e => setTempHtmlPrompt(e.target.value)}
                         placeholder="例如：卡片统一用暖色系、圆角 16px；多用进度条和标签组……"
-                        className="w-full h-36 bg-slate-100 rounded-2xl p-4 resize-none focus:ring-1 focus:ring-fuchsia-300 transition-all text-sm leading-relaxed"
+                        className="w-full h-36 bg-slate-100 rounded-2xl p-4 resize-none focus:ring-1 focus:ring-fuchsia-300 transition-all text-sm text-slate-800 placeholder:text-slate-400 leading-relaxed"
                     />
                 </div>
             </Modal>

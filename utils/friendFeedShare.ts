@@ -71,7 +71,7 @@ export async function shareFriendPost(postId:string,charId:string,deliveryId:str
     const share:FriendFeedShareSnapshot={version:1,postId,authorId:projected.authorId,authorName:current.authorName,text:current.text,
         createdAt:friendPostTime(current).createdAt ?? undefined,
         ...(current.authorKind==='external'&&!current.synced?{importedAt:current.createdAt}:{}),
-        identity:friendKnownIdentity(latest,charId,current,characters),
+        accountBio:projected.accountBio,identity:friendKnownIdentity(latest,charId,current,characters),
         ...(current.source?{source:structuredClone(current.source)}:{}),synced:current.synced,sharedAt:Date.now(),
         ...(current.images ? {images:structuredClone(current.images)} : {}),
         ...(current.imageCards?.length?{imageCards:structuredClone(current.imageCards)}:{}),

@@ -8,7 +8,7 @@ export const friendFeedExcerpt = (text: string) => text.length > FRIEND_FEED_EXC
 
 /** Keep every local contribution, including replies quoting an original comment. */
 export const friendLocalComments = (post: Pick<FriendPost,'comments'|'weiboComments'>, timeZone?: string) => post.comments.map(c => ({
-    id: c.id, authorId:c.authorId, author: c.authorName, text: friendFeedExcerpt(c.text),
+    id: c.id, authorId:c.authorId, accountId:c.accountId, accountBio:c.accountBio, author: c.authorName, text: friendFeedExcerpt(c.text),
     ...friendPublication(c.createdAt, timeZone),
     ...(c.localReply ? {localReply:{...c.localReply, ...friendPublication(validFriendTime(c.localReply.createdAt)
         ? c.localReply.createdAt : post.comments.find(original=>original.id===c.localReply!.id)?.createdAt, timeZone)}} : {}),

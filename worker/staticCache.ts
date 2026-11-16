@@ -1,3 +1,5 @@
+import { loadStaticCode, StaticCodeBodyError, StaticCodeTimeoutError } from './staticCodeFetch';
+
 /** Resource caching is isolated from push delivery and never opens application databases. */
 export interface StaticEntry { url: string; revision: string; bytes: number }
 export interface StaticManifest { buildId: string; appVersion: string; entries: StaticEntry[]; shell: string[] }
@@ -70,7 +72,8 @@ export function createStaticCache(deps: CacheDependencies) {
   async function verifiedScript(response: Response, entry: StaticEntry): Promise<Response | undefined> {
     try {
       if (response.status !== 200 || entry.bytes > MAX_FILE_BYTES) return;
-      const bytes = await response.arrayBuffer();
+      // Cache Storage can also return a stalled body. Do not let verification pin Suspense forever.
+      const bytes = await (await loadStaticCode(async () => response)).arrayBuffer();
       if (bytes.byteLength !== entry.bytes || await deps.digest(bytes) !== entry.revision) return;
       const headers = new Headers(response.headers);
       headers.delete('Content-Encoding');
@@ -88,6 +91,10 @@ export function createStaticCache(deps: CacheDependencies) {
   // Hosts may add scripts to HTML or rewrite parts of it. Such an entry page still belongs to
   // this build as long as every build file it references is one of ours.
   const sameBuildPage = (html: string) => {
+    // Identical application code may now span multiple releases. Matching JS URLs alone
+    // cannot distinguish a stale entry page carrying a different update/diagnostic identity.
+    const build = html.match(/<script\b[^>]*\bdata-sully-build=["']([^"']+)["']/i)?.[1];
+    if (build !== manifest.buildId) return false;
     const references = [...html.matchAll(/assets\/build\/[^"'\s<>)]+/g)];
     return references.length > 0 && references.every(match => entries.has(absolute(match[0])));
   };
@@ -192,9 +199,16 @@ export function createStaticCache(deps: CacheDependencies) {
   const missing = (response: Response) => response.status === 404 || response.status === 410 ||
     (response.ok && /^text\/html\b/i.test(response.headers.get('Content-Type') || ''));
 
-  async function install() {
+  let installation: Promise<void> | undefined;
+  function install(): Promise<void> {
+    // Startup, settings and multiple tabs may ask together. Share the writers so a failed
+    // attempt cannot remove the completion marker of another attempt that just succeeded.
+    return installation ??= prepareShell().finally(() => { installation = undefined; });
+  }
+
+  async function prepareShell() {
+    const cache = await caches.open(shellName);
     try {
-      const cache = await caches.open(shellName);
       // Write HTML last: a shell is usable only after every synchronous dependency is verified.
       async function prepare(path: string) {
         const entry = entries.get(absolute(path));
@@ -222,7 +236,7 @@ export function createStaticCache(deps: CacheDependencies) {
         } finally { clearTimeout(timer); }
       }
       const paths = manifest.shell.filter(path => path !== 'index.html');
-      // Wait for every writer before removing a failed installation's partial cache.
+      // Wait for every writer before declaring failure; verified files stay for the next attempt.
       let failed = false;
       const jobs = await Promise.allSettled(Array.from({ length: Math.min(4, paths.length) }, async () => {
         while (paths.length && !failed) {
@@ -234,18 +248,30 @@ export function createStaticCache(deps: CacheDependencies) {
       if (failure) throw failure.reason;
       await prepare('index.html');
     } catch (error) {
-      await caches.delete(shellName).catch(() => {});
+      // The HTML is the completion marker. Keep verified dependencies across worker restarts
+      // and retries, but never advertise an incomplete shell as ready for offline startup.
+      const index = entries.get(absolute('index.html'));
+      if (index) await cache.delete(keyFor(index)).catch(() => {});
       throw error;
     }
   }
 
   async function activate(inUseBuilds: string[] | null = []) {
-    // Keep the previous shell AND any older release still open in a tab. A non-responsive
-    // legacy tab means its version is unknown; defer shell cleanup until a later activation.
+    // Keep the latest partial shell for resuming downloads AND the previous complete shell.
+    // A partial update must not displace the last offline-ready release. Older releases still
+    // open in tabs are protected; defer cleanup if a legacy tab cannot identify its build.
     const old = (await caches.keys()).filter(name => name.startsWith(`${prefix}shell-`) && name !== shellName);
     if (inUseBuilds) {
       const protectedNames = new Set(inUseBuilds.map(build => `${prefix}shell-${build}`));
-      for (const name of old.slice(0, -1)) if (!protectedNames.has(name)) await caches.delete(name);
+      if (old.length) protectedNames.add(old[old.length - 1]);
+      for (const name of [...old].reverse()) {
+        const keys = await (await caches.open(name)).keys();
+        if (keys.some(key => {
+          const url = new URL(key.url);
+          return `${url.origin}${url.pathname}` === absolute('index.html');
+        })) { protectedNames.add(name); break; }
+      }
+      for (const name of old) if (!protectedNames.has(name)) await caches.delete(name);
     }
     await serial(async () => prune(await caches.open(runtimeName)));
   }
@@ -267,6 +293,10 @@ export function createStaticCache(deps: CacheDependencies) {
     const hashed = local && immutablePath(pathname);
     if (!entry && !external && !hashed) return;
     const key = entry ? keyFor(entry) : request.url;
+    const code = hashed && /\.(js|css)$/.test(pathname);
+    const fetchResource = (next: Request) => code
+      ? loadStaticCode(signal => deps.fetch(new Request(next, { signal })), next.signal)
+      : deps.fetch(next);
 
     return (async () => {
       const shell = entry && shellPaths.has(absolute(entry.url));
@@ -289,6 +319,9 @@ export function createStaticCache(deps: CacheDependencies) {
       if (hit && entry && isBuildScript(entry)) {
         hit = await verifiedScript(hit, entry);
         if (!hit) { damaged = true; await discardDamaged(key); }
+      } else if (hit && code) {
+        try { const cached = hit; hit = await loadStaticCode(async () => cached); }
+        catch { hit = undefined; damaged = true; await discardDamaged(key); }
       }
       if (hit) {
         if (stored && !shell && age > REFRESH_MS && !refreshing.has(key)) {
@@ -300,14 +333,23 @@ export function createStaticCache(deps: CacheDependencies) {
       }
       // A hashed name always has the same content, so the HTTP cache may answer. Other known
       // revisions are revalidated: an older HTTP force-cache response must not satisfy them.
-      let response = await deps.fetch(damaged ? new Request(request, { cache: 'reload' })
-        : entry && !hashed ? new Request(request, { cache: 'no-cache' }) : request);
       let reloaded = damaged || request.cache === 'reload';
+      let response: Response;
+      try {
+        response = await fetchResource(damaged ? new Request(request, { cache: 'reload' })
+          : entry && !hashed ? new Request(request, { cache: 'no-cache' }) : request);
+      } catch (error) {
+        // One fresh transfer can recover a stuck HTTP-cache/network stream without a page reload.
+        // Reuse the integrity retry budget; cancellation/offline errors must not trigger this retry.
+        if (!(error instanceof StaticCodeTimeoutError || error instanceof StaticCodeBodyError) || reloaded || request.signal.aborted) throw error;
+        reloaded = true;
+        response = await fetchResource(new Request(request, { cache: 'reload' }));
+      }
       if (entry && hashed && missing(response)) {
         // An HTTP cache can hold a fallback page under this name; ask the server before deciding.
         if (!reloaded) {
           void response.body?.cancel().catch(() => {});
-          response = await deps.fetch(new Request(request, { cache: 'reload' }));
+          response = await fetchResource(new Request(request, { cache: 'reload' }));
         }
         reloaded = true;
         if (missing(response)) waitUntil(markShellStale());
@@ -315,7 +357,7 @@ export function createStaticCache(deps: CacheDependencies) {
       if (entry && isBuildScript(entry) && response.ok && !missing(response)) {
         let verified = await verifiedScript(response, entry);
         if (!verified && !reloaded) {
-          response = await deps.fetch(new Request(request, { cache: 'reload' }));
+          response = await fetchResource(new Request(request, { cache: 'reload' }));
           if (missing(response)) { waitUntil(markShellStale()); return response; }
           verified = await verifiedScript(response, entry);
         }

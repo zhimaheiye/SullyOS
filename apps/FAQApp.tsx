@@ -123,7 +123,7 @@ interface ChangelogEntry {
 }
 
 const PERSONAL_CHANGELOG_ENTRIES: ChangelogEntry[] = [
-    { id: 'personal-2026-11-14', title: '11 月 14 日更新', subtitle: '会话置顶、单次调用诊断、小宇宙与独立批量创作。', date: '2026-11-14', src: 'changelogs/personal-2026-11-14.html' },
+    { id: 'personal-2026-11-14', title: '11 月 14 日更新', subtitle: '会话置顶、单次调用诊断、小宇宙与独立批量创作。', date: '2026-11-14', dateKind: '11 月 16 日发布', src: 'changelogs/personal-2026-11-14.html' },
     {
         "id": "personal-2026-11-04",
         "title": "11 月 4 日更新",
@@ -176,6 +176,7 @@ const PERSONAL_CHANGELOG_ENTRIES: ChangelogEntry[] = [
 
 // 原作历史保持原文、原日期与稳定 ID；个人二改不混入这份目录。
 const CHANGELOG_ENTRIES: ChangelogEntry[] = [
+    { id: 'upstream-2026-11-16', title: '11 月原版更新', subtitle: '独立用户空间、离开后消息、见面挂起、外挂字幕与主动消息改进。', date: '2026-11-16', src: 'changelogs/upstream-2026-11-16.html' },
     {
         id: HOME_CHANGELOG,
         title: '3D 家园测试版 · 住进同一个日常',

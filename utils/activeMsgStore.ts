@@ -3,6 +3,7 @@ import {
   ActiveMsg2InboxMessage,
   Amsg2ExpiredNoticeRecord,
 } from '../types';
+import { AMSG_GLOBAL_CONFIG_EVENT } from './amsgGlobalGate';
 
 const DB_NAME = 'ActiveMsg';
 // MUST be kept in sync with worker/sw-keep-alive.ts:ACTIVE_MSG_DB_VERSION.
@@ -226,6 +227,14 @@ const pruneStaleActionResultReceipts = async (purgeCharId?: string): Promise<voi
   } catch { /* prune 尽力而为, 失败不影响主流程 */ }
 };
 
+/**
+ * 全局即时对话开没开。点过开关就听用户的；没点过的，Worker 连接验证成功过就默认开。
+ * 只填了地址、没连上过的不算：那时上云发一条挂一条，又不会退回本地生成。
+ */
+export const isInstantChatSwitchedOn = (
+  config: { instantChatEnabled?: boolean; initializedAt?: number; workerUrl?: string },
+): boolean => config.instantChatEnabled ?? Boolean(config.initializedAt && config.workerUrl?.trim());
+
 export const ActiveMsgStore = {
   /** 纯动作可以没有聊天产物，需单独保留完成回执，防止补收/ACK 重试重放动作。 */
   async hasAppliedActionResult(charId: string, messageId: string): Promise<boolean> {
@@ -246,6 +255,33 @@ export const ActiveMsgStore = {
   async clearCharActionResults(charId: string): Promise<void> {
     if (!charId) return;
     await pruneStaleActionResultReceipts(charId);
+  },
+
+  /** Targeted account deletion: never clear the shared connection or another character's inbox. */
+  async clearCharacters(characterIds: string[]): Promise<void> {
+    const ids = new Set(characterIds), db = await openDB();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction([STORE_INBOX, STORE_KV], 'readwrite');
+      for (const name of [STORE_INBOX, STORE_KV]) {
+        const cursor = tx.objectStore(name).openCursor();
+        cursor.onsuccess = () => {
+          const row = cursor.result;
+          if (!row) return;
+          const value = row.value;
+          let remove = name === STORE_INBOX && ids.has(value.charId);
+          if (name === STORE_KV && typeof value.id === 'string') {
+            if (value.id.startsWith(EXPIRED_NOTICES_PREFIX)) remove = ids.has(value.id.slice(EXPIRED_NOTICES_PREFIX.length));
+            if (value.id.startsWith(ACTION_RESULT_APPLIED_PREFIX)) {
+              try { remove = ids.has(JSON.parse(value.id.slice(ACTION_RESULT_APPLIED_PREFIX.length))[0]); } catch { /* Unknown receipt format stays intact. */ }
+            }
+          }
+          if (remove) row.delete();
+          row.continue();
+        };
+      }
+      tx.oncomplete = () => resolve();
+      tx.onerror = tx.onabort = () => reject(tx.error || new Error('角色收件箱清理失败'));
+    });
   },
 
   /**
@@ -301,6 +337,11 @@ export const ActiveMsgStore = {
       updatedAt: Date.now(),
     };
     await setKv(GLOBAL_CONFIG_KEY, next);
+    if (typeof window !== 'undefined' && typeof CustomEvent === 'function') {
+      try {
+        window.dispatchEvent(new CustomEvent(AMSG_GLOBAL_CONFIG_EVENT, { detail: next }));
+      } catch { /* 非浏览器环境 */ }
+    }
     return next;
   },
 
@@ -484,7 +525,9 @@ export const ActiveMsgStore = {
  * 读得到哪一份数据（数据按它分区），共享密钥是端点的门禁。少一样都连不成，所以要摘
  * 就得一起摘。
  */
-const BACKEND_CONNECTION_KEYS = ['workerUrl', 'serverToken', 'masterKey', 'userId'] as const;
+// 中转令牌绑着领取人的 Discord 账号和流量记录，分享出去的备份不能带；中转开关与本机总开关
+// 跟着一起摘，免得导入别人的角色备份时跳过数据边界提醒或悄悄关掉接收方自己的 2.0 连接。
+const BACKEND_CONNECTION_KEYS = ['enabled', 'workerUrl', 'serverToken', 'masterKey', 'userId', 'pushMode', 'thirdPartyPush', 'useRelay', 'relayToken'] as const;
 
 /** 这份备份里带着后端连接吗（带了的话，谁拿到这个文件谁就能连上那台 Worker）。 */
 export const backupHasBackendConnection = (
@@ -545,6 +588,9 @@ export async function importAmsg2GlobalConfig(
     anthropicMessagesSupported: _droppedAnthropic, anthropicMessagesWorkerUrl: _droppedAnthropicUrl, ...restorable } = config;
   if (!options.allowBackendConnection) {
     for (const key of BACKEND_CONNECTION_KEYS) delete restorable[key];
+  } else if (backupHasBackendConnection(config)) {
+    // 历史开启态备份里 enabled 常为缺省（JSON 不含该键）；本机若正处在暂停态，还原连接时需一并按备份恢复为开启。
+    restorable.enabled = restorable.enabled !== false;
   }
   if (Object.keys(restorable).length === 0) return;
   await ActiveMsgStore.saveGlobalConfig({ ...restorable, instantChatSupported: undefined, workerBundleVersion: undefined,

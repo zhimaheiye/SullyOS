@@ -24,6 +24,7 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     env:
       GITHUB_PAGES: 'true'
+      PAGES_ARTIFACT_NAME: github-pages-${{ github.run_id }}-${{ github.run_attempt }}
       VITE_UMAMI_SCRIPT_URL: ''
       VITE_UMAMI_WEBSITE_ID: ''
     steps:
@@ -43,6 +44,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build
+        env:
+          # The full Vite build plus static-cache manifest can exceed Node 20's default heap.
+          NODE_OPTIONS: --max-old-space-size=4096
         run: pnpm run build
 
       - name: Verify build asset retention
@@ -64,11 +68,14 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
+          name: ${{ env.PAGES_ARTIFACT_NAME }}
           path: ./dist
 
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+        with:
+          artifact_name: ${{ env.PAGES_ARTIFACT_NAME }}
 
       - name: Save deployed build assets
         uses: actions/cache/save@v4

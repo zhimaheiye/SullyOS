@@ -1,3 +1,4 @@
+import {FRIEND_POST_TEXT_LIMIT, FRIEND_COMMENT_TEXT_LIMIT} from './friendFeedLimits';
 import {DB, openDB} from './db';
 import {createLocalId} from './localId.js';
 import {activeFriendAccounts, friendAccountRef, normalizeFriendGraph, setFriendAccountFollow, validFriendGraph, type FriendAccountGraph} from './friendFeedGraph';
@@ -7,7 +8,7 @@ import {validFriendTime, friendPostTime} from './friendFeedTime';
 import {FRIEND_POST_IMAGE_LIMIT, isLocalFriendImage, validFriendImageCards,friendPostText,type FriendImageCard} from './friendFeedImages';
 import type {FriendFeedImage} from './friendFeedSource';
 import type {CharacterProfile} from '../types';
-import {resolveFriendFeedSettings, type FriendFeedSettings} from './friendFeedSettings';
+import {friendAccounts, resolveFriendFeedSettings, type FriendFeedSettings} from './friendFeedSettings';
 import {friendCommentPool, friendRelationshipBlocked, weightedFriendPick} from './friendFeedCommunity';
 import {addFriendFeedNote, announceFriendFeedHistory} from './friendFeedNotes';
 import type {FriendUserNotice} from './friendFeedInbox';
@@ -17,7 +18,6 @@ import {enqueueFriendNotices, followedAuthors, syncedPostEnabled, type FriendNot
 
 export const FRIEND_FEED_KEY = 'friend_feed_v1';
 export const FRIEND_FEED_CHANGED = 'friend-feed-changed';
-const FRIEND_COMMENT_TEXT_LIMIT = 500;
 export type FriendReplyTarget = {kind:'local'|'source';id:string};
 export interface FriendCircle {
     id: string;
@@ -38,6 +38,8 @@ export interface FriendComment {
     authorKind?: 'npc' | 'external';
     accountId?: string;
     accountTags?: string[];
+    /** Public profile only; private account purpose is never projected. */
+    accountBio?: string;
     sourceReply?: FriendSourceReply;
     localReply?: {id:string;authorId:string;authorName:string;text:string;createdAt?:number};
 }
@@ -172,6 +174,7 @@ export async function saveFriendFeedSettings(settings: FriendFeedSettings) {
     await mutate(state => {
         const next=resolveFriendFeedSettings(settings);
         const reserved=new Set(['user','用户','我',user?.name||'',next.userNickname||'',
+            ...(next.userAccounts||[]).map(a=>a.name),
             ...state.posts.flatMap(p=>[p,...p.comments]).filter(c=>c.authorId==='user').map(c=>c.authorName)].map(normalizeFriendIdentityName).filter(Boolean));
         if(Object.values(next.identities).some(i=>[i.nickname,...i.accounts.map(a=>a.name)].some(n=>!!n&&reserved.has(normalizeFriendIdentityName(n)))))
             throw Error('角色账号不能使用你的姓名或网名，请换一个名字');
@@ -294,7 +297,7 @@ export async function importFriendSource(circleId: string, source: FriendFeedSou
     });
     return id;
 }
-export async function publishFriendPost(circleId: string, authorName: string, body: string, id = createLocalId(), images: FriendFeedImage[] = []) {
+export async function publishFriendPost(circleId: string, authorName: string, body: string, id = createLocalId(), images: FriendFeedImage[] = [], accountId='main') {
     if (images.length > FRIEND_POST_IMAGE_LIMIT || !images.every(i => i && isLocalFriendImage(i.url) && i.thumbnail === i.url)) throw new Error('动态最多添加 9 张本地图片');
     if (!body.trim() && !images.length) throw new Error('请写点什么或添加图片');
     await mutate((state, characters) => {
@@ -305,14 +308,16 @@ export async function publishFriendPost(circleId: string, authorName: string, bo
         const live = new Set(characters.map(c => c.id));
         const audienceIds = circle.memberIds.filter(id => live.has(id));
         if (!state.publicFeed && !audienceIds.length) throw new Error('圈内已没有角色，请先调整成员');
-        state.posts.push({id, circleId: circle.id, authorId: 'user', accountId:'main', authorName: cleanText(resolveFriendFeedSettings(state.settings).userNickname||authorName, 100, '名字'),
-            text: body.trim() ? cleanText(body, 2000, '动态') : '', createdAt: Date.now(), audienceIds, comments: [],
+        const account=friendAccounts(resolveFriendFeedSettings(state.settings),{id:'user',name:authorName}).find(a=>a.id===accountId);
+        if(!account)throw new Error('这个发言账号已停用，请重新选择');
+        state.posts.push({id, circleId: circle.id, authorId: 'user', accountId:account.id, accountTags:account.tags, authorName: cleanText(account.name, 100, '名字'),
+            text: body.trim() ? cleanText(body, FRIEND_POST_TEXT_LIMIT, '动态') : '', createdAt: Date.now(), audienceIds, comments: [],
             ...(images.length ? {images: images.map(i => ({...i}))} : {})});
         enqueueFriendNotices(state, state.posts.at(-1)!);
     });
     return id;
 }
-export async function commentOnFriendPost(postId: string, authorName: string, body: string, id = createLocalId(), random = Math.random, replyTarget?:FriendReplyTarget) {
+export async function commentOnFriendPost(postId: string, authorName: string, body: string, id = createLocalId(), random = Math.random, replyTarget?:FriendReplyTarget, accountId='main') {
     const changed: string[] = [];
     await mutate((state, characters, tx) => {
         const post = state.posts.find(p => p.id === postId);
@@ -324,8 +329,10 @@ export async function commentOnFriendPost(postId: string, authorName: string, bo
         if(replyTarget&&!local&&!original)throw new Error('要回复的评论已不存在，请返回评论区重新选择');
         const replyTo=local?{localReply:{id:local.id,authorId:local.authorId,authorName:local.authorName,text:friendFeedExcerpt(local.text),...(validFriendTime(local.createdAt)?{createdAt:local.createdAt}:{})}}
             :original?{sourceReply:{id:original.id,authorName:original.authorName,text:original.text.slice(0,1200),createdAt:original.createdAt}}:{};
-        authorName=resolveFriendFeedSettings(state.settings).userNickname||authorName;
-        post.comments.push({id, authorId: 'user', accountId:'main', authorName: cleanText(authorName, 100, '名字'),
+        const account=friendAccounts(resolveFriendFeedSettings(state.settings),{id:'user',name:authorName}).find(a=>a.id===accountId);
+        if(!account)throw new Error('这个发言账号已停用，请重新选择');
+        authorName=account.name;
+        post.comments.push({id, authorId: 'user', accountId:account.id, accountTags:account.tags, authorName: cleanText(authorName, 100, '名字'),
             text: cleanText(body, FRIEND_COMMENT_TEXT_LIMIT, '评论'), createdAt: Date.now(),...replyTo});
         const materialTime={post:friendPostTime(post),comments:friendCommentTimes(post,[id])};
         const eligible = characters.filter(c => friendPostsForCharacter(state, c.id).some(p => p.id === postId));
@@ -380,6 +387,7 @@ export async function deleteFriendComment(postId: string, commentId: string, exp
         if (comment.text !== expectedText) throw new Error('评论已在其他窗口修改，请返回后重新确认');
         post.comments = post.comments.filter(c => c.id !== commentId);
         post.discussionRevision = (post.discussionRevision || 0) + 1;
+        // Keep replies, but never keep the deleted text in their quotes.
         const detached = new Set<string>();
         for (const reply of post.comments) if (reply.localReply?.id === commentId) { delete reply.localReply; detached.add(reply.id); }
         state.userInbox = state.userInbox?.filter(n => n.postId !== postId || n.commentId !== commentId && !(n.kind === 'reply' && detached.has(n.commentId)));

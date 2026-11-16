@@ -74,6 +74,29 @@ describe('DatePrompts.buildSessionPayload', () => {
         expect(sys).not.toContain('叙事人称');
     });
 
+    it.each(['send', 'reroll'] as const)('%s 在生成回复时同步要求目标语译文，语音关闭或默认语种不注入', async variant => {
+        const input = baseInput(makeChar({ dateVoiceEnabled: true, dateVoiceLang: 'ja' }));
+        const { messages } = await DatePrompts.buildSessionPayload({ ...input, variant });
+        expect(sysOf(messages)).toContain('<date-voice lang="ja">');
+        expect(sysOf(messages)).toContain('日本語');
+        expect(sysOf(messages)).toContain('同一次回复');
+        for (const overrides of [{ dateVoiceEnabled: false, dateVoiceLang: 'ja' }, { dateVoiceEnabled: true }]) {
+            const disabled = await DatePrompts.buildSessionPayload({ ...baseInput(makeChar(overrides)), variant });
+            expect(sysOf(disabled.messages)).not.toContain('<date-voice');
+        }
+    });
+
+    it('已保存的朗读译文不重复注入对话历史，但保留本轮译文规则', async () => {
+        const input = baseInput(makeChar({ dateVoiceEnabled: true, dateVoiceLang: 'en' }));
+        input.allMsgs[0] = makeMsg({ role: 'assistant', content: '[happy] "你好。" <date-voice lang="en">Hello.</date-voice>', metadata: { source: 'date' } });
+        const { messages } = await DatePrompts.buildSessionPayload(input);
+        const history = messages.filter(m => m.role === 'assistant').map(m => m.content).join('\n');
+        expect(history).toContain('你好。');
+        expect(history).not.toContain('Hello.');
+        expect(history).not.toContain('date-voice');
+        expect(sysOf(messages)).toContain('<date-voice lang="en">');
+    });
+
     it('按 dateStyleConfig.style 切换风格块', async () => {
         for (const preset of DATE_STYLE_PRESETS) {
             const char = makeChar({ dateStyleConfig: { style: preset.id } });
@@ -488,6 +511,10 @@ describe('见面里的世界书', () => {
 });
 
 describe('DatePrompts.buildPeekPayload', async () => {
+    it('开场也在生成正文时附带朗读译文', async () => {
+        const result = await DatePrompts.buildPeekPayload({ char: makeChar({ dateVoiceEnabled: true, dateVoiceLang: 'ja' }), userProfile: user, allMsgs: [], emojis: [] });
+        expect(result.messages.map(m => m.content).join('\n')).toContain('<date-voice lang="ja">');
+    });
     it('让他靠近读取同一份上下文与世界书，只改变开场发起者，保留用户自主权', async () => {
         const char = makeChar({ mountedWorldbooks: [{
             id: 'place', title: '常去的店', content: '在街角书店见面', category: '地点', constant: true,
@@ -595,5 +622,52 @@ describe('DatePrompts.buildPeekPayload', async () => {
         expect(messages[0].content).toContain('WB_K');
         expect(messages.find(m => m.content === 'WB_D')?.role).toBe('system');
         expect(JSON.stringify(messages).split('WB_D')).toHaveLength(2);
+    });
+
+    it('关闭线下时间感知时，感知与会话都不泄漏今日日程、神经链接记忆日期或记忆宫殿现实日期标注', async () => {
+        const char = makeChar({
+            dateTimeAwarenessEnabled: false,
+            scheduleConfig: { enabled: true, style: 'conscious' },
+            refinedMemories: { '2026-10': '一起在旧书店躲雨' },
+            activeMemoryMonths: ['2026-10'],
+            memories: [{ id: 'm1', date: '2026-10-14', summary: '借走了一本诗集', mood: 'warm' }],
+            memoryPalaceEnabled: true,
+            memoryPalaceInjection: [
+                '### 记忆宫殿 (Memory Palace)',
+                '📌 **便利贴（近期重要事项）**',
+                '- [2026年11月3日（今天）] 记得还书（对应日期：2026年11月4日）（剩余 5 天）',
+                '**[客厅 · 共同经历]** (2026年11月2日（昨天）, 重要性: 4)',
+                '在车站挥手告别（对应日期：2026年11月2日）',
+                '**[书房 · 重要事件]** 📦 **事件盒：雨夜**',
+                '_整合回忆_ (2026年10月30日（4天前）, 重要性 5, 已压缩 1 次)',
+                '两人在屋檐下聊到很晚',
+                '_新增片段_：',
+                '- [2026年11月1日（前天）] 约好下次去海边（对应日期：2026年11月1日）',
+            ].join('\n'),
+        });
+        const peek = await DatePrompts.buildPeekPayload({
+            char, userProfile: user, allMsgs: [makeMsg({ content: '推开书店的门。' })], emojis: [],
+        });
+        const session = await DatePrompts.buildSessionPayload({
+            char, userProfile: user, allMsgs: [makeMsg({ content: '推开书店的门。' })], emojis: [], userText: '推开书店的门。', variant: 'send',
+        });
+
+        for (const payload of [peek.messages, session.messages]) {
+            const text = payload.map(m => String(m.content)).join('\n');
+            expect(text).toContain('一起在旧书店躲雨');
+            expect(text).toContain('在车站挥手告别');
+            expect(text).toContain('两人在屋檐下聊到很晚');
+            expect(text).toContain('约好下次去海边');
+            expect(text).not.toContain('2026-10');
+            expect(text).not.toContain('2026-10-14');
+            expect(text).not.toContain('2026年11月');
+            expect(text).not.toContain('2026年10月');
+            expect(text).not.toContain('对应日期');
+            expect(text).not.toContain('剩余 5 天');
+            expect(text).not.toContain('你今天的完整日程');
+        }
+        expect(sysOf(session.messages)).toContain('借走了一本诗集');
+        expect(lastUserOf(peek.messages).content).not.toContain('如果刚聊完');
+        expect(lastUserOf(peek.messages).content).toContain('根据最近记录中的剧情进展');
     });
 });

@@ -10,3 +10,7 @@
 - 新增 store 时同时检查导出字段、导入路径、文字与媒体模式和往返测试；不要以更新数据库全局版本号作为迁移测试的固定预期。
 
 验证入口：`utils/backupFormat.test.ts`、`utils/backupRoundtrip.test.ts`、`utils/activityBackup.test.ts`、`utils/sarReleaseBackup.test.ts` 及相关功能的 backup 测试。媒体 SDK 的版本以 package.json 和 pnpm-lock.yaml 为准，原始执行提示词不作为维护指令。
+
+## 多用户空间（2026-11-16）
+
+新增 `user-spaces.json` ZIP 格式及当前／全部用户导出，详见 [用户空间](user-spaces.md)。私人数据按空间数据库枚举，素材统一放入共享文件区；旧单用户格式继续使用原有导入路径。公开二改的独立 store（包括小宇宙）随所属空间备份，调用诊断与已停用私有表不导出。新格式导入也不能恢复已停用的服务配置。

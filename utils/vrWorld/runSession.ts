@@ -28,7 +28,7 @@ import {
 } from '../../types';
 import { DB } from '../db';
 import { buildChatRequestPayload } from '../chatRequestPayload';
-import { safeFetchJson } from '../safeApi';
+import { safeFetchJson, extractContent } from '../safeApi';
 import { isManualRelayEnabled } from '../manualModelRelay';
 import { processNewMessagesWithAutoArchive } from '../memoryPalace/autoArchive';
 import { loadMusicCfgStandalone } from '../../context/MusicContext';
@@ -97,6 +97,7 @@ export interface VRSessionResult {
     room?: VRRoomId;
     reason?: string;
     activity?: string;
+    detail?: string;
 }
 
 const genId = (p: string) => `${p}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -511,7 +512,13 @@ async function runVRSessionUnlocked(deps: VRSessionDeps): Promise<VRSessionResul
             logVRApiCall({ ts: callStart, charId: char.id, charName: char.name, charEnabled: !!char.vrState?.enabled, room: room.id, model: vrApi.model, baseUrl, ok: false, ms: Date.now() - callStart, error: (e?.message || String(e)).slice(0, 160) });
             throw e;
         }
-        let aiContent: string = data.choices?.[0]?.message?.content || '';
+        const choice = data.choices?.[0];
+        if ((sarMode === 'fishing' || sarMode === 'market') && choice?.finish_reason === 'length') {
+            return {ok:false,room:'sar',reason:'truncated'};
+        }
+        const content = choice?.message?.content;
+        // Only a final answer can authorize a transaction. Never use hidden reasoning here.
+        let aiContent = typeof content === 'string' ? content : extractContent({choices:[{message:{content}}]});
         if (data?.model === 'external-manual-relay' && room.id === 'library' && novel) {
             const current = (await DB.getVRNovels()).find(book => book.id === novel!.id);
             if (!current || current.updatedAt !== novel.updatedAt || current.segments.length !== novel.segments.length) {
@@ -519,7 +526,7 @@ async function runVRSessionUnlocked(deps: VRSessionDeps): Promise<VRSessionResul
             }
         }
         aiContent = aiContent.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-        const titleProposal = extractKanataTitle(aiContent, sarMode === 'fishing' || sarMode === 'garden');
+        const titleProposal = extractKanataTitle(aiContent, sarMode === 'fishing' || sarMode === 'garden' || (sarMode === 'market' && !/<ACTION>/i.test(aiContent)));
         aiContent = titleProposal.content;
         if (!aiContent.trim()) return { ok: false, room: room.id, reason: 'empty' };
 
@@ -687,9 +694,11 @@ async function runVRSessionUnlocked(deps: VRSessionDeps): Promise<VRSessionResul
             try{await flushMarketReceipts(characters);}catch{cardLines.push('箱庭已保存，事件回执下次进入时继续同步。');}
         } else if (room.id === 'sar' && sarMode === 'fishing' && fishingCatch) {
             const parsed = parseFishingReaction(aiContent);
-            if (!parsed) return { ok: false, room: 'sar', reason: 'fishing-pending' };
+            if (!parsed) return { ok: false, room: 'sar', reason: 'fishing-format' };
             try { await mutateFishingMarket(s => settleFishingTrip(s, fishingActor, fishingCatch!.id, parsed)); }
-            catch { return { ok: false, room: 'sar', reason: 'fishing-pending' }; }
+            catch (error) {
+                return {ok:false, room:'sar', reason:'fishing-settlement', detail:error instanceof Error ? error.message : undefined};
+            }
             const completed = readFishingMarketState().fishingTrips!.find(t => t.catch.id === fishingCatch!.id)!;
             const card = fishingTripCard(completed);
             activity = card.activity; cardLines = [card.content]; meta = card.metadata;
@@ -700,7 +709,7 @@ async function runVRSessionUnlocked(deps: VRSessionDeps): Promise<VRSessionResul
         } else if (room.id === 'sar' && sarMode === 'market') {
             let note = ''; let words = ''; let share: 'none' | 'guestbook' | 'dm' = 'none';
             const parsed = parseMarketPlan(aiContent);
-            if (!parsed) return { ok: false, room: 'sar', reason: 'empty' };
+            if (!parsed) return { ok:false, room:'sar', reason:'market-format' };
             let receipt = ''; let succeeded = false;
             try {
                 await mutateFishingMarket(s => { const next = applyMarketPlan(s, fishingActor, parsed); receipt = next.ledger[next.ledger.length - 1]?.text || ''; return next; });
@@ -711,7 +720,7 @@ async function runVRSessionUnlocked(deps: VRSessionDeps): Promise<VRSessionResul
             if (succeeded) { share = parsed.share; words = parsed.shareWords; }
             cardLines = ['「彼方 · 内部布告板」', '程序回执：' + receipt];
             if (parsed.words) cardLines.push(`${succeeded ? '本轮提交的原话' : '未提交的草稿'}（只作表达证据）：${JSON.stringify(parsed.words)}`);
-            cardLines.push(`角色随笔（主观感受与打算；结算以程序回执为准）：${note}`);
+            if (note) cardLines.push(`角色随笔（主观感受与打算；结算以程序回执为准）：${note}`);
             if (share === 'guestbook' && words) {
                 try {
                     await withSharedRoomLock(async () => {

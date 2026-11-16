@@ -614,7 +614,7 @@ ${candidateText}`;
         },
         1,
         90_000,
-        { appId: 'chat', charId: params.char.id, purpose: 'memory-repair-diagnosis', featureId: 'memoryLight' },
+        { appId: 'memorypalace', appName: '记忆宫殿', ...(params.char.id ? { charId: params.char.id } : {}), ...(params.char.name ? { charName: params.char.name } : {}), featureId: 'memoryLight', purpose: '记忆召回诊断' },
     );
     const raw = extractContent(data);
     const parsed = extractJson(raw);

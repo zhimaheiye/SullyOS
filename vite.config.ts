@@ -7,6 +7,7 @@ import { closeAllMcpStdioServers, mcpStdioMiddleware } from './server/mcp-stdio-
 import { staticCachePlugin } from './scripts/static-cache-build';
 import { homeResourcePacksPlugin } from './scripts/home-resource-packs.mjs';
 import { startupRecoveryPlugin } from './scripts/startup-recovery-plugin';
+import { pageBuildMetadataPlugin } from './scripts/build-metadata';
 import { APP_VERSION_TAG } from './utils/appVersion';
 import { tikhubMiddleware } from './server/tikhub-middleware';
 
@@ -103,6 +104,7 @@ export default defineConfig({
       configureServer(server) { const bridge = createXiaoyuzhouMiddleware(); server.middlewares.use('/api/xiaoyuzhou', bridge.handler); server.httpServer?.once('close', bridge.close); },
       configurePreviewServer(server) { const bridge = createXiaoyuzhouMiddleware(); server.middlewares.use('/api/xiaoyuzhou', bridge.handler); server.httpServer?.once('close', bridge.close); },
     },
+    pageBuildMetadataPlugin({ buildId: appBuildId, branch: gitInfo.branch, commit: gitInfo.commit, time: buildTime }),
     react(),
     staticCachePlugin({ buildId: appBuildId, appVersion: APP_VERSION_TAG }),
     {
@@ -136,11 +138,8 @@ export default defineConfig({
     },
   ],
   define: {
-    __BUILD_BRANCH__: JSON.stringify(gitInfo.branch),
-    __BUILD_COMMIT__: JSON.stringify(gitInfo.commit),
-    __BUILD_TIME__: JSON.stringify(buildTime),
+    // Keep feature gating compile-time; only descriptive release metadata moves to HTML.
     __BUILD_BADGE_VISIBLE__: JSON.stringify(showBuildBadge),
-    __APP_BUILD_ID__: JSON.stringify(appBuildId),
   },
   // GitHub Pages 发布时使用相对路径，避免仓库子路径导致资源 404
   base: process.env.GITHUB_PAGES ? './' : '/',

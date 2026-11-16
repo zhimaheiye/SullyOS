@@ -105,7 +105,7 @@ ${sentencePlan}`;
       stream: false,
     }),
   }, 0, 30_000, {
-    appName: '陪伴桌面',
+    appName: '触感陪伴',
     charId: character.id,
     charName: character.name,
     purpose: '一次性编排开机台词动作（不重试）',
