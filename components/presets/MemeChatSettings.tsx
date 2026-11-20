@@ -87,9 +87,9 @@ export function MemeChatSettingsPanel() {
     const importFile = async (file: File) => {
         setImporting(true); setNotice(''); setError('');
         try {
-            const entries = importMemeEntries(JSON.parse(await file.text()), file.name);
+            const entries = importMemeEntries(JSON.parse(await file.text()));
             const result = mergeMemeEntries(loadMemeLibrary(), entries);
-            if (commit(result.library)) setNotice(`新增 ${result.added} 条，跳过重复 ${entries.length - result.added} 条。总则／合集默认停用，可逐条整理。`);
+            if (commit(result.library)) setNotice(`新增 ${result.added} 条，跳过重复 ${entries.length - result.added} 条。`);
         } catch (cause) { setError(cause instanceof Error ? cause.message : '导入失败'); }
         finally { setImporting(false); }
     };
@@ -113,12 +113,12 @@ export function MemeChatSettingsPanel() {
         <section className={`${panel} grid gap-3`}>
             <div className="flex flex-wrap gap-2">
                 <input ref={upload} type="file" accept=".json,application/json" className="hidden" aria-label="导入热梗文件" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importFile(file); }} />
-                <button type="button" className={button} disabled={importing} onClick={() => upload.current?.click()}><UploadSimple size={16} />{importing ? '正在导入…' : '导入条目 / 酒馆世界书'}</button>
+                <button type="button" className={button} disabled={importing} onClick={() => upload.current?.click()}><UploadSimple size={16} />{importing ? '正在导入…' : '导入热梗条目'}</button>
                 <button type="button" className={button} disabled={!library.entries.length} onClick={exportLibrary}><DownloadSimple size={16} />导出条目</button>
                 <button type="button" className={button} onClick={() => setEditing({ id: crypto.randomUUID(), title: '', content: '', keywords: [], affinity: [], enabled: true })}><Plus size={16} />新建条目</button>
                 <button type="button" className={`${button} !border-rose-200 !text-rose-600`} disabled={importing || !library.entries.length} onClick={() => setConfirmClear(true)}><Trash size={16} />清空全部条目</button>
             </div>
-            <p className="text-xs text-slate-500">{library.entries.length} 条 · {library.entries.filter(entry => entry.enabled && entry.content.length <= MEME_ENTRY_LIMIT).length} 条可用。导入不会固定挂载世界书，也不会自动开启角色。</p>
+            <p className="text-xs text-slate-500">{library.entries.length} 条 · {library.entries.filter(entry => entry.enabled && entry.content.length <= MEME_ENTRY_LIMIT).length} 条可用。仅支持小手机导出的热梗条目文件，导入不会自动开启角色。</p>
             {notice && <p role="status" className="text-xs leading-5 text-emerald-700">{notice}</p>}
         </section>
         {error && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-xs text-rose-700">{error}</p>}

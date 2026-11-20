@@ -340,21 +340,26 @@ export const serializeStandardWorldbook = (books: WorldbookLike[]): string => {
         };
     });
 
-    return JSON.stringify({ entries }, null, 2);
+    return JSON.stringify({ type: 'sully_worldbook', version: 1, entries }, null, 2);
 };
 
 export const parseStandardWorldbook = (
     rawText: string,
     category: string,
     now = Date.now(),
+    legacyNativePng = false,
 ): Worldbook[] => {
     const parsed = JSON.parse(rawText);
-    if (!parsed || typeof parsed !== 'object' || !parsed.entries || typeof parsed.entries !== 'object') {
-        throw new Error('不是受支持的标准世界书文件：缺少 entries');
+    if (!(parsed?.type === 'sully_worldbook' && parsed.version === 1)
+        && !(legacyNativePng && parsed?.type === undefined && parsed?.version === undefined)) {
+        throw new Error('仅支持小手机导出的世界书文件');
     }
-    const rawEntries = Array.isArray(parsed.entries)
-        ? parsed.entries
-        : Object.values(parsed.entries);
+    return parseWorldbookEntries(parsed?.entries, category, now);
+};
+
+export const parseWorldbookEntries = (entries: unknown, category: string, now: number): Worldbook[] => {
+    if (!entries || typeof entries !== 'object') throw new Error('世界书文件缺少条目');
+    const rawEntries = Array.isArray(entries) ? entries : Object.values(entries);
 
     const books = rawEntries.flatMap((value: any, index: number): Worldbook[] => {
         if (!value || typeof value !== 'object' || typeof value.content !== 'string') return [];

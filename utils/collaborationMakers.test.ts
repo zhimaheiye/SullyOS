@@ -76,7 +76,7 @@ title: 夜航日记
     expect(worldbooks[1]).toMatchObject({ title: '旧车站', key: ['车站'], position: 4, depth: 2, role: 2, sourceUid: 1 });
   });
 
-  it('validates a worldbook as one category containing SillyTavern entries', () => {
+  it('validates a worldbook as one category containing multiple entries', () => {
     expect(validateInstallableArtifact({
       kind: 'worldbook',
       title: '学院设定',

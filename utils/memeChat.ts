@@ -55,31 +55,9 @@ export function saveMemeLibrary(value: MemeLibrary) {
     window.dispatchEvent(new Event(MEME_CHAT_EVENT));
 }
 
-/** Import definitions as data, never Tavern's placement, constant or role instructions. */
-export function importMemeEntries(value: unknown, source: string): MemeEntry[] {
-    if (!value || typeof value !== 'object') throw new Error('请选择热梗 JSON 文件');
-    const raw = value as Record<string, unknown>;
-    if (raw.version === 1 && Array.isArray(raw.entries)) {
-        validateMemeLibrary(value);
-        return value.entries;
-    }
-    const rows = raw.entries ?? (raw.character_book as { entries?: unknown } | undefined)?.entries;
-    if (!rows || typeof rows !== 'object') throw new Error('没有找到世界书 entries 条目');
-    return Object.entries(rows).map(([uid, data]) => {
-        const row = data as Record<string, unknown>;
-        if (!row || typeof row.content !== 'string' || !row.content.trim()) throw new Error(`条目 ${uid} 缺少正文，未导入此文件`);
-        const title = String(row.comment || row.name || `条目 ${uid}`).trim();
-        const keywords = row.key ?? row.keys;
-        const collection = row.constant === true || /总则|协议|解码规则|语录|杂记|聊天梗|游戏梗/.test(title);
-        const importNote = collection ? '总则或混合条目，默认停用；可整理为单个梗后启用。'
-            : row.content.length > MEME_ENTRY_LIMIT ? '正文过长，默认停用；请拆成单个梗。' : undefined;
-        return {
-            id: `tavern:${source}:${String(row.uid ?? row.id ?? uid)}`,
-            title, keywords: strings(keywords) ? [...new Set(keywords.map(word => word.trim()).filter(Boolean))] : [],
-            content: row.content, affinity: [], source, importNote,
-            enabled: !importNote && row.disable !== true && row.enabled !== false,
-        };
-    });
+export function importMemeEntries(value: unknown): MemeEntry[] {
+    validateMemeLibrary(value);
+    return value.entries;
 }
 
 /** Re-import is additive: a user-edited entry is never overwritten by its source file. */

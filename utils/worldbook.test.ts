@@ -91,9 +91,9 @@ describe('worldbook positions', () => {
     });
 });
 
-describe('standard worldbook import', () => {
-    it('converts entries into a SullyOS category without losing activation metadata', () => {
-        const imported = parseStandardWorldbook(JSON.stringify({
+describe('SullyOS worldbook import', () => {
+    it('rejects unmarked JSON but keeps activation metadata from older native PNG shares', () => {
+        const legacyJson = JSON.stringify({
             entries: {
                 0: {
                     uid: 7,
@@ -112,7 +112,9 @@ describe('standard worldbook import', () => {
                     useProbability: true,
                 },
             },
-        }), '导入测试', 1234);
+        });
+        expect(() => parseStandardWorldbook(legacyJson, '导入测试', 1234)).toThrow('仅支持小手机导出的世界书文件');
+        const imported = parseStandardWorldbook(legacyJson, '导入测试', 1234, true);
 
         expect(imported).toHaveLength(1);
         expect(imported[0]).toMatchObject({
@@ -130,7 +132,7 @@ describe('standard worldbook import', () => {
         });
     });
 
-    it('exports a whole group as a standard worldbook that can be imported again', () => {
+    it('exports a whole group as a SullyOS worldbook that can be imported again', () => {
         const source = [{
             ...book({
                 id: 'export-1',
@@ -149,6 +151,8 @@ describe('standard worldbook import', () => {
 
         const json = serializeStandardWorldbook(source);
         const raw = JSON.parse(json);
+        expect(raw).toMatchObject({ type: 'sully_worldbook', version: 1 });
+        expect(() => parseStandardWorldbook(JSON.stringify({ ...raw, version: 2 }), '其他版本', 2, true)).toThrow('仅支持小手机导出的世界书文件');
         expect(raw.entries['0']).toMatchObject({
             comment: '导出条目',
             key: ['导出'],

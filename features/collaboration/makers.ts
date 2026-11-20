@@ -9,7 +9,7 @@ import type {
 import { JOURNAL_CSS_SCOPE_HINT, JOURNAL_CSS_SCOPE_REGEX, JOURNAL_CUSTOM_CSS_SELECTOR_GROUPS } from '../../utils/journalAppearance';
 import { SCHEDULE_CSS_SCOPE_HINT, SCHEDULE_CSS_SCOPE_REGEX, SCHEDULE_CUSTOM_CSS_SELECTOR_GROUPS } from '../../utils/scheduleAppearance';
 import { validateScopedCss } from '../../utils/scopedCss';
-import { parseStandardWorldbook, WORLDBOOK_POSITION_LABELS } from '../../utils/worldbook';
+import { parseWorldbookEntries, WORLDBOOK_POSITION_LABELS } from '../../utils/worldbook';
 import type {
   CollaborationAttachment,
   CollaborationInstallableArtifact,
@@ -143,7 +143,7 @@ const ALL_COLLABORATION_MAKERS: CollaborationMakerDefinition[] = [
       "caseSensitive": false, "matchWholeWords": false
     }
   }
-}`, '一个作品块代表一本世界书：category 下可放多个 entries，结构对齐 SillyTavern 世界书。position：0角色设定前、1角色设定后、2作者注释顶部、3作者注释底部、4聊天记录指定深度、5示例消息前、6示例消息后；只有 position=4 时 role 才使用 0/System、1/User、2/Assistant。常驻条目 constant=true 且 key=[]；关键词条目 constant=false 并填写 key。'),
+}`, '一个作品块代表一本世界书：category 下可放多个 entries。position：0角色设定前、1角色设定后、2作者注释顶部、3作者注释底部、4聊天记录指定深度、5示例消息前、6示例消息后；只有 position=4 时 role 才使用 0/System、1/User、2/Assistant。常驻条目 constant=true 且 key=[]；关键词条目 constant=false 并填写 key。'),
   },
 ];
 
@@ -332,7 +332,7 @@ export const installableToWorldbooks = (artifact: CollaborationInstallableArtifa
   const category = typeof payload.category === 'string' && payload.category.trim()
     ? payload.category.trim().slice(0, 50)
     : artifact.title.trim().slice(0, 50) || '协同制作';
-  return parseStandardWorldbook(JSON.stringify({ entries: normalizedEntries }), category, now);
+  return parseWorldbookEntries(normalizedEntries, category, now);
 };
 
 /** @deprecated Prefer installableToWorldbooks; retained for older single-entry callers. */
@@ -371,7 +371,7 @@ export const buildInstallablePreviewDocument = (artifact: CollaborationInstallab
       const position = WORLDBOOK_POSITION_LABELS[book.position ?? 1];
       return `<article style="padding:18px 0;border-top:1px solid #dfe4ec"><div style="display:flex;align-items:center;gap:8px"><b style="font-size:15px">${escapeHtml(book.title)}</b><span style="font-size:10px;padding:3px 7px;border-radius:999px;background:#e8f5ee;color:#17734a">${mode}</span></div><div style="margin-top:7px;font-size:11px;color:#758096">${escapeHtml(position)} · 顺序 ${book.order ?? 100}</div><p style="margin:10px 0 0;white-space:pre-wrap;font-size:13px;line-height:1.65;color:#44506a">${escapeHtml(book.content)}</p></article>`;
     }).join('');
-    return `${common}<main class="phone" style="padding:46px 22px"><div class="label">SILLYTAVERN WORLDBOOK</div><h1 style="margin:9px 0 4px;font-size:25px">${category}</h1><p style="margin:0 0 24px;color:#8791a5;font-size:12px">${books.length} 个条目 · 将作为同一分类保存</p><section style="background:white;padding:0 18px;border-radius:22px">${rows || '<p style="padding:24px;color:#9aa3b3">没有可预览的有效条目</p>'}</section></main></body></html>`;
+    return `${common}<main class="phone" style="padding:46px 22px"><div class="label">SULLYOS WORLDBOOK</div><h1 style="margin:9px 0 4px;font-size:25px">${category}</h1><p style="margin:0 0 24px;color:#8791a5;font-size:12px">${books.length} 个条目 · 将作为同一分类保存</p><section style="background:white;padding:0 18px;border-radius:22px">${rows || '<p style="padding:24px;color:#9aa3b3">没有可预览的有效条目</p>'}</section></main></body></html>`;
   }
   return `${common}<main class="phone" style="padding:54px 24px"><div class="label">${escapeHtml(COLLABORATION_MAKER_MAP[artifact.kind].label)}</div><h1>${title}</h1><pre style="white-space:pre-wrap;font:14px/1.7 system-ui;background:white;padding:20px;border-radius:20px">${escapeHtml(JSON.stringify(artifact.payload, null, 2))}</pre></main></body></html>`;
 };

@@ -13,7 +13,7 @@ try{
  await page.evaluate(async port=>{
    const {DB,CollaborationStore,DEFAULT_COLLABORATION_SETTINGS}=window.qaBooks;
    const {parseStandardWorldbook,toMountedWorldbook}=await import('/utils/worldbook.ts');
-   const books=parseStandardWorldbook(JSON.stringify({entries:{0:{comment:'条目A',content:'世界设定A',key:['月亮'],keysecondary:['海边'],selective:true,constant:false},1:{comment:'条目B',content:'世界设定B',key:['太阳'],constant:false}}}),'原分组');
+   const books=parseStandardWorldbook(JSON.stringify({type:'sully_worldbook',version:1,entries:{0:{comment:'条目A',content:'世界设定A',key:['月亮'],keysecondary:['海边'],selective:true,constant:false},1:{comment:'条目B',content:'世界设定B',key:['太阳'],constant:false}}}),'原分组');
    window.qaBooks.ids=books.map(b=>b.id);for(const b of books)await DB.saveWorldbook(b);
    const char={id:'qa-book-char',name:'测试角色',avatar:'',systemPrompt:'你是测试角色',contextLimit:100,contextRangeMode:'manual',contextRangePolicyVersion:1,mountedWorldbooks:books.map(toMountedWorldbook)};
    await DB.saveCharacter(char);await DB.saveCharacter({...char,id:'qa-partial',name:'部分挂载',mountedWorldbooks:[toMountedWorldbook(books[1])]});

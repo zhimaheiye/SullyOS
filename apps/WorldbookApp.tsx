@@ -202,7 +202,7 @@ const WorldbookApp: React.FC = () => {
             const source = await readShareFile(file, 'worldbook');
             const text = await source.text();
             const category = source.name.replace(/\.json$/i, '').trim() || '导入世界书';
-            const imported = parseStandardWorldbook(text, category);
+            const imported = parseStandardWorldbook(text, category, undefined, source !== file);
             for (const book of imported) await addWorldbook(book);
             addToast(`已导入 ${imported.length} 条世界书条目`, 'success');
             setExpandedCategory(category);
@@ -644,7 +644,7 @@ const WorldbookApp: React.FC = () => {
                             <button
                                 onClick={() => { setShowImportConfirm(true); trackEvent('打开导入世界书弹窗'); }}
                                 className="w-9 h-9 bg-white/80 text-indigo-500 border border-white rounded-full shadow-sm flex items-center justify-center active:scale-90 transition-transform"
-                                title="导入标准世界书"
+                                title="导入小手机世界书"
                             >
                                 <UploadSimple size={18} weight="bold" />
                             </button>
@@ -721,7 +721,7 @@ const WorldbookApp: React.FC = () => {
                             <button
                                 onClick={(event) => handleExportGroup(event, category, books)}
                                 className="ml-auto p-2 -my-2 rounded-full text-slate-400 hover:text-indigo-600 hover:bg-white/70 active:scale-90 transition-all"
-                                title="导出该组为标准世界书"
+                                title="导出该组为小手机世界书"
                             >
                                 <DownloadSimple size={16} weight="bold" />
                             </button>
@@ -847,7 +847,7 @@ const WorldbookApp: React.FC = () => {
                         <WarningCircle size={28} weight="fill" />
                     </div>
                     <p className="text-center leading-6">
-                        请注意，如果导入的不是您的作品，请确定该世界书的作者允许该世界书用于免费小手机。
+                        仅支持小手机导出的世界书文件。若不是您的作品，请确认作者允许在免费小手机中使用。
                     </p>
                 </div>
             </Modal>
