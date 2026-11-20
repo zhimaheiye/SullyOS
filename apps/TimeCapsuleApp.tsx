@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import JournalRichText from '../components/handbook/JournalRichText';
 import {
   ArrowDown, ArrowUp, CaretLeft, ClockCountdown, EnvelopeSimpleOpen, HourglassMedium,
   Check, LockKey, PencilSimple, Plus, Stop, Trash, UserCirclePlus, UsersThree, WarningCircle,
@@ -14,8 +15,12 @@ import {
 } from '../utils/timeCapsule';
 import {isManualRelayEnabled, subscribeManualRelay} from '../utils/manualModelRelay';
 import { requestCharacterTimeCapsule } from '../utils/timeCapsuleService';
+import { timeCapsuleBodyText } from '../utils/timeCapsuleBody';
 
 type Tab = 'archive' | 'write' | 'invite' | 'visitors';
+type InviteRunKind = 'continue' | 'single' | 'failed';
+interface FailedRetryPlan { batchId: string; itemIds: string[]; index: number; }
+interface InviteRetryProgress { current: number; total: number; charName: string; }
 
 const Avatar: React.FC<{ char: Pick<CharacterProfile, 'name' | 'avatar'>; size?: string }> = ({ char, size = 'h-12 w-12' }) => (
   <div className={`${size} shrink-0 overflow-hidden rounded-full bg-[#efe4cc] ring-2 ring-white`}>
@@ -53,16 +58,22 @@ const TimeCapsuleApp: React.FC = () => {
   const [unlockValue, setUnlockValue] = useState(() => toLocalDateTimeInput(Date.now() + 30 * 86_400_000));
   const [inviteCharIds, setInviteCharIds] = useState<string[]>([]);
   const [busyItemId, setBusyItemId] = useState('');
+  const [runnerActive,setRunnerActive]=useState(false);
   const [dismissedBatchId,setDismissedBatchId]=useState('');
   const [pendingSave,setPendingSave]=useState<{op:{batchId:string;itemId:string;attempt:number;charId:string};capsule:TimeCapsuleEntry;character:CharacterProfile}|null>(null);
+  const [failedRetryPlan,setFailedRetryPlanState]=useState<FailedRetryPlan|null>(null);
+  const [retryProgress,setRetryProgress]=useState<InviteRetryProgress|null>(null);
   const executor = useRef(executorId());
+  const failedRetryPlanRef=useRef<FailedRetryPlan|null>(null);
+  const runner=useRef<{id:string;controller:AbortController;batchId:string;kind:InviteRunKind}|null>(null);
   const invitation = useRef<{controller:AbortController;batchId:string;itemId:string;attempt:number;charId:string}|null>(null);
-  const cancelInvitation=useCallback(()=>{invitation.current?.controller.abort();setBusyItemId('');},[]);
+  const setFailedRetryPlan=useCallback((plan:FailedRetryPlan|null)=>{failedRetryPlanRef.current=plan;setFailedRetryPlanState(plan);},[]);
+  const cancelInvitation=useCallback(()=>{runner.current?.controller.abort();invitation.current?.controller.abort();},[]);
   useEffect(()=>{
-    const reset=()=>{cancelInvitation();setPendingSave(null);};
+    const reset=()=>{cancelInvitation();setPendingSave(null);setFailedRetryPlan(null);setRetryProgress(null);};
     window.addEventListener('time-capsule-reset',reset);
-    return()=>{window.removeEventListener('time-capsule-reset',reset);invitation.current?.controller.abort();};
-  },[cancelInvitation]);
+    return()=>{window.removeEventListener('time-capsule-reset',reset);cancelInvitation();};
+  },[cancelInvitation,setFailedRetryPlan]);
   useEffect(()=>{
     if(invitation.current&&tab!=='invite')cancelInvitation();
   },[tab,cancelInvitation]);
@@ -75,6 +86,8 @@ const TimeCapsuleApp: React.FC = () => {
   const inviteBatches=useMemo(()=>records.filter((item):item is TimeCapsuleInviteBatch=>item.kind==='invite_batch').sort((a,b)=>b.updatedAt-a.updatedAt),[records]);
   const activeInviteBatch=inviteBatches[0];
   const shownInviteBatch=activeInviteBatch?.id===dismissedBatchId?undefined:activeInviteBatch;
+  const shownFailedCount=shownInviteBatch?.items.filter(item=>item.status==='failed').length||0;
+  const shownFailedPlan=failedRetryPlan?.batchId===shownInviteBatch?.id?failedRetryPlan:null;
   const eligibleCharacters=characters;
 
   const load = useCallback(async () => setRecords(await DB.getTimeCapsuleRecords()), []);
@@ -115,24 +128,43 @@ const TimeCapsuleApp: React.FC = () => {
     }
   };
 
-  const runInvitationBatch = async (batchId:string,onlyItemId?:string) => {
-    if(invitation.current)return;
+  const runInvitationBatch = async (batchId:string,kind:InviteRunKind='continue',fixedItemIds:string[]=[],offset=0,total=fixedItemIds.length) => {
+    if(runner.current||pendingSave)return;
     const relayAtStart=isManualRelayEnabled();
     if(!relayAtStart&&!(apiConfig.baseUrl?.trim()&&apiConfig.model?.trim())){addToast('请先配置时间胶囊文本来源','error');return;}
+    const runId=crypto.randomUUID(),runController=new AbortController();
+    runner.current={id:runId,controller:runController,batchId,kind};setRunnerActive(true);
     const frozenUser=structuredClone(userProfile),frozenGroups=structuredClone(groups),frozenApi=structuredClone(apiConfig),frozenRealtime=structuredClone(realtimeConfig);
-    let nextItemId=onlyItemId;
-    while(true){
+    let fixedIndex=0,processed=0,paused=false;
+    try{while(!runController.signal.aborted){
+      let nextItemId:string|undefined;
+      if(kind==='continue')nextItemId=undefined;
+      else{
+        if(fixedIndex>=fixedItemIds.length)break;
+        nextItemId=fixedItemIds[fixedIndex++];processed=fixedIndex;
+        let currentBatch:TimeCapsuleInviteBatch|undefined;
+        try{currentBatch=(await DB.getTimeCapsuleRecords()).find((row):row is TimeCapsuleInviteBatch=>row.kind==='invite_batch'&&row.id===batchId);}
+        catch(error){addToast(safeTimeCapsuleInviteError(error),'error');paused=true;break;}
+        const currentItem=currentBatch?.items.find(item=>item.id===nextItemId);
+        if(!currentItem||currentItem.status!=='failed')continue;
+        if(kind==='failed')setRetryProgress({current:offset+processed,total,charName:currentItem.charName});
+      }
       let claimed:Awaited<ReturnType<typeof DB.claimTimeCapsuleInviteItem>>;
-      try{claimed=await DB.claimTimeCapsuleInviteItem(batchId,executor.current,nextItemId);}
-      catch(error){if(error instanceof Error&&error.message==='没有可继续的邀请')break;addToast(safeTimeCapsuleInviteError(error),'error');break;}
-      nextItemId=undefined;
+      try{claimed=await DB.claimTimeCapsuleInviteItem(batchId,executor.current,nextItemId,Date.now(),nextItemId?'failed':undefined);}
+      catch(error){
+        if(error instanceof Error&&error.message==='没有可继续的邀请'){if(kind==='continue')break;continue;}
+        addToast(safeTimeCapsuleInviteError(error),'error');paused=true;break;
+      }
       const {item}=claimed,controller=new AbortController();
       const op={controller,batchId,itemId:item.id,attempt:item.attempt,charId:item.charId};
       invitation.current=op;setBusyItemId(item.id);await load();
+      const abortCurrent=()=>controller.abort(runController.signal.reason);
+      if(runController.signal.aborted)abortCurrent();else runController.signal.addEventListener('abort',abortCurrent,{once:true});
       const unsubscribe=subscribeManualRelay(()=>{if(relayAtStart&&!isManualRelayEnabled())controller.abort();});
       let continueQueue=!relayAtStart;
       let candidate:{capsule:TimeCapsuleEntry;character:CharacterProfile}|undefined;
       try{
+        controller.signal.throwIfAborted();
         const latest=await DB.getCharacter(item.charId);
         if(!latest||timeCapsuleCharacterSignatureHash(latest)!==item.characterSignature){
           await DB.settleTimeCapsuleInviteItem({...op,executorId:executor.current,status:'failed',error:'角色已删除或身份已变化，请重新选择'});
@@ -153,31 +185,67 @@ const TimeCapsuleApp: React.FC = () => {
           const message=safeTimeCapsuleInviteError(error);
           const identityFailure=/角色已变更|角色不一致/.test(message);
           const saveFailure=/保存失败|进度已变化|IndexedDB|database/i.test(message)&&!identityFailure;
-          if(saveFailure){continueQueue=false;if(candidate)setPendingSave({op:{batchId:op.batchId,itemId:op.itemId,attempt:op.attempt,charId:op.charId},...candidate});addToast(candidate?'胶囊已生成但尚未保存；请重试保存，不会再次生成':'邀请进度保存失败，队列已暂停；请刷新后继续','error');}
-          else try{await DB.settleTimeCapsuleInviteItem({...op,executorId:executor.current,status:'failed',error:message});}catch(settleError){continueQueue=false;addToast(safeTimeCapsuleInviteError(settleError),'error');}
+          if(saveFailure){continueQueue=false;paused=true;if(candidate)setPendingSave({op:{batchId:op.batchId,itemId:op.itemId,attempt:op.attempt,charId:op.charId},...candidate});addToast(candidate?'胶囊已生成但尚未保存；请重试保存，不会再次生成':'邀请进度保存失败，队列已暂停；请刷新后继续','error');}
+          else try{await DB.settleTimeCapsuleInviteItem({...op,executorId:executor.current,status:'failed',error:message});}catch(settleError){continueQueue=false;paused=true;addToast(safeTimeCapsuleInviteError(settleError),'error');}
         }
       }finally{
-        unsubscribe();
         if(invitation.current===op)invitation.current=null;
         setBusyItemId('');await load();
       }
       if(!continueQueue)break;
+      if(kind==='single')break;
+    }}finally{
+      const ownsRun=runner.current?.id===runId;
+      if(ownsRun)runner.current=null;
+      if(kind==='failed'){
+        const plan=failedRetryPlanRef.current;
+        if(plan&&plan.batchId===batchId){
+          const nextIndex=Math.min(plan.itemIds.length,offset+processed);
+          if(nextIndex>=plan.itemIds.length&&!paused&&!runController.signal.aborted){
+            setFailedRetryPlan(null);setRetryProgress(null);
+            try{
+              const latest=(await DB.getTimeCapsuleRecords()).find((row):row is TimeCapsuleInviteBatch=>row.kind==='invite_batch'&&row.id===batchId);
+              const statuses=plan.itemIds.map(id=>latest?.items.find(item=>item.id===id)?.status);
+              const saved=statuses.filter(status=>status==='saved').length,failed=statuses.filter(status=>status==='failed').length;
+              addToast(`本轮重试完成：成功 ${saved}，仍失败 ${failed}`,failed?'error':'success');
+            }catch{/* progress is already stored; refresh can recover it */}
+          }else setFailedRetryPlan({...plan,index:nextIndex});
+        }
+      }
+      if(ownsRun){setRunnerActive(false);setBusyItemId('');setRetryProgress(null);}
     }
+  };
+
+  const retryAllFailed=async(batch:TimeCapsuleInviteBatch)=>{
+    if(runner.current||pendingSave)return;
+    const itemIds=batch.items.filter(item=>item.status==='failed').map(item=>item.id);
+    if(!itemIds.length)return;
+    const plan={batchId:batch.id,itemIds,index:0};setFailedRetryPlan(plan);
+    const count=isManualRelayEnabled()?1:itemIds.length;
+    await runInvitationBatch(batch.id,'failed',itemIds.slice(0,count),0,itemIds.length);
+  };
+
+  const continueFailedRetry=async()=>{
+    const plan=failedRetryPlanRef.current;
+    if(!plan||plan.index>=plan.itemIds.length)return;
+    const count=isManualRelayEnabled()?1:plan.itemIds.length-plan.index;
+    await runInvitationBatch(plan.batchId,'failed',plan.itemIds.slice(plan.index,plan.index+count),plan.index,plan.itemIds.length);
   };
 
   const startInvitationBatch=async()=>{
     const selected=inviteCharIds.map(id=>eligibleCharacters.find(char=>char.id===id)).filter((char):char is CharacterProfile=>!!char);
+    if(runner.current||pendingSave)return;
     if(!selected.length){addToast('请至少选择一位角色','error');return;}
     try{const batch=createTimeCapsuleInviteBatch(selected.map(char=>structuredClone(char)));await DB.saveTimeCapsuleRecord(batch);await load();await runInvitationBatch(batch.id);}
     catch(error){addToast(safeTimeCapsuleInviteError(error),'error');}
   };
 
   const retryPendingInviteSave=async()=>{
-    if(!pendingSave||busyItemId)return;
-    const controller=new AbortController();setBusyItemId(pendingSave.op.itemId);
+    if(!pendingSave||runner.current)return;
+    const controller=new AbortController(),runId=crypto.randomUUID();runner.current={id:runId,controller,batchId:pendingSave.op.batchId,kind:'single'};setRunnerActive(true);setBusyItemId(pendingSave.op.itemId);
     try{await DB.finishTimeCapsuleInviteItem({...pendingSave.op,executorId:executor.current,capsule:pendingSave.capsule,character:pendingSave.character,signal:controller.signal});setPendingSave(null);await load();addToast(`${pendingSave.character.name}的胶囊已保存`,'success');}
     catch(error){addToast(safeTimeCapsuleInviteError(error),'error');}
-    finally{setBusyItemId('');}
+    finally{if(runner.current?.id===runId){runner.current=null;setRunnerActive(false);}setBusyItemId('');}
   };
 
   const openCapsule = async (capsule: TimeCapsuleEntry) => {
@@ -225,7 +293,7 @@ const TimeCapsuleApp: React.FC = () => {
               <div className="min-w-0 flex-1"><div className="flex items-center gap-2"><span className={`rounded-full px-2 py-1 text-[9px] font-black ${opened ? 'bg-[#e9dfc9] text-[#645b4d]' : due ? 'bg-[#a9534d] text-white' : 'bg-[#ddd0b8] text-[#655b4b]'}`}>{opened ? '已开启' : due ? '时间到了' : '封存中'}</span><span className="truncate text-[10px] text-[#94897a]">{sourceLabel(capsule)}</span></div><h3 className="mt-2 truncate text-base font-black text-[#2b3040]">{capsule.title}</h3></div>
               <button onClick={() => void deleteCapsule(capsule)} className="p-2 text-[#a3776e]" aria-label="删除胶囊"><Trash size={17} /></button>
             </div>
-            {opened ? <div className="mt-5 border-t border-[#e6dac5] pt-4"><p className="whitespace-pre-wrap text-sm leading-7 text-[#46443f]">{capsule.content}</p><p className="mt-5 text-[10px] text-[#9a8f7f]">封存于 {formatDate(capsule.createdAt)}</p></div>
+            {opened ? <div className="mt-5 border-t border-[#e6dac5] pt-4 break-words"><JournalRichText text={timeCapsuleBodyText(capsule)} fontSize={14} lineHeight="28px" opts={{ color: '#46443f', headColor: '#2b3040', muted: '#9a8f7f', accent: '#d9cbb5' }}/><p className="mt-5 text-[10px] text-[#9a8f7f]">封存于 {formatDate(capsule.createdAt)}</p></div>
               : due ? <div className="mt-5"><p className="text-xs leading-5 text-[#7e685e]">它已经在这里等你了。正文只会在你按下开启后出现。</p><button onClick={() => void openCapsule(capsule)} className="mt-4 flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-[#a9534d] text-xs font-black text-white"><EnvelopeSimpleOpen size={18} />开启这枚胶囊</button></div>
               : <div className="mt-5 border-t border-[#dfd2bd] pt-4"><div className="flex items-center justify-between"><span className="flex items-center gap-1.5 text-xs font-bold text-[#6d6356]"><LockKey size={15} />{formatTimeCapsuleDistance(capsule.unlockAt, now)}</span><span className="text-[10px] text-[#988c7b]">{formatDate(capsule.unlockAt)}</span></div><div className="mt-3 h-1 overflow-hidden rounded-full bg-[#ddd0bb]"><div className="h-full rounded-full bg-[#a9534d]" style={{ width: `${progress}%` }} /></div></div>}
           </div>
@@ -250,17 +318,25 @@ const TimeCapsuleApp: React.FC = () => {
       {shownInviteBatch ? <section className="mt-7 space-y-3" aria-label="本批邀请进度">
         {shownInviteBatch.items.map(item=><article key={item.id} className="rounded-[20px] border border-[#ddd1bf] bg-[#fffdf8] p-4">
           <div className="flex items-center gap-3"><Avatar char={{name:item.charName,avatar:item.charAvatar||''}} size="h-10 w-10"/><div className="min-w-0 flex-1"><b className="block truncate text-sm text-[#343844]">{item.charName}</b><span className={`mt-1 inline-flex items-center gap-1 text-xs ${item.status==='failed'?'text-[#a14e45]':item.status==='saved'?'text-[#4d765c]':'text-[#887b6c]'}`}>{item.status==='saved'?<Check size={13}/>:item.status==='failed'?<WarningCircle size={13}/>:null}{inviteStatusLabel[item.status]}</span></div>
-          {item.status==='failed'&&<button data-manual-relay-action disabled={!!busyItemId} onClick={()=>void runInvitationBatch(shownInviteBatch.id,item.id)} className="rounded-xl border border-[#cda99f] px-3 py-2 text-xs font-black text-[#8c5149] disabled:opacity-40">单独重试</button>}{pendingSave?.op.itemId===item.id&&<button disabled={!!busyItemId} onClick={()=>void retryPendingInviteSave()} className="rounded-xl border border-[#cda99f] px-3 py-2 text-xs font-black text-[#8c5149] disabled:opacity-40">重试保存</button>}</div>
+          {item.status==='failed'&&<button data-manual-relay-action disabled={runnerActive||!!pendingSave} onClick={()=>void runInvitationBatch(shownInviteBatch.id,'single',[item.id])} className="rounded-xl border border-[#cda99f] px-3 py-2 text-xs font-black text-[#8c5149] disabled:opacity-40">单独重试</button>}{pendingSave?.op.itemId===item.id&&<button disabled={runnerActive} onClick={()=>void retryPendingInviteSave()} className="rounded-xl border border-[#cda99f] px-3 py-2 text-xs font-black text-[#8c5149] disabled:opacity-40">重试保存</button>}</div>
           {item.error&&item.status!=='saved'&&<p className="mt-3 break-words text-xs leading-5 text-[#8b6f68]">{item.error}</p>}
         </article>)}
-        <div className="flex gap-2 pt-2">{busyItemId?pendingSave?<button disabled className="h-12 flex-1 rounded-2xl bg-[#ece1d4] text-sm font-black text-[#755f56]">正在保存…</button>:<button onClick={cancelInvitation} className="flex h-12 flex-1 items-center justify-center gap-2 rounded-2xl bg-[#ece1d4] text-sm font-black text-[#755f56]"><Stop size={18}/>停止本轮</button>:pendingSave?<button onClick={()=>void retryPendingInviteSave()} className="h-12 flex-1 rounded-2xl bg-[#a9534d] text-sm font-black text-white">重试保存生成结果</button>:shownInviteBatch.items.some(item=>item.status==='waiting'||item.status==='interrupted')?<button data-manual-relay-action onClick={()=>void runInvitationBatch(shownInviteBatch.id)} className="h-12 flex-1 rounded-2xl bg-[#a9534d] text-sm font-black text-white">{isManualRelayEnabled()?'继续下一位':'继续未完成邀请'}</button>:<button onClick={()=>{setDismissedBatchId(shownInviteBatch.id);setInviteCharIds([]);}} className="h-12 flex-1 rounded-2xl bg-[#273044] text-sm font-black text-white">新建一批邀请</button>}</div>
+        {retryProgress&&<p className="pt-1 text-center text-xs font-bold text-[#7d675f]">重试 {retryProgress.current}/{retryProgress.total} · {retryProgress.charName}</p>}
+        <div className="grid gap-2 pt-2">
+          {runnerActive?(pendingSave?<button disabled className="h-12 rounded-2xl bg-[#ece1d4] text-sm font-black text-[#755f56]">正在保存…</button>:<button onClick={cancelInvitation} className="flex h-12 items-center justify-center gap-2 rounded-2xl bg-[#ece1d4] text-sm font-black text-[#755f56]"><Stop size={18}/>停止本轮</button>):pendingSave?<button onClick={()=>void retryPendingInviteSave()} className="h-12 rounded-2xl bg-[#a9534d] text-sm font-black text-white">重试保存生成结果</button>:<>
+            {shownFailedPlan&&shownFailedPlan.index<shownFailedPlan.itemIds.length&&<button data-manual-relay-action onClick={()=>void continueFailedRetry()} className="h-12 rounded-2xl bg-[#a9534d] text-sm font-black text-white">继续重试下一位（{shownFailedPlan.index+1}/{shownFailedPlan.itemIds.length}）</button>}
+            {!shownFailedPlan&&shownFailedCount>0&&<button data-manual-relay-action onClick={()=>void retryAllFailed(shownInviteBatch)} className="h-12 rounded-2xl border border-[#b76559] bg-[#fff8ef] text-sm font-black text-[#9c4d45]">重试全部失败（{shownFailedCount}）</button>}
+            {shownInviteBatch.items.some(item=>item.status==='waiting'||item.status==='interrupted')&&<button data-manual-relay-action onClick={()=>void runInvitationBatch(shownInviteBatch.id)} className="h-12 rounded-2xl bg-[#a9534d] text-sm font-black text-white">{isManualRelayEnabled()?'继续下一位':'继续未完成邀请'}</button>}
+            {!shownFailedPlan&&shownFailedCount===0&&!shownInviteBatch.items.some(item=>item.status==='waiting'||item.status==='interrupted')&&<button onClick={()=>{setDismissedBatchId(shownInviteBatch.id);setInviteCharIds([]);}} className="h-12 rounded-2xl bg-[#273044] text-sm font-black text-white">新建一批邀请</button>}
+          </>}
+        </div>
       </section>:<>
         {eligibleCharacters.length === 0 ? <div className="py-20 text-center text-sm text-[#968b7d]">先去神经链接创建角色，才能发起邀请。</div> : <><div className="mt-6 flex items-center justify-between"><span className="text-xs font-bold text-[#776b5e]">已选 {inviteCharIds.length} 位</span><button onClick={()=>setInviteCharIds(inviteCharIds.length===eligibleCharacters.length?[]:eligibleCharacters.map(char=>char.id))} className="text-xs font-black text-[#8c5149]">{inviteCharIds.length===eligibleCharacters.length?'清空':'全选'}</button></div><div className="mt-3 grid grid-cols-3 gap-3">{eligibleCharacters.map(char => {
           const selected = inviteCharIds.includes(char.id);
           return <button key={char.id} aria-pressed={selected} onClick={() => setInviteCharIds(ids=>selected?ids.filter(id=>id!==char.id):[...ids,char.id])} className={`relative flex flex-col items-center gap-2 rounded-[20px] border py-4 ${selected ? 'border-[#a9534d] bg-[#f6e7dc]' : 'border-[#ddd1bf] bg-[#fffdf8]'}`}><Avatar char={char} />{selected&&<span className="absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded-full bg-[#a9534d] text-white"><Check size={12} weight="bold"/></span>}<span className="w-full truncate px-2 text-xs font-black text-[#3c3d43]">{char.name}</span></button>;
         })}</div></>}
         <div className="mt-8 rounded-2xl border border-dashed border-[#cdbb9e] p-4"><p className="text-xs font-black text-[#6d514b]">只保存在这里</p><p className="mt-2 text-xs leading-5 text-[#81776b]">不发到聊天、不写长期记忆，也不会调用 MCP。失败会跳过，已成功的角色不会重复生成。</p></div>
-        <button data-manual-relay-action disabled={!inviteCharIds.length || !!busyItemId} onClick={() => void startInvitationBatch()} className="mt-6 flex h-13 w-full items-center justify-center gap-2 rounded-2xl bg-[#a9534d] py-4 text-sm font-black text-white disabled:opacity-50"><UserCirclePlus size={19} />邀请 {inviteCharIds.length||0} 位角色</button>
+        <button data-manual-relay-action disabled={!inviteCharIds.length || runnerActive || !!pendingSave} onClick={() => void startInvitationBatch()} className="mt-6 flex h-13 w-full items-center justify-center gap-2 rounded-2xl bg-[#a9534d] py-4 text-sm font-black text-white disabled:opacity-50"><UserCirclePlus size={19} />邀请 {inviteCharIds.length||0} 位角色</button>
       </>}
     </main>
   );

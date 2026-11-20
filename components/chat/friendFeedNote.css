@@ -9,3 +9,8 @@
 .friend-feed-note-detail p{margin:4px 0 8px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}
 .friend-feed-note-detail p>span{display:block;font-size:10px;opacity:.75}
 .friend-feed-note summary:focus-visible{outline:2px solid #82967a;outline-offset:4px;border-radius:3px}
+.friend-feed-note-post{display:block;width:100%;margin:4px 0 8px;padding:0;border:0;background:none;color:inherit;font:inherit;font-size:12px;line-height:inherit;text-align:left;white-space:pre-wrap;overflow-wrap:anywhere;cursor:pointer}
+.friend-feed-note-post>span{display:flex;align-items:center;gap:4px;font-size:10px;opacity:.75}
+.friend-feed-note-post:hover>span{text-decoration:underline}
+.friend-feed-note-post:focus-visible{outline:2px solid #82967a;outline-offset:4px;border-radius:3px}
+.friend-feed-note-post[aria-disabled=true]{cursor:default}

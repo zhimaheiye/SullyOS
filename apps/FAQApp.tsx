@@ -123,6 +123,7 @@ interface ChangelogEntry {
 }
 
 const PERSONAL_CHANGELOG_ENTRIES: ChangelogEntry[] = [
+    { id: 'personal-2026-11-20', title: '11 月 20 日更新', subtitle: '笔友会章节编辑与旁批、热梗条目、教材导入和时间胶囊。', date: '2026-11-20', dateKind: '发布', src: 'changelogs/personal-2026-11-20.html' },
     { id: 'personal-2026-11-14', title: '11 月 14 日更新', subtitle: '会话置顶、单次调用诊断、小宇宙与独立批量创作。', date: '2026-11-14', dateKind: '11 月 16 日发布', src: 'changelogs/personal-2026-11-14.html' },
     {
         "id": "personal-2026-11-04",

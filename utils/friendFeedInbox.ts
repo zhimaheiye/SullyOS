@@ -40,7 +40,7 @@ export async function claimFriendInboxAnnouncements() {
     });
     return result;
 }
-type InboxTarget={postId?:string;commentId?:string};
+type InboxTarget={postId?:string;commentId?:string;returnToInbox?:boolean};
 let pending:InboxTarget|undefined;
 const OPEN='friend-feed-open-inbox';
 export function requestFriendInbox(target:InboxTarget={}){pending=target;window.dispatchEvent(new Event(OPEN));}

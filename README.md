@@ -71,6 +71,8 @@
 
 独立 App 的入口在上面的功能表。完整的时间顺序见小手机「更新日志 → 个人二改」和[仓库中的个人日志原文](public/changelogs)（`personal-*.html`）。
 
+**11 月 20 日芝麻二改**（[个人更新日志](public/changelogs/personal-2026-11-20.html)）：[笔友会](components/novel/NovelWriter.tsx)支持编辑／调序章节、历史章共写、手动发表和选段旁批；[热梗条目](utils/memeChat.ts)供本机普通私聊、群聊按角色启用，不内置第三方词库；[自习室教材入口](apps/StudyApp.tsx)支持 PDF／Markdown；[时间胶囊](apps/TimeCapsuleApp.tsx)可批量重试失败邀请并按正文排版阅读；[哔哔分享卡](components/chat/FriendFeedNote.tsx)可从普通私聊打开本机原帖。
+
 | 位置 | 芝麻二改 | 源码入口 |
 |------|----------|----------|
 | 私聊与群聊 | 最近会话混排、按成员在群时段隔离历史、聊天阅读位置 | [最近会话](utils/conversationList.ts) · [群成员视野](utils/groupChat/membership.ts) · [滚动](hooks/useChatScroll.ts) |

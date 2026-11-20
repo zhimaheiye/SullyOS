@@ -1,5 +1,6 @@
 
 import { CharacterProfile, NovelBook, NovelSegment, UserProfile } from '../types';
+import { formatNovelChapterTitle } from './novelChapterTitle';
 import { ContextBuilder } from './context';
 import { safeResponseJson } from './safeApi';
 
@@ -21,15 +22,29 @@ export interface GenerationOptions {
 export const hasSelectedGenerationTask = (options: GenerationOptions): boolean =>
     options.write || options.comment || options.analyze;
 
+export function countManuscriptCharacters(segments: readonly NovelSegment[], authorId?: string): number {
+    let count = 0;
+    for (const segment of segments) {
+        if ((authorId && segment.authorId !== authorId) || segment.type !== 'story' || segment.focus === 'chapter_summary') continue;
+        count += segment.content.match(/[\p{L}\p{N}]/gu)?.length ?? 0;
+    }
+    return count;
+}
+
+// Older writer modules import this name to count only the user's prose.
+export function countUserManuscriptCharacters(segments: readonly NovelSegment[]): number {
+    return countManuscriptCharacters(segments, 'user');
+}
+
 export const createUserNovelSegment = (
     input: string,
     options: GenerationOptions,
     timestamp = Date.now(),
 ): NovelSegment | null => {
     const content = input.trim();
-    if (!content || !hasSelectedGenerationTask(options)) return null;
+    if (!content) return null;
 
-    const isWritingInput = options.write;
+    const isWritingInput = options.write || !hasSelectedGenerationTask(options);
     return {
         id: `seg-${timestamp}`,
         role: isWritingInput ? 'writer' : 'commenter',
@@ -53,6 +68,7 @@ export const formatNovelSegmentForPrompt = (
         return `[正文｜${authorName}]\n${segment.content}`;
     }
     if (segment.type === 'discussion' || segment.role === 'commenter') {
+        if (segment.focus === 'continuation_preview') return `[续写参考｜${authorName}，未收入正文]\n${segment.content}`;
         const label = segment.authorId === 'user' ? '讨论' : '吐槽';
         return `[${label}｜${authorName}]\n${segment.content}`;
     }
@@ -79,7 +95,7 @@ export const buildNovelInteractionContext = (
     const sections: string[] = [];
     if (summaries.length > 0) {
         sections.push(`【前情回顾 / Chapter Recaps】\n\n${summaries
-            .map((summary, index) => `第${index + 1}章总结：\n${summary.content}`)
+            .map((summary, index) => `${formatNovelChapterTitle(index + 1, summary.chapterTitle)}总结：\n${summary.content}`)
             .join('\n\n')}`);
     }
 

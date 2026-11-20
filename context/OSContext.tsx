@@ -4022,6 +4022,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               home3DLocal: (mode === 'text_only' || mode === 'full') ? exportHome3DLocal() : undefined,
               mcpLocal: (mode === 'text_only' || mode === 'full') ? exportMcpLocal() : undefined,
               stickerVisionLocal: (mode === 'text_only' || mode === 'full') ? exportStickerVisionLocal() : undefined,
+              memeLibrary: (mode === 'text_only' || mode === 'full') ? (await import('../utils/memeChat')).loadMemeLibrary() : undefined,
 
               // 梦境盲盒收藏册（账号级 localStorage，不挂在角色上，需单独随备份带走）
               dreamCollection: (mode === 'text_only' || mode === 'full') ? (() => { try { const s = localStorage.getItem('os_dream_collection'); return s ? JSON.parse(s) : undefined; } catch { return undefined; } })() : undefined,

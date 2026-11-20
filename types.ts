@@ -1263,6 +1263,8 @@ export interface NovelProtagonist {
 
 export interface NovelSegment {
     id: string;
+    marginNotes?: Array<{ quote: string; start?: number; question: string; reply: string; charId: string; charName: string }>;
+    chapterTitle?: string; // Optional title on the chapter_summary marker.
     role?: 'writer' | 'commenter' | 'analyst'; 
     type: 'discussion' | 'story' | 'analysis'; 
     authorId: string; 
@@ -1282,6 +1284,7 @@ export interface NovelSegment {
 export interface NovelBook {
     id: string;
     title: string;
+    currentChapterTitle?: string;
     subtitle?: string; 
     summary: string;
     coverStyle: string; 
@@ -3079,6 +3082,7 @@ export interface CharacterProfile {
   hideMonthlyRecallPrompt?: boolean;
   
   writerPersona?: string;
+  memeChat?: import('./utils/memeChat').MemeChatProfile;
   writerPersonaGeneratedAt?: number;
 
   mountedWorldbooks?: MountedWorldbook[];
@@ -5186,6 +5190,7 @@ export interface FullBackupData {
     oneChangeStateEvents?: OneChangeStateEvent[];
     oneChangeSettings?: OneChangeSettings[];
     worldbooks?: Worldbook[];
+    memeLibrary?: import('./utils/memeChat').MemeLibrary;
     roomCustomAssets?: { id?: string; name: string; image: string; defaultScale: number; description?: string; visibility?: 'public' | 'character'; assignedCharIds?: string[] }[]; 
     
     novels?: NovelBook[];

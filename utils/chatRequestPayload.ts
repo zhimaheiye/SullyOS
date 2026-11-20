@@ -19,6 +19,7 @@ import { protectPendingChatTurn } from './storyTheaterTimeline';
 
 import type { CharacterProfile, UserProfile, GroupProfile, Emoji, EmojiCategory, Message, RealtimeConfig, TranslationConfig, VisionApiConfig } from '../types';
 import { ChatPrompts, detectChatModeTransition } from './chatPrompts';
+import { buildMemeChatContext } from './memeChat';
 import { ContextBuilder } from './context';
 import { injectMemoryPalace } from './memoryPalace/pipeline';
 import { renderLocalContextGuidance } from './memoryPalace/recallRouter';
@@ -539,10 +540,12 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
     // 展平为对话历史 —— 易变尾段会以「[系统]: …」行出现在历史末尾，信息不丢。
     if(input.homePhoneContext) volatileTail += `\n\n${input.homePhoneContext}`;
     if (input.lifeContext) volatileTail += `\n\n${input.lifeContext}`;
+    const memeBlock = input.recallEntryPoint === 'chat_app' && !input.appPrompt && !input.homePhoneContext && !input.timelyByWorker
+        ? buildMemeChatContext(char, historyMsgsForPrompt.filter(message => !message.groupId && message.charId === char.id)) : '';
     let fullMessages: Array<{ role: string; content: any }> = [
         { role: 'system', content: systemPrompt },
         ...messagesWithWorldbookDepth,
-        { role: 'system', content: volatileTail },
+        { role: 'system', content: memeBlock + volatileTail },
     ];
     if (bilingualActive) {
         fullMessages.push({

@@ -42,7 +42,7 @@ import {
     WorldProfile, WorldEpisode, StoryTheaterEntry, StoryTheaterPreset, StoryTheaterMask,
     HeartSyncRecord, HeartSyncPsychQuestion, HeartSyncPsychSession, HeartSyncQuestionnaire, HeartSyncQuestionnaireSession,
     DebateSession, BoardGameSession, CharacterStudySession, LifeReplayRecord, CommunityCommitteeSession, TaskWorkshopRecord, TaskWorkshopSettings,
-    TimeCapsuleRecord, TimeCapsuleSettings, TimeCapsuleInviteBatch, TimeCapsuleInviteItem, TimeCapsuleEntry, MyScheduleRecord, MyScheduleSettings, MyScheduleEntry, MyScheduleArchive,
+    TimeCapsuleRecord, TimeCapsuleSettings, TimeCapsuleInviteBatch, TimeCapsuleInviteItem, TimeCapsuleInviteStatus, TimeCapsuleEntry, MyScheduleRecord, MyScheduleSettings, MyScheduleEntry, MyScheduleArchive,
     HealingSession, HealingMessage, HealingMemoryNode, HealingMemoryVector,
     OneChangeItem, OneChangeRecord, OneChangeStandardVersion, OneChangeStateEvent, OneChangeSettings,
 } from '../types';
@@ -4574,7 +4574,7 @@ export const DB = {
       });
   },
 
-  claimTimeCapsuleInviteItem: async (batchId:string,executorId:string,itemId?:string,now=Date.now()):Promise<{batch:TimeCapsuleInviteBatch;item:TimeCapsuleInviteItem}> => {
+  claimTimeCapsuleInviteItem: async (batchId:string,executorId:string,itemId?:string,now=Date.now(),expectedStatus?:TimeCapsuleInviteStatus):Promise<{batch:TimeCapsuleInviteBatch;item:TimeCapsuleInviteItem}> => {
       const db=await openDB();
       return new Promise((resolve,reject)=>{
           const tx=db.transaction(STORE_TIME_CAPSULE,'readwrite'),store=tx.objectStore(STORE_TIME_CAPSULE),all=store.getAll();
@@ -4587,7 +4587,9 @@ export const DB = {
               if(!batch){failure=new Error('这批邀请已不存在');tx.abort();return;}
               const index=itemId?batch.items.findIndex(item=>item.id===itemId):batch.items.findIndex(item=>item.status==='waiting'||item.status==='interrupted');
               const old=index>=0?batch.items[index]:undefined;
-              const eligible=old&&(itemId?['failed','interrupted','waiting'].includes(old.status):['interrupted','waiting'].includes(old.status));
+              const eligible=old&&(expectedStatus
+                ? old.status===expectedStatus
+                : itemId?['failed','interrupted','waiting'].includes(old.status):['interrupted','waiting'].includes(old.status));
               if(!old||!eligible){failure=new Error('没有可继续的邀请');tx.abort();return;}
               const item={...old,status:'running' as const,error:undefined,startedAt:now,finishedAt:undefined,updatedAt:now,attempt:old.attempt+1,executorId,leaseUntil:now+30*60_000};
               const items=[...batch.items];items[index]=item;
@@ -5138,6 +5140,7 @@ export const DB = {
           home3DLocal: exportHome3DLocal(),
           mcpLocal: exportMcpLocal(),             // 通用 MCP 服务器配置（存 localStorage）
           stickerVisionLocal: exportStickerVisionLocal(), // 表情包视觉理解全局开关（存 localStorage）
+          memeLibrary: (await import('./memeChat')).loadMemeLibrary(),
           chatActionOrders: loadChatActionOrders(), // 私聊/群聊「＋」功能格的两套本机顺序
           recentConversationPins: readConversationPins().pins,
           amsg2GlobalConfig: await exportAmsg2GlobalConfig(options), // 主动消息 2.0 全局配置（存独立的 ActiveMsg 库；后端连接默认不带走）
@@ -5640,6 +5643,10 @@ export const DB = {
           await clearAndAdd(STORE_WORLDBOOKS, data.worldbooks, '世界书', false);
           data.worldbooks = undefined as any;
       }, data.worldbooks?.length || 0);
+      await runSection('热梗条目', data.memeLibrary !== undefined && !mediaOnly, async () => {
+          (await import('./memeChat')).saveMemeLibrary(data.memeLibrary!);
+          data.memeLibrary = undefined;
+      }, data.memeLibrary?.entries.length || 0);
       await runSection('剧情剧场', data.storyTheaters !== undefined, async () => {
           await clearAndAdd(STORE_STORY_THEATERS, data.storyTheaters, '剧情剧场', false);
           data.storyTheaters = undefined as any;

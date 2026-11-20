@@ -5,7 +5,7 @@ import { NovelBook, NovelProtagonist, CharacterProfile } from '../types';
 import Modal from '../components/os/Modal';
 import ConfirmDialog from '../components/os/ConfirmDialog';
 import { processImage } from '../utils/file';
-import { NOVEL_THEMES, analyzeWriterPersonaSimple } from '../utils/novelUtils';
+import { NOVEL_THEMES, analyzeWriterPersonaSimple, countManuscriptCharacters } from '../utils/novelUtils';
 import NovelWriter from '../components/novel/NovelWriter';
 import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
 import { Robot, MaskHappy, PenNib, Books, FolderOpen } from '@phosphor-icons/react';
@@ -17,7 +17,8 @@ const NovelApp: React.FC = () => {
     
     // Navigation State
     const [view, setView] = useState<'shelf' | 'create' | 'write' | 'settings' | 'library'>('shelf');
-    const [activeBook, setActiveBook] = useState<NovelBook | null>(null);
+    const [activeBookId, setActiveBookId] = useState<string | null>(null);
+    const activeBook = novels.find(book => book.id === activeBookId);
     const [activeTheme, setActiveTheme] = useState(NOVEL_THEMES[0]);
 
     // Create / Settings Form
@@ -85,7 +86,7 @@ const NovelApp: React.FC = () => {
         } else if (intent.entryId === 'create') setView('create');
         else {
             const target = novels.find(book => book.id === intent.resourceId);
-            setActiveBook(target || null); setTargetCharId(null); setView(target ? 'write' : 'shelf');
+            setActiveBookId(target?.id ?? null); setTargetCharId(null); setView(target ? 'write' : 'shelf');
             if (intent.resourceId && !target) addToast('这份书稿已不存在，请重新设置槽位', 'error');
         }
     });
@@ -134,7 +135,7 @@ const NovelApp: React.FC = () => {
             segments: [], createdAt: Date.now(), lastActiveAt: Date.now()
         };
         addNovel(newBook);
-        setActiveBook(newBook);
+        setActiveBookId(newBook.id);
         setView('write');
         resetTempState();
         trackEvent('新建一本书稿');
@@ -157,14 +158,11 @@ const NovelApp: React.FC = () => {
     const handleSaveSettings = async () => {
         if (!activeBook) return;
         const updated = {
-            ...activeBook,
             title: tempTitle, subtitle: tempSubtitle, summary: tempSummary,
             worldSetting: tempWorld, coverStyle: activeTheme.id, coverImage: tempCoverImage,
             collaboratorIds: Array.from(selectedCollaborators), protagonists: tempProtagonists,
-            segments: activeBook.segments, lastActiveAt: Date.now()
         };
         await updateNovel(activeBook.id, updated);
-        setActiveBook(updated);
         setView('write');
         addToast('设定已更新，内容完好', 'success');
     };
@@ -317,17 +315,17 @@ const NovelApp: React.FC = () => {
                 <div className="p-6 grid grid-cols-2 gap-5 overflow-y-auto pb-24">
                     {novels.map(book => {
                         const style = getTheme(book.coverStyle);
-                        const wordCount = book.segments.reduce((acc, seg) => acc + (seg.type === 'story' ? seg.content.length : 0), 0);
+                        const wordCount = countManuscriptCharacters(book.segments);
                         const bgStyle = book.coverImage ? { backgroundImage: `url(${book.coverImage})`, backgroundSize: 'cover', backgroundPosition: 'center' } : {};
                         return (
-                            <div key={book.id} onClick={() => { setActiveBook(book); setView('write'); trackEvent('打开书稿写作页'); }} className="group relative aspect-auto min-h-[14rem] bg-white rounded-2xl shadow-sm hover:shadow-xl transition-all duration-300 overflow-hidden border border-slate-100 cursor-pointer flex flex-col">
+                            <div key={book.id} onClick={() => { setActiveBookId(book.id); setView('write'); trackEvent('打开书稿写作页'); }} className="group relative aspect-auto min-h-[14rem] bg-white rounded-2xl shadow-sm hover:shadow-xl transition-all duration-300 overflow-hidden border border-slate-100 cursor-pointer flex flex-col">
                                 <div className={`h-28 shrink-0 ${style.bg} relative p-4 flex flex-col justify-end`} style={bgStyle}>
                                     <div className={`absolute inset-0 ${book.coverImage ? 'bg-black/30' : ''}`}></div>
                                     <div className="relative z-10"><h3 className={`font-bold text-lg leading-tight line-clamp-2 ${book.coverImage ? 'text-white drop-shadow-md' : style.text}`}>{book.title}</h3>{book.subtitle && <p className={`text-[10px] font-bold opacity-80 uppercase tracking-wide truncate ${book.coverImage ? 'text-white' : style.text}`}>{book.subtitle}</p>}</div>
                                 </div>
                                 <div className="p-4 flex-1 flex flex-col justify-between">
                                     <p className="text-xs text-slate-500 line-clamp-3 leading-relaxed mb-3">{book.summary || '暂无简介...'}</p>
-                                    <div className="flex items-center justify-between pt-3 border-t border-slate-50"><div className="flex -space-x-2">{characters.filter(c => book.collaboratorIds.includes(c.id)).map(c => (<TokenImg key={c.id} value={c.avatar} className="w-6 h-6 rounded-full border-2 border-white object-cover" />))}</div><span className="text-[10px] text-slate-400 font-mono bg-slate-50 px-2 py-0.5 rounded-full">{(wordCount/1000).toFixed(1)}k 字</span></div>
+                                    <div className="flex items-center justify-between pt-3 border-t border-slate-50"><div className="flex -space-x-2">{characters.filter(c => book.collaboratorIds.includes(c.id)).map(c => (<TokenImg key={c.id} value={c.avatar} className="w-6 h-6 rounded-full border-2 border-white object-cover" />))}</div><span className="text-[10px] text-slate-400 font-mono bg-slate-50 px-2 py-0.5 rounded-full">全文 {wordCount.toLocaleString('zh-CN')} 字</span></div>
                                 </div>
                                 <button onClick={(e) => { e.stopPropagation(); handleDeleteBook(book.id); }} className="absolute top-2 right-2 text-slate-400/50 hover:text-red-500 p-2 opacity-0 group-hover:opacity-100 transition-opacity bg-white/20 backdrop-blur rounded-full">×</button>
                             </div>
@@ -394,6 +392,7 @@ const NovelApp: React.FC = () => {
     if (view === 'write' && activeBook) {
         return (
             <NovelWriter 
+                key={activeBook.id}
                 activeBook={activeBook}
                 updateNovel={updateNovel}
                 characters={characters}

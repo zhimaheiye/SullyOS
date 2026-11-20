@@ -90,6 +90,7 @@ import {
 } from '../utils/speechToText';
 import { describeImageWithVisionApi, VISION_API_TEST_IMAGE_DATA_URL, visionApiConfigFromPreset } from '../utils/visionApi';
 import { loadGlobalStickerVisionEnabled, saveGlobalStickerVisionEnabled } from '../utils/stickerVision';
+import { MemeChatSettingsPanel } from '../components/presets/MemeChatSettings';
 import {
     FIRECRAWL_API_KEYS_URL,
     getFirecrawlApiKey,
@@ -2878,6 +2879,10 @@ const Settings: React.FC = () => {
             </div>
         </SettingsSection>
 
+
+        <SettingsSection title="热梗条目" icon={<div className="p-2 rounded-xl bg-amber-100 text-amber-700"><Book size={16}/></div>}>
+            <MemeChatSettingsPanel />
+        </SettingsSection>
 
         {/* API 调用记录入口 — 点开看最近 5 天各 App / 角色 / 用途的调用明细 */}
         <button

@@ -1187,6 +1187,7 @@ interface MessageItemProps {
     onMediaLoad?: (messageId: number) => void;
     onLongPress: (m: Message) => void;
     onReply: (m: Message) => void;
+    onOpenFriendPost?: (postId: string) => void;
     selectionMode: boolean;
     isSelected: boolean;
     onToggleSelect: (id: number) => void;
@@ -1251,6 +1252,7 @@ const MessageItem = React.memo(({
     onMediaLoad,
     onLongPress,
     onReply,
+    onOpenFriendPost,
     selectionMode,
     isSelected,
     onToggleSelect,
@@ -1299,6 +1301,7 @@ const MessageItem = React.memo(({
     // 于是气泡列底恒等于气泡尖角——头像贴 bottom-0 就始终对齐：
     // 组末/组中、时间戳开或关都一样，发新消息也不会因参考高度变化而位移。
     const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const suppressFriendFeedClick = useRef(false);
     const startPos = useRef({ x: 0, y: 0 });
     const activePointerId = useRef<number | null>(null);
     const activePointerType = useRef<string>('');
@@ -1331,6 +1334,7 @@ const MessageItem = React.memo(({
     };
 
     const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+        suppressFriendFeedClick.current = false;
         if (selectionMode || e.button !== 0) return;
         activePointerId.current = e.pointerId;
         activePointerType.current = e.pointerType;
@@ -1339,6 +1343,7 @@ const MessageItem = React.memo(({
 
         clearLongPressTimer();
         longPressTimer.current = setTimeout(() => {
+            suppressFriendFeedClick.current = true;
             longPressTimer.current = null;
             activePointerId.current = null;
             activePointerType.current = '';
@@ -1360,7 +1365,7 @@ const MessageItem = React.memo(({
                 && diffX < -8
                 && Math.abs(diffX) > Math.abs(diffY);
             if (!startsReplySwipe) {
-                if (Math.abs(diffX) > 10 || Math.abs(diffY) > 10) clearLongPressTimer();
+                if (Math.abs(diffX) > 10 || Math.abs(diffY) > 10) {clearLongPressTimer(); suppressFriendFeedClick.current = true;}
                 return;
             }
             clearLongPressTimer();
@@ -1415,6 +1420,7 @@ const MessageItem = React.memo(({
         onPointerMove: handlePointerMove,
         onPointerCancel: handlePointerCancel,
         onContextMenu: (e: React.MouseEvent) => {
+            suppressFriendFeedClick.current = true;
             e.preventDefault();
             if (selectionMode || replyGestureActiveRef.current) return;
             clearLongPressTimer();
@@ -1493,12 +1499,13 @@ const MessageItem = React.memo(({
     // Secrets are revealed on entering the home, or inspected in history management.
     if (m.type === 'secret_note') return null;
     if (m.type === 'friend_feed_card' && m.metadata?.friendFeedComment) {
-        return <div className={`w-full relative ${selectionMode ? 'pl-8' : ''}`} {...interactionProps}>
+        return <div className={`w-full relative ${selectionMode ? 'pl-8' : ''}`} {...interactionProps}
+            onClickCapture={event => {if (event.detail > 0 && suppressFriendFeedClick.current) {event.preventDefault(); event.stopPropagation();}}}>
             {selectionMode && <button type="button" aria-label="选择好友圈记录" aria-pressed={isSelected}
                 className="absolute left-1 top-2 text-xs" onClick={event => {event.stopPropagation(); onToggleSelect(m.id);}}>
                 {isSelected ? '☑' : '□'}
             </button>}
-            <FriendFeedNote note={m.metadata.friendFeedComment}/>
+            <FriendFeedNote note={m.metadata.friendFeedComment} onOpenPost={onOpenFriendPost} selectionMode={selectionMode}/>
         </div>;
     }
 
@@ -3981,6 +3988,7 @@ const MessageItem = React.memo(({
            prev.previewTransferOpen === next.previewTransferOpen &&
            prev.onTranslateThinking === next.onTranslateThinking &&
            prev.thinkingTranslationError === next.thinkingTranslationError &&
+           prev.onOpenFriendPost === next.onOpenFriendPost &&
            prev.suppressEntranceAnimation === next.suppressEntranceAnimation &&
            prev.voiceData?.url === next.voiceData?.url &&
            prev.voiceLoading === next.voiceLoading &&

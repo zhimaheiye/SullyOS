@@ -4,6 +4,7 @@ import { DB } from './db';
 import { extractContent, safeFetchJson } from './safeApi';
 import { isManualRelayEnabled } from './manualModelRelay';
 import { parseCharacterTimeCapsule } from './timeCapsule';
+import { normalizeTimeCapsuleResponse } from './timeCapsuleBody';
 
 const endpoint = (apiConfig: APIConfig): string => {
   const baseUrl = apiConfig.baseUrl?.replace(/\/+$/, '');
@@ -60,7 +61,7 @@ export async function requestCharacterTimeCapsule(input: {
   if(data?.choices?.[0]?.finish_reason === 'length')throw new Error('胶囊内容被截断，未封存，请重试');
   const content = extractContent(data);
   if (!content) throw new Error('角色这次没有留下可封存的内容');
-  return parseCharacterTimeCapsule(content, char, source);
+  return parseCharacterTimeCapsule(normalizeTimeCapsuleResponse(content), char, source);
 }
 
 /** Context preparation itself can be non-abortable; release UI ownership immediately. */

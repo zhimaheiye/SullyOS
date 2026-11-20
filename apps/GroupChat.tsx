@@ -34,6 +34,7 @@ import { buildMemberTimeline, DEFAULT_MEMBER_TIMELINE_CAP } from '../utils/group
 import { buildEmojiContextStr, buildGroupHistoryBlock, buildDirectorInstruction, buildRoundRobinInstruction, GroupHistoryBlock } from '../utils/groupChat/prompts';
 import { dispatchMemberActions } from '../utils/groupChat/dispatch';
 import { completeGroupChatWithMcp } from '../utils/groupChat/mcp';
+import { buildMemeChatContext } from '../utils/memeChat';
 import { cancelManualRelayForApp, isManualRelayEnabled } from '../utils/manualModelRelay';
 import SideStoryModal from '../components/chat/SideStoryModal';
 import { groupSideStorySignature, type GroupSideStorySource } from '../utils/groupSideStory';
@@ -1368,6 +1369,7 @@ ${sharedScene.text}${activeGroup ? buildGroupTopicContext(activeGroup, memberId)
         return `
 <<< 角色档案 START: ${member.name} (ID: ${member.id}) >>>
 ${coreContext}
+${buildMemeChatContext(member, liveGroupMsgs.slice(-contextLimit))}
 
 [重点：私聊状态 (Private Context)]:
 - **私聊空窗期**: ${privateGapInfo}

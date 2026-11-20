@@ -356,7 +356,7 @@ const StudyApp: React.FC = () => {
     const [processStatus, setProcessStatus] = useState('');
     const [showImportModal, setShowImportModal] = useState(false);
     const [importPreference, setImportPreference] = useState('');
-    const [tempPdfData, setTempPdfData] = useState<{name: string, text: string} | null>(null);
+    const [tempMaterialData, setTempMaterialData] = useState<{name: string, text: string} | null>(null);
     const [katexRenderer, setKatexRenderer] = useState<KatexLike | null>(null);
 
     // Study-specific API config (overrides main apiConfig when set)
@@ -519,36 +519,43 @@ const StudyApp: React.FC = () => {
         savePresets(tutorPresets.filter(p => p.id !== id));
     };
 
-    // --- PDF Processing ---
+    // --- Course material import (PDF / Markdown) ---
 
     const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
         if (!file) return;
+        const isMarkdown = /\.(?:md|markdown)$/i.test(file.name) || /^(?:text\/markdown|text\/x-markdown)$/i.test(file.type);
         // Android 的部分 DocumentsProvider 会给 PDF 空 MIME 或
         // application/octet-stream；扩展名正确时仍应允许进入解析器。
-        if (!isPdfFile(file)) {
-            addToast('请上传 PDF 文件', 'error');
+        if (!isMarkdown && !isPdfFile(file)) {
+            addToast('请上传 PDF 或 Markdown（.md / .markdown）文件', 'error');
+            e.target.value = '';
             return;
         }
 
-        trackEvent('导入 PDF 教材');
+        if (!isMarkdown) trackEvent('导入 PDF 教材');
         setIsProcessing(true);
-        setProcessStatus('正在预处理 PDF...');
+        setProcessStatus(isMarkdown ? '正在读取 Markdown...' : '正在预处理 PDF...');
 
         try {
-            const arrayBuffer = await file.arrayBuffer();
-            const { text: fullText, pageCount } = await extractPdfText(arrayBuffer, {
-                maxPages: 50,
-                onProgress: ({ page, totalPages }) => setProcessStatus(`提取文本中 (${page}/${totalPages})...`),
-            });
-
-            // Scanned PDF Detection
-            if (fullText.trim().length < 50 && pageCount > 0) {
-                addToast('检测到文本极少，可能是扫描件/图片PDF。建议先进行OCR识别。', 'error');
+            let fullText: string;
+            if (isMarkdown) {
+                fullText = (await file.text()).replace(/^\uFEFF/, '');
+                if (!fullText.trim()) throw new Error('Markdown 文档没有正文');
+            } else {
+                const arrayBuffer = await file.arrayBuffer();
+                const extracted = await extractPdfText(arrayBuffer, {
+                    maxPages: 50,
+                    onProgress: ({ page, totalPages }) => setProcessStatus(`提取文本中 (${page}/${totalPages})...`),
+                });
+                fullText = extracted.text;
+                if (fullText.trim().length < 50 && extracted.pageCount > 0) {
+                    addToast('检测到文本极少，可能是扫描件/图片PDF。建议先进行OCR识别。', 'error');
+                }
             }
 
             // Set temp data and open modal
-            setTempPdfData({ name: file.name.replace('.pdf', ''), text: fullText });
+            setTempMaterialData({ name: file.name.replace(/\.(pdf|md|markdown)$/i, ''), text: fullText });
             setImportPreference('');
             setIsProcessing(false);
             setShowImportModal(true);
@@ -563,13 +570,13 @@ const StudyApp: React.FC = () => {
     };
 
     const confirmImport = async () => {
-        if (!tempPdfData) return;
+        if (!tempMaterialData) return;
         setShowImportModal(false);
         setIsProcessing(true);
         setProcessStatus('AI 正在生成课程大纲...');
 
         try {
-            const newCourse = await generateCurriculum(tempPdfData.name, tempPdfData.text, importPreference);
+            const newCourse = await generateCurriculum(tempMaterialData.name, tempMaterialData.text, importPreference);
             await DB.saveCourse(newCourse);
             await loadCourses();
             addToast('课程创建成功', 'success');
@@ -577,7 +584,7 @@ const StudyApp: React.FC = () => {
             addToast(`生成失败: ${e.message}`, 'error');
         } finally {
             setIsProcessing(false);
-            setTempPdfData(null);
+            setTempMaterialData(null);
         }
     };
 
@@ -1859,11 +1866,11 @@ Answer in character. Be helpful and clear. If they're confused about a concept, 
                                         <>
                                             <span className="text-3xl">+</span>
                                             <span className="text-xs font-bold">导入学习资料</span>
-                                            <span className="px-3 text-center text-[10px] leading-relaxed">支持 PDF，让角色陪你讲解、练习</span>
+                                            <span className="px-3 text-center text-[10px] leading-relaxed">支持 PDF / Markdown</span>
                                         </>
                                     )}
                                 </button>
-                                <input type="file" ref={fileInputRef} className="hidden" accept=".pdf" onChange={handleFileSelect} disabled={isProcessing} />
+                                <input type="file" ref={fileInputRef} className="hidden" accept=".pdf,.md,.markdown,application/pdf,text/markdown,text/x-markdown" onChange={handleFileSelect} disabled={isProcessing} />
 
                                 {courses.filter(course => !isKnowledgeCourse(course)).map(course => (
                                     <div key={course.id} onClick={() => startSession(course)} className="aspect-[3/4] rounded-r-xl rounded-l-sm shadow-md relative group cursor-pointer overflow-hidden transition-transform active:scale-95" style={{ background: course.coverStyle }}>
@@ -1902,7 +1909,7 @@ Answer in character. Be helpful and clear. If they're confused about a concept, 
                 <Modal isOpen={showImportModal} title="课程设置" onClose={() => setShowImportModal(false)} footer={<button onClick={confirmImport} className="w-full py-3 bg-emerald-500 text-white font-bold rounded-2xl">开始生成</button>}>
                     <div className="space-y-4">
                         <div className="text-xs text-slate-500">
-                            已加载: <span className="font-bold text-slate-700">{tempPdfData?.name}</span>
+                            已加载: <span className="font-bold text-slate-700">{tempMaterialData?.name}</span>
                         </div>
                         {tutorPresets.length > 0 && (
                             <div>

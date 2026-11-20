@@ -96,7 +96,7 @@ describe('小说共创的组合生成语义', () => {
         expect(prompt).toContain('"comment"');
     });
 
-    it('仅根据是否存在生成任务决定可发送', () => {
+    it('选择任一角色任务时需要生成', () => {
         expect(hasSelectedGenerationTask(options())).toBe(false);
         expect(hasSelectedGenerationTask(options({ write: true }))).toBe(true);
         expect(hasSelectedGenerationTask(options({ comment: true }))).toBe(true);
@@ -132,7 +132,9 @@ describe('小说段落分类与章节上下文', () => {
             role: 'commenter', type: 'discussion', content: '分析一下', timestamp: 12,
         });
         expect(createUserNovelSegment('   ', options({ comment: true }), 13)).toBeNull();
-        expect(createUserNovelSegment('有文字', options(), 14)).toBeNull();
+        expect(createUserNovelSegment('有文字', options(), 14)).toMatchObject({
+            authorId: 'user', role: 'writer', type: 'story', content: '有文字',
+        });
     });
 
     it('保留当前章节正文、讨论、吐槽和分析的真实顺序与语义标签', () => {

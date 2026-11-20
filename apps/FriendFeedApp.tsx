@@ -232,7 +232,7 @@ export default function FriendFeedApp({embedded = false, initialCharacterId, onB
         if(embedded||!loaded)return;
         const receive=()=>{const target=consumeFriendInbox();if(!target)return;
             panelHistory.current=[];
-            setProfileId('');setPostFilter('all');setError('');setReturnToPost('');setReturnToInbox(!!target.postId);
+            setProfileId('');setPostFilter('all');setError('');setReturnToPost('');setReturnToInbox(target.returnToInbox ?? !!target.postId);
             detailOriginProfile.current='';setPanel(target.postId?{kind:'detail',postId:target.postId,focusComment:target.commentId?{id:target.commentId}:undefined}:{kind:'inbox'});
         };
         const stop=subscribeFriendInboxOpen(receive);receive();return stop;
